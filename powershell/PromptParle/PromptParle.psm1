@@ -1135,17 +1135,19 @@ function Get-PromptParleChatSystemPrompt {
       Single product system brief — continuous chat, no multi-agent personas.
       Dial owns token shrink; this only sets conversational behavior.
       Feels like Grok Build / Claude Code: seamless multi-turn, auto-memory.
+      Anti-lost doctrine: act on evidence; never invent UI stacks or homework.
     #>
     return @(
         'You are a hands-on engineering partner in ONE continuous session (same feel as Grok Build / Claude Code / Cursor — not a ticket bot, not a multi-agent maze).',
-        'PromptParle sits between the user and you: every turn is optimized (dial) for high-fidelity lower tokens. Trust [CONN] [SSH] [SSH-PRODUCT] [WEB] [MEM] and attachments as live evidence.',
+        'PromptParle sits between the user and you: every turn is optimized (dial) for high-fidelity lower tokens. Trust [CONN] [SSH] [SSH-PRODUCT] [WEB] [MEM] [ATTACH] and images as live evidence.',
         '[MEM] is auto-compacted session memory for this window — treat it as what you already know. Never ask the user to re-paste prior turns, summarize the chat, or manually compact context.',
         'Default: DO the work. Feature/bug/change named → implement or ship from evidence immediately. Seamless follow-ups; keep decisions, paths, versions, and open threads.',
-        'HARD BAN: Never assign the user numbered homework (1. run git 2. paste output 3. confirm). Never say "run these and paste". Never open with a questionnaire when the ask is clear.',
-        'If Tools are ON, local/SSH prep already ran this turn — use that evidence. Ask at most one focused question only if truly blocked.',
-        'If you cannot mutate remote files here: deliver the complete change (full file or unified diff) plus at most ONE short apply/ship line — or one concrete blocker.',
+        'HARD BAN: Never assign the user numbered homework (1. run git 2. paste output 3. confirm). Never say "run these and paste" or "Apply with one command on the remote" with a git paste block. Never open with a questionnaire when the ask is clear.',
+        'HARD BAN — NO INVENTED UI: PromptParle local-ui is vanilla HTML/CSS/JS in powershell/PromptParle/local-ui/index.html (NOT React, NOT Tailwind utility classes like px-3/bg-zinc). Never invent fake unified diffs, class names, or components you did not see in [SSH]/[SSH-PRODUCT]/[ATTACH] evidence.',
+        'HARD BAN — NO FALSE SHIP: Never claim "committed", "pushed", "shipped", or "done" unless evidence shows it. If you cannot mutate files in this channel, say so in one line and give only a complete change grounded in files you actually saw — or one concrete blocker.',
+        'If Tools are ON, local/SSH prep already ran this turn — use that evidence as if you already ran the commands. Images and [ATTACH] this turn are relevant context; act on them.',
         'Do not invent paths, ship-blockers, or missing evidence. PowerShell ExecutionPolicy is not a security boundary (Microsoft).',
-        'Product issues (savings, update, dial, SSH, UI, memory, build) are work to execute — not empathy and not user errands.'
+        'Product issues (savings, update, dial, SSH, UI, activity log, memory, build) are work to execute — not empathy and not user errands.'
     ) -join ' '
 }
 
@@ -2785,7 +2787,7 @@ function Test-PromptParleProductWorkIntent {
     param([string]$Prompt = '')
     $p = if ($null -eq $Prompt) { '' } else { $Prompt }
     if (-not $p.Trim()) { return $false }
-    return [bool]($p -match '(?i)\b(implement|rename|build|ship|version|bump|update client|tarball|git push|local-ui|history label|chat history|fix|bug|feature|ui change|dial|compress|fleet|handoff|promptparle|desktop|moduleversion|release)\b')
+    return [bool]($p -match '(?i)\b(implement|rename|build|ship|version|bump|update client|tarball|git push|local-ui|history label|chat history|fix|bug|feature|ui change|dial|compress|fleet|handoff|promptparle|desktop|moduleversion|release|activity log|sidebar|footer|logging|paste|attachment|image|screenshot|submit|clear after|why aren.?t you|did you|apply|patch|index\.html)\b')
 }
 
 function Get-PromptParleSshProductWorkPack {
@@ -2848,35 +2850,47 @@ fi
         return [pscustomobject]@{ text = ''; notes = @($notes.ToArray()); ok = $false }
     }
 
-    # Pull small high-value files for common desktop UI asks
-    $wantUi = $Prompt -match '(?i)rename|history|label|local-ui|ui|chat title|sidebar'
+    # Pull high-value regions for desktop UI / product asks (never invent Tailwind)
+    $wantUi = $Prompt -match '(?i)rename|history|label|local-ui|ui|chat title|sidebar|activity log|footer|logging|paste|attachment|image|submit|composer|clear after|index\.html|update button|up to date'
     $files = @('HANDOFF.md')
     if ($wantUi) {
-        # index.html is large — fetch only the history section via sed
+        # index.html is large — fetch the REAL regions that match the ask (vanilla HTML, not Tailwind)
         $uiCmd = @'
 set +e
 PP=/home/ubuntu/projects/promptparle
 f="$PP/powershell/PromptParle/local-ui/index.html"
+echo "=== DOCTRINE: local-ui is vanilla HTML/CSS/JS — NO Tailwind, NO React ==="
 if [ -f "$f" ]; then
-  echo "=== FILE local-ui/index.html (history region) ==="
-  # titles + hist list helpers
-  grep -n "hist-\|HIST_\|chatTitle\|titleFromText\|renderHistoryList\|renameChat\|function deleteChat\|function startNewChat" "$f" 2>/dev/null | head -40
-  echo "=== SNIP hist CSS+render (approx) ==="
-  sed -n '176,230p;1689,1760p;2230,2460p' "$f" 2>/dev/null | head -c 12000
+  echo "=== FILE local-ui/index.html (key line index) ==="
+  grep -n "side-foot-stack\|sideActivityLog\|side-legal\|side-activity\|menuActivityLog\|form.addEventListener\|clearComposer\|buildContextFromAttachments\|buildImagesPayload\|attachments = \|updateBtn\|Up to date\|function runUpdate\|function checkVersion\|function setUpdateButtonState\|hist-\|chatTitle\|renderHistoryList" "$f" 2>/dev/null | head -60
+  echo "=== SNIP side-foot + activity log CSS/HTML ==="
+  grep -n "side-foot-stack\|side-activity\|side-legal\|sideActivityLog\|menuActivityLog" "$f" 2>/dev/null | head -30
+  # CSS block for side activity (approx lines 88-180)
+  sed -n '88,180p' "$f" 2>/dev/null | head -c 4000
+  echo "=== SNIP side-foot HTML ==="
+  sed -n '1370,1400p' "$f" 2>/dev/null | head -c 3000
+  echo "=== SNIP submit + attach clear (composer) ==="
+  grep -n "clearComposerAttachments\|buildContextFromAttachments\|form.addEventListener('submit'\|attachments = \[\]\|buildImagesPayload\|ATTACH" "$f" 2>/dev/null | head -40
+  # Last ~200 lines often hold submit handler
+  tail -n 220 "$f" 2>/dev/null | head -c 10000
 fi
+echo "=== VERSION ==="
+grep -E "ModuleVersion" "$PP/powershell/PromptParle/PromptParle.psd1" 2>/dev/null | head -3
 ps1="$PP/powershell/PromptParle/PromptParle.psm1"
 if [ -f "$ps1" ]; then
   echo "=== Get-PromptParleChatSystemPrompt ==="
-  sed -n '/function Get-PromptParleChatSystemPrompt/,/^function /p' "$ps1" 2>/dev/null | head -40
+  sed -n '/function Get-PromptParleChatSystemPrompt/,/^function /p' "$ps1" 2>/dev/null | head -50
 fi
+echo "=== HANDOFF head ==="
+head -n 55 "$PP/HANDOFF.md" 2>/dev/null
 '@
         try {
-            $ru = Invoke-PromptParleSsh -RemoteCommand $uiCmd -TimeoutSec 35 -SkipSessionCwd
+            $ru = Invoke-PromptParleSsh -RemoteCommand $uiCmd -TimeoutSec 45 -SkipSessionCwd
             $ub = [string]$ru.text
             if ($ub -and $ub.Trim().Length -gt 40) {
                 $room = [Math]::Max(400, $MaxChars - $used - 80)
                 if ($ub.Length -gt $room) { $ub = $ub.Substring(0, $room) + "`n…[truncated]" }
-                $parts.Add("[SSH-PRODUCT] Code evidence (auto)`n$ub")
+                $parts.Add("[SSH-PRODUCT] Code evidence (auto — REAL local-ui is vanilla; do NOT invent Tailwind)`n$ub")
                 $used += $ub.Length
                 $notes.Add('ssh-product-code')
             }
@@ -7770,7 +7784,7 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        $rtNote = 'Tools path already ran this turn when enabled. Evidence may include [CONN]/[SSH]/[SSH-PRODUCT]/[MEM]. [MEM] is auto-compacted continuous session memory — treat as known; never ask the user to re-paste prior turns or compact chat. HARD BAN: no numbered user homework / no paste-this-output. Act on evidence; deliver the complete change or one short ship line.'
+                        $rtNote = 'Tools path already ran this turn when enabled. Evidence may include [CONN]/[SSH]/[SSH-PRODUCT]/[MEM]/[ATTACH]/images. [MEM] is auto-compacted continuous session memory — treat as known. HARD BAN: no homework, no invent Tailwind/React for local-ui (vanilla index.html only), no fake unified diffs, no false shipped/committed claims. Act on evidence; if you cannot mutate files, one complete grounded change or one blocker — never a git paste script for the user.'
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Local notes: ' + (($localNotes | Select-Object -First 12) -join ', ') + '.'
                         }
@@ -8112,7 +8126,7 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliRt = 'Tools path already ran. HARD BAN: no numbered user homework / no paste-this-output. Act on [CONN]/[SSH]/[SSH-PRODUCT] evidence.'
+            $cliRt = 'Tools path already ran. HARD BAN: no homework, no invent Tailwind for local-ui, no fake diffs, no false shipped claims. Act on [CONN]/[SSH]/[SSH-PRODUCT]/[ATTACH] evidence.'
             $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = $sendPrompt

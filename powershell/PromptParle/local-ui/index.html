@@ -3157,15 +3157,43 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     function buildContextFromAttachments() {
       const parts = [];
-      attachments.filter(function (a) { return a.kind === 'text'; }).forEach(function (a) {
+      const texts = attachments.filter(function (a) { return a.kind === 'text'; });
+      const imgs = attachments.filter(function (a) { return a.kind === 'image'; });
+      // Explicit relevance header so the model treats composer attachments as live evidence
+      if (texts.length || imgs.length) {
+        const names = attachments.map(function (a) {
+          return (a.name || a.kind) + (a.kind === 'image' ? ' [image]' : ' [text]');
+        });
+        parts.push(
+          '[ATTACH] Composer attachments for THIS turn (relevant context — act on them; do not ignore):\n' +
+          names.map(function (n, i) { return '  ' + (i + 1) + '. ' + n; }).join('\n')
+        );
+      }
+      texts.forEach(function (a) {
         parts.push('===== FILE: ' + a.name + ' =====\n' + a.text);
       });
+      if (imgs.length && !texts.length) {
+        parts.push('[ATTACH] ' + imgs.length + ' image(s) attached to this message — treat as primary evidence for the user ask.');
+      }
       return parts.join('\n\n');
     }
     function buildImagesPayload() {
       return attachments.filter(function (a) { return a.kind === 'image'; }).map(function (a) {
         return { media_type: a.mediaType, data_base64: a.dataBase64, name: a.name };
       });
+    }
+    /** Clear composer chips after submit (images + text files). Previews revoked. */
+    function clearComposerAttachments() {
+      try {
+        attachments.forEach(function (a) {
+          if (a && a.previewUrl) {
+            try { URL.revokeObjectURL(a.previewUrl); } catch (e) { /* ignore */ }
+          }
+        });
+      } catch (e) { /* ignore */ }
+      attachments = [];
+      try { renderChips(); } catch (e) { /* ignore */ }
+      try { refreshAttachHint(); } catch (e) { /* ignore */ }
     }
     /**
      * Prior turns for continuous [MEM] auto-compact.
@@ -5429,10 +5457,21 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return;
       }
       if (!prompt && (context || images.length)) {
-        prompt = images.length && !context
-          ? 'Describe this image and call out anything important or risky.'
-          : 'Review the attached material and give the most useful findings first.';
+        // Attachments alone = act on them (screenshots of UI = fix from evidence)
+        prompt = images.length && (!context || context.indexOf('===== FILE:') < 0)
+          ? 'Act on this image as primary evidence. If it shows a product/UI bug or request, implement or ship the fix from evidence — do not invent Tailwind/React. If it is not actionable, call out the important findings first.'
+          : 'Review the attached material as relevant context for this turn and do the most useful work first (fix, implement, or answer from evidence).';
         addMsg('sys', 'Using default prompt: “' + prompt + '”');
+      } else if (prompt && (context || images.length)) {
+        // User typed a question AND attached — make relevance explicit in the prompt text
+        var attBits = [];
+        if (images.length) attBits.push(images.length + ' image(s)');
+        var textN = attachments.filter(function (a) { return a.kind === 'text'; }).length;
+        if (textN) attBits.push(textN + ' file(s)');
+        if (attBits.length) {
+          prompt = prompt + '\n\n[ATTACHED THIS TURN: ' + attBits.join(' + ') +
+            ' — treat as relevant evidence for this ask; act on them.]';
+        }
       }
       if (!providerEl.value) {
         addMsg('sys', 'No AI provider selected.', null, true);
@@ -5448,10 +5487,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const thumbUrls = images.map(function (img) {
         return 'data:' + img.media_type + ';base64,' + img.data_base64;
       });
+      const attachCount = attachments.length;
       const userLabel = prompt +
-        (attachments.length ? '\n\n[' + attachments.length + ' attachment(s)]' : '');
+        (attachCount ? '\n\n[' + attachCount + ' attachment(s)]' : '');
       addMsg('user', userLabel, null, false, thumbUrls);
       inputEl.value = '';
+      // Clear composer chips immediately on submit (payload already captured)
+      clearComposerAttachments();
       sendBtn.disabled = true;
       sendBtn.textContent = 'Working…';
 
