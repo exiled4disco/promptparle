@@ -31,15 +31,11 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.5.1: Uninstall-PromptParle; auto-free busy ports on start
 0.5.0: Installer prompts for API key and finishes setup
 0.4.2: Fix stuck local server - Ctrl+C, Stop button, Stop-PromptParleLocalServer
 0.4.1: ASCII/BOM fix for Windows PS 5.1 parse errors
 0.4.0: pp starts LOCAL chat UI on 127.0.0.1 (not cloud HTML)
-0.3.0: pp opened cloud browser chat; -Cli for terminal
-0.2.0: Start-PromptParle interactive chat (aliases: pp, promptparle)
-0.1.2: Install always overwrites module
-0.1.1: Fix PowerShell 5.1 StrictMode crash ($IsWindows undefined)
-0.1.0: Initial MVP client
 '@
         }
     }
