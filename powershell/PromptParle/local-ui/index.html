@@ -155,33 +155,20 @@
       border: 1px solid var(--border) !important;
       font-weight: 600 !important;
     }
-    /* Update available: same size pill, soft red glow (not a fat solid button) */
+    /* Update available: keep same pill size — just make the label red */
     .update-btn.needs-update {
-      background: rgba(248, 113, 113, 0.12) !important;
-      color: #fecaca !important;
-      border: 1px solid rgba(248, 113, 113, 0.55) !important;
+      background: #0a0e16 !important;
+      color: #f04444 !important;
+      border: 1px solid var(--border) !important;
       font-weight: 700 !important;
-      box-shadow:
-        0 0 0 1px rgba(248, 113, 113, 0.2),
-        0 0 14px rgba(248, 113, 113, 0.45),
-        inset 0 0 12px rgba(248, 113, 113, 0.08);
-      animation: pp-update-glow 2s ease-in-out infinite;
+      box-shadow: none !important;
+      animation: none !important;
     }
-    @keyframes pp-update-glow {
-      0%, 100% {
-        box-shadow:
-          0 0 0 1px rgba(248, 113, 113, 0.22),
-          0 0 10px rgba(248, 113, 113, 0.35),
-          inset 0 0 8px rgba(248, 113, 113, 0.06);
-      }
-      50% {
-        box-shadow:
-          0 0 0 1px rgba(248, 113, 113, 0.4),
-          0 0 20px rgba(248, 113, 113, 0.55),
-          inset 0 0 14px rgba(248, 113, 113, 0.12);
-      }
+    .update-btn.needs-update:hover {
+      color: #ff6b6b !important;
+      border-color: rgba(240, 68, 68, 0.55) !important;
     }
-    .update-btn:disabled { opacity: .55; cursor: not-allowed; animation: none !important; }
+    .update-btn:disabled { opacity: .55; cursor: not-allowed; }
     .ver-line { font-size: .7rem; color: var(--dim); line-height: 1.25; }
     .hist-head {
       display: flex; align-items: center; justify-content: space-between; gap: .35rem;
