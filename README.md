@@ -101,30 +101,19 @@ Authenticated with the browser session cookie:
 Requires [Git for Windows](https://git-scm.com/download/win).
 
 ```powershell
-# Clone + install into your user Modules path
+# Clone/update + install + prompt for API key + optional start
 irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
 ```
 
-Or clone manually:
+Or from a clone:
 
 ```powershell
-git clone https://github.com/exiled4disco/promptparle.git $env:USERPROFILE\src\promptparle
 cd $env:USERPROFILE\src\promptparle
-.\powershell\Install-PromptParle.ps1 -Force
+git pull
+.\powershell\Install-PromptParle.ps1
 ```
 
-### Configure & chat
-
-```powershell
-Import-Module PromptParle -Force
-
-# Portal: https://promptparle.com → Providers (add AI key) → API Keys (create pp_live_…)
-Set-PromptParleApiKey -ApiKey 'pp_live_xxxxx'
-
-# Friendly interactive UI (recommended)
-pp
-# picks your configured provider, then:  you> type normally
-```
+The installer asks for your desktop `pp_live_` key (or opens the portal to create one), verifies it, then offers to start local chat (`pp`).
 
 Scripted / automation (optional):
 

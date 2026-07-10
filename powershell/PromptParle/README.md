@@ -11,17 +11,19 @@ Client for the [PromptParle](https://promptparle.com) API - optimize context, ma
 Requires [Git for Windows](https://git-scm.com/download/win).
 
 ```powershell
-# One-liner: clone to %USERPROFILE%\src\promptparle and install module
+# Clone/update + install + API key prompt + optional start
 irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
 ```
 
 Or:
 
 ```powershell
-git clone https://github.com/exiled4disco/promptparle.git $env:USERPROFILE\src\promptparle
 cd $env:USERPROFILE\src\promptparle
-.\powershell\Install-PromptParle.ps1 -Force
+git pull
+.\powershell\Install-PromptParle.ps1
 ```
+
+Installer flow: install module -> prompt for `pp_live_` key (or open portal) -> verify -> offer `pp`.
 
 ### Option B - copy into your modules path
 
