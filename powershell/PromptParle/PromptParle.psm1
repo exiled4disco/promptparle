@@ -12,9 +12,20 @@
 
 Set-StrictMode -Version Latest
 
+# PS 5.1 has no automatic $IsWindows / $IsLinux / $IsMacOS (added in PowerShell 6+)
+# StrictMode treats reading an unset automatic variable as a terminating error.
+$script:PromptParleIsWindows = $false
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $script:PromptParleIsWindows = $true
+} elseif ($env:OS -match 'Windows') {
+    $script:PromptParleIsWindows = $true
+} elseif (Get-Variable -Name IsWindows -Scope Global -ErrorAction SilentlyContinue) {
+    $script:PromptParleIsWindows = [bool]$IsWindows
+}
+
 $script:PromptParleConfigDir = if ($env:PROMPTPARLE_CONFIG_DIR) {
     $env:PROMPTPARLE_CONFIG_DIR
-} elseif ($IsWindows -or $env:OS -match 'Windows') {
+} elseif ($script:PromptParleIsWindows) {
     Join-Path $env:USERPROFILE '.promptparle'
 } else {
     Join-Path $HOME '.promptparle'
@@ -76,7 +87,7 @@ function Save-PromptParleConfigInternal {
     $obj | ConvertTo-Json | Set-Content -LiteralPath $script:PromptParleConfigPath -Encoding UTF8
 
     # Restrict permissions on Unix-like systems
-    if (-not ($IsWindows -or $env:OS -match 'Windows')) {
+    if (-not $script:PromptParleIsWindows) {
         try { chmod 600 $script:PromptParleConfigPath 2>$null } catch { }
     }
 }

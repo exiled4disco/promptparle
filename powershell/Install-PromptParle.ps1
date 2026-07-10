@@ -25,11 +25,9 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
     $userModules = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell/Modules'
 }
 
-# Non-Windows pwsh
+# Non-Windows pwsh (PS 5.1 has no $IsLinux/$IsMacOS)
 if (-not (Test-Path ([Environment]::GetFolderPath('MyDocuments')))) {
-    if ($IsLinux -or $IsMacOS) {
-        $userModules = Join-Path $HOME '.local/share/powershell/Modules'
-    }
+    $userModules = Join-Path $HOME '.local/share/powershell/Modules'
 }
 
 $dest = Join-Path $userModules 'PromptParle'
