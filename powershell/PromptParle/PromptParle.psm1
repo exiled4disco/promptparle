@@ -1159,23 +1159,60 @@ function Get-PromptParleChatSystemPrompt {
 function Get-PromptParleTurnKind {
     <#
     .SYNOPSIS
-      Coarse turn kind for prep depth — not a persona/agent.
+      Prep-depth hint only — NOT "does the model understand English".
+      The model already understands "lets do it" / "just get it done".
+      We only classify so prep pulls enough code / forces apply directive.
       question | implement | chat
     #>
-    param([string]$Prompt = '')
+    param(
+        [string]$Prompt = '',
+        [object[]]$History = @()
+    )
     $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
     if (-not $p) { return 'chat' }
-    # Explicit go-ahead / implement (includes "lets do it", "just get it done")
-    if ($p -match '(?i)\b(implement|build|ship|fix|add|create|patch|change|rename|bump|deploy|wire|refactor|apply|get it done|make it so)\b' `
-        -or $p -match '(?i)\b(lets? do (it|this|that)|do it|do this|just do|go ahead|ship it|make the change|get it implemented)\b' `
-        -or $p -match '(?i)^\s*(yes[,.]?\s*)?(do it|lets? go|proceed)\s*[.!]?\s*$') {
-        return 'implement'
-    }
-    if ($p -match '(?i)^\s*(where|what|why|how|when|who|which|is |are |can |does |do |did |should |could |would |read |show |explain |list |find )\b' `
-        -or $p -match '\?\s*$' `
-        -or $p -match '(?i)\b(where is|is it in|in the handoff|look at the handoff|what does|tell me)\b') {
-        return 'question'
-    }
+
+    # Pure questions first (but not "how do I implement" style — those still need code)
+    $looksQuestion = (
+        $p -match '\?\s*$' `
+        -or $p -match '(?i)^\s*(where|what|why|when|who|which|is |are |can |does |did |should |could |would |read |show |explain |list |find |tell me)\b' `
+        -or $p -match '(?i)\b(where is|is it in|in the handoff|look at the handoff|what does)\b'
+    ) -and ($p -notmatch '(?i)\b(implement|fix|add|build|change|do it|get it done)\b')
+
+    # Natural go-ahead / act language (same phrases a human assistant understands)
+    $looksAct = (
+        $p -match '(?i)\b(implement|build|ship|fix|add|create|patch|change|rename|bump|deploy|wire|refactor|apply)\b' `
+        -or $p -match '(?i)\b(lets? do|do it|do this|do that|just do|go ahead|ship it|make (the )?change|get it (done|implemented)|make it so|stop asking|wasting tokens|dont ask|don''t ask|enough talking|just get)\b' `
+        -or $p -match '(?i)^\s*(yes|yep|yeah|ok|okay|sure|please|proceed|continue|same|go)\b' `
+        -or $p -match '(?i)\b(i leave .{0,40} to you|best .{0,20} option|you (choose|decide|pick))\b'
+    )
+
+    if ($looksAct) { return 'implement' }
+
+    # Sticky: open work in recent history + any non-pure-question follow-up = implement depth
+    # (so "yes" / "where is it" after a feature ask still gets code evidence + directive when act-like)
+    try {
+        if ($History -and $History.Count -gt 0) {
+            $recent = New-Object System.Text.StringBuilder
+            $n = 0
+            for ($i = $History.Count - 1; $i -ge 0 -and $n -lt 8; $i--) {
+                $hr = [string](Get-PromptParleProp $History[$i] 'role' 'user')
+                $ht = [string](Get-PromptParleProp $History[$i] 'text' (Get-PromptParleProp $History[$i] 'content' ''))
+                if ($hr -match '(?i)user|human') {
+                    [void]$recent.AppendLine($ht)
+                    $n++
+                }
+            }
+            $histText = $recent.ToString()
+            $openWork = $histText -match '(?i)\b(implement|add |build |fix |network security|cidr|allowlist|feature|settings|portal|ip/?)\b'
+            if ($openWork -and -not $looksQuestion) { return 'implement' }
+            if ($openWork -and $looksQuestion -and $p -match '(?i)\b(where did you|dont see|don''t see|not in|missing|ui|interface|settings)\b') {
+                # User checking for landed work — still implement depth so we can finish, not re-plan
+                return 'implement'
+            }
+        }
+    } catch { }
+
+    if ($looksQuestion) { return 'question' }
     return 'chat'
 }
 
@@ -3237,39 +3274,19 @@ function Invoke-PromptParleAgentLocalPrep {
     }
     $tools = New-Object System.Collections.Generic.List[string]
 
-    # Turn kind drives prep depth (architecture — not a persona)
+    # Prep depth only — model already understands natural language; we must not underrun evidence
     $turnKind = 'chat'
-    try { $turnKind = Get-PromptParleTurnKind -Prompt $pr } catch { $turnKind = 'chat' }
-    # Sticky implement: if recent user turns already asked to build/ship and this is a short go-ahead, force implement
-    try {
-        if ($turnKind -ne 'implement' -and $History -and $History.Count -gt 0) {
-            $recentUser = ''
-            $nLook = 0
-            for ($i = $History.Count - 1; $i -ge 0 -and $nLook -lt 6; $i--) {
-                $hr = [string](Get-PromptParleProp $History[$i] 'role' 'user')
-                $ht = [string](Get-PromptParleProp $History[$i] 'text' (Get-PromptParleProp $History[$i] 'content' ''))
-                if ($hr -match '(?i)user|human') {
-                    $recentUser = $ht + "`n" + $recentUser
-                    $nLook++
-                }
-            }
-            $blob = ($recentUser + "`n" + $pr)
-            if ($blob -match '(?i)\b(implement|add network|ip/?cidr|allowlist|settings|lets? do|get it done|just get it)\b' `
-                -and $pr -match '(?i)^(yes|ok|okay|do it|lets?|go|proceed|please|same|continue|just|get it|wasting|stop asking)') {
-                $turnKind = 'implement'
-                $notes.Add('turn:sticky-implement')
-            }
-        }
-    } catch { }
+    try { $turnKind = Get-PromptParleTurnKind -Prompt $pr -History $History } catch { $turnKind = 'chat' }
     $notes.Add("turn:$turnKind")
 
-    # Hard implement directive on the user prompt (cheap, kills permission loops)
+    # Hard implement directive — model understands "do it"; this forces the *channel* (apply blocks) not the English
     if ($turnKind -eq 'implement') {
         $directive = @(
             '[CLIENT DIRECTIVE — implement turn]',
-            'User already wants the work done. Do NOT ask questions or permission.',
-            'Emit complete file writes as fenced blocks: ```apply path=relative/from/source_root',
-            'Full file body, then closing ```. Desktop applies over SSH. No homework lists. No "say the word".'
+            'The user is speaking plain English to get work done (same as any normal AI client).',
+            'Do NOT ask questions or permission. Do NOT re-plan. Do NOT dump homework.',
+            'Land changes now: ```apply path=relative/from/source_root with FULL file contents; desktop writes over SSH.',
+            'If something is already decided in [MEM]/prior turns, proceed with the secure default.'
         ) -join ' '
         if ($pr -notmatch '\[CLIENT DIRECTIVE') {
             $pr = $pr + "`n`n" + $directive
