@@ -35,6 +35,22 @@ $script:DefaultBaseUrl = 'https://promptparle.com'
 
 #region Private helpers
 
+function Get-PromptParleProp {
+    <#
+    .SYNOPSIS
+      Read a note property under Set-StrictMode (missing props must not throw).
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory)][string]$Name,
+        $Default = $null
+    )
+    if ($null -eq $Object) { return $Default }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $Default }
+    return $prop.Value
+}
+
 function Get-PromptParleConfigInternal {
     [CmdletBinding()]
     param()
@@ -163,14 +179,15 @@ function Write-PromptParleMetadata {
 
     if (-not $Metadata) { return }
 
-    $orig = $Metadata.original_tokens
-    $opt  = $Metadata.optimized_tokens
-    $pct  = $Metadata.token_reduction_percent
-    $prov = $Metadata.provider
-    $model = $Metadata.model
-    $prof = $Metadata.optimization_profile
+    $orig = Get-PromptParleProp $Metadata 'original_tokens'
+    $opt  = Get-PromptParleProp $Metadata 'optimized_tokens'
+    $pct  = Get-PromptParleProp $Metadata 'token_reduction_percent'
+    $prov = Get-PromptParleProp $Metadata 'provider'
+    $model = Get-PromptParleProp $Metadata 'model'
+    $prof = Get-PromptParleProp $Metadata 'optimization_profile'
+    $expandedFlag = Get-PromptParleProp $Metadata 'expanded'
     $expanded = $false
-    if ($null -ne $Metadata.expanded) { $expanded = [bool]$Metadata.expanded }
+    if ($null -ne $expandedFlag) { $expanded = [bool]$expandedFlag }
     elseif ($null -ne $orig -and $null -ne $opt -and $opt -gt $orig) { $expanded = $true }
 
     Write-Host ''
@@ -187,7 +204,7 @@ function Write-PromptParleMetadata {
     if ($prov)            { Write-Host ("  Provider        : {0}" -f $prov) }
     if ($model)           { Write-Host ("  Model           : {0}" -f $model) }
     if ($prof)            { Write-Host ("  Profile         : {0}" -f $prof) }
-    if ($Metadata.secrets_masked) {
+    if (Get-PromptParleProp $Metadata 'secrets_masked') {
         Write-Host '  Secrets masked  : yes' -ForegroundColor Yellow
     }
     Write-Host ''
@@ -544,7 +561,7 @@ function Invoke-PromptParle {
             return $result
         }
 
-        $meta = $result.metadata
+        $meta = Get-PromptParleProp $result 'metadata'
         if (-not $Quiet) {
             Write-PromptParleMetadata -Metadata $meta
         }
@@ -554,7 +571,7 @@ function Invoke-PromptParle {
                 Write-Host 'Optimized prompt:' -ForegroundColor Cyan
             }
             return [pscustomobject]@{
-                OptimizedPrompt = $result.optimized_prompt
+                OptimizedPrompt = Get-PromptParleProp $result 'optimized_prompt'
                 Metadata        = $meta
                 Provider        = $Provider
                 Profile         = $Profile
@@ -566,14 +583,14 @@ function Invoke-PromptParle {
             Write-Host 'AI Response:' -ForegroundColor Cyan
         }
 
-        $responseText = [string]$result.response
+        $responseText = [string](Get-PromptParleProp $result 'response' '')
         # Also emit response text for simple capture: $out = Invoke-PromptParle ... ; $out.Response
         [pscustomobject]@{
             Response = $responseText
             Metadata = $meta
-            Provider = if ($meta.provider) { $meta.provider } else { $Provider }
-            Model    = if ($meta.model) { $meta.model } else { $Model }
-            Profile  = if ($meta.optimization_profile) { $meta.optimization_profile } else { $Profile }
+            Provider = if (Get-PromptParleProp $meta 'provider') { Get-PromptParleProp $meta 'provider' } else { $Provider }
+            Model    = if (Get-PromptParleProp $meta 'model') { Get-PromptParleProp $meta 'model' } else { $Model }
+            Profile  = if (Get-PromptParleProp $meta 'optimization_profile') { Get-PromptParleProp $meta 'optimization_profile' } else { $Profile }
             OptimizeOnly = $false
         }
     }
@@ -1059,13 +1076,19 @@ function Start-PromptParleLocalServer {
                     try {
                         if ([string]::IsNullOrWhiteSpace($rawBody)) { throw 'Empty request body' }
                         $body = $rawBody | ConvertFrom-Json
-                        $prompt = [string]$body.prompt
+                        # StrictMode: never touch $body.foo if foo may be absent
+                        $prompt = [string](Get-PromptParleProp $body 'prompt' '')
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
-                        $provider = if ($body.provider) { [string]$body.provider } else { 'openai' }
-                        $profile = if ($body.profile) { [string]$body.profile } else { 'general' }
-                        $context = if ($body.context) { [string]$body.context } else { $null }
+                        $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
+                        if (-not $provider) { $provider = 'openai' }
+                        $profile = [string](Get-PromptParleProp $body 'profile' 'general')
+                        if (-not $profile) { $profile = 'general' }
+                        $context = Get-PromptParleProp $body 'context' $null
+                        if ($null -ne $context) { $context = [string]$context }
                         $optOnly = $false
-                        if ($body.optimize_only -eq $true -or $body.optimizeOnly -eq $true) { $optOnly = $true }
+                        $optFlag = Get-PromptParleProp $body 'optimize_only' $null
+                        if ($null -eq $optFlag) { $optFlag = Get-PromptParleProp $body 'optimizeOnly' $null }
+                        if ($optFlag -eq $true) { $optOnly = $true }
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
                         Write-Host ("  chat: provider={0} profile={1} optimize_only={2} prompt={3}c context={4}c" -f `
