@@ -1,6 +1,9 @@
 /**
  * One-step agent pass-through: messages + tools → provider → assistant message.
  * No prompt optimization. Desktop owns multi-round tool loop.
+ *
+ * Portal usage history still stores the request context window (messages + tools)
+ * so Before/After is readable — pass-through means After ≈ Before with a header.
  */
 
 import {
@@ -19,6 +22,78 @@ import type {
 import type { ProviderId } from "./constants";
 import { recordPromptRequest } from "./prompt-request";
 import { estimateTokens } from "./tokens";
+
+/** Serialize agent messages (+ optional tools) for portal usage Before/After. */
+export function formatAgentContextWindow(
+  messages: AgentMessage[],
+  tools?: AgentToolDefinition[] | null,
+  opts?: { mode?: "request" | "sent"; maxChars?: number }
+): string {
+  const mode = opts?.mode || "request";
+  const maxChars = opts?.maxChars ?? 200_000;
+  const parts: string[] = [];
+
+  if (mode === "sent") {
+    parts.push(
+      "# Sent to provider (agent pass-through — not optimized)",
+      "Architecture: 0.22-native-agent. Desktop owns the multi-round tool loop; this row is one model step."
+    );
+  } else {
+    parts.push(
+      "# Agent request context window",
+      "Architecture: 0.22-native-agent. Full messages for this step (not a stub)."
+    );
+  }
+
+  if (tools && tools.length > 0) {
+    parts.push(`## Tools available (${tools.length})`);
+    const limit = 48;
+    for (const t of tools.slice(0, limit)) {
+      const name = t.function?.name || t.type || "tool";
+      const desc = (t.function?.description || "").replace(/\s+/g, " ").trim();
+      const short = desc.length > 140 ? desc.slice(0, 137) + "…" : desc;
+      parts.push(short ? `- ${name}: ${short}` : `- ${name}`);
+    }
+    if (tools.length > limit) {
+      parts.push(`- … +${tools.length - limit} more tools`);
+    }
+  }
+
+  parts.push(`## Messages (${messages.length})`);
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const role = m.role || "unknown";
+    let head = `### [${i + 1}] ${role}`;
+    if (m.name) head += ` name=${m.name}`;
+    if (m.tool_call_id) head += ` tool_call_id=${m.tool_call_id}`;
+    parts.push(head);
+
+    if (m.content != null && String(m.content).length > 0) {
+      parts.push(String(m.content));
+    } else if (!m.tool_calls?.length) {
+      parts.push("(empty content)");
+    }
+
+    if (m.tool_calls && m.tool_calls.length > 0) {
+      for (const tc of m.tool_calls) {
+        const args = tc.function?.arguments || "";
+        const argsShow =
+          args.length > 4000 ? args.slice(0, 4000) + "\n…[tool args truncated]" : args;
+        parts.push(
+          `tool_call id=${tc.id} name=${tc.function?.name || "?"}\n${argsShow}`
+        );
+      }
+    }
+  }
+
+  let text = parts.join("\n\n");
+  if (text.length > maxChars) {
+    text =
+      text.slice(0, Math.max(0, maxChars - 40)) +
+      "\n\n…[context window truncated for storage prep]";
+  }
+  return text;
+}
 
 export type RunAgentInput = {
   userId: string;
@@ -105,6 +180,14 @@ export async function runAgentStep(
       .join("\n")
   );
 
+  // Portal usage Before/After: real context window (was stubbed as [agent-step] in 0.22.0)
+  const contextWindow = formatAgentContextWindow(input.messages, input.tools, {
+    mode: "request",
+  });
+  const sentWindow = formatAgentContextWindow(input.messages, input.tools, {
+    mode: "sent",
+  });
+
   let result: AgentChatResponse;
   try {
     result = await completeAgentChat(providerId, {
@@ -131,9 +214,9 @@ export async function runAgentStep(
         originalTokens: estIn,
         optimizedTokens: estIn,
         status: "error",
-        prompt: "[agent-step]",
+        prompt: contextWindow,
         context: null,
-        optimizedPrompt: "[agent-pass-through]",
+        optimizedPrompt: sentWindow,
         errorMessage: msg,
       });
     } catch {
@@ -145,6 +228,32 @@ export async function runAgentStep(
   const inTok = result.rawUsage?.inputTokens ?? estIn;
   const outTok = result.rawUsage?.outputTokens ?? estimateTokens(result.message.content || "");
 
+  // Append assistant step outcome to After pane so the window is complete for that round
+  let afterText = sentWindow;
+  try {
+    const asst = result.message;
+    const bits: string[] = [
+      afterText,
+      "",
+      "## Assistant step result",
+      `finish_reason: ${result.finishReason || "unknown"}`,
+    ];
+    if (asst.content) bits.push(String(asst.content));
+    if (asst.tool_calls?.length) {
+      for (const tc of asst.tool_calls) {
+        const args = tc.function?.arguments || "";
+        const argsShow =
+          args.length > 4000 ? args.slice(0, 4000) + "\n…[args truncated]" : args;
+        bits.push(
+          `tool_call id=${tc.id} name=${tc.function?.name || "?"}\n${argsShow}`
+        );
+      }
+    }
+    afterText = bits.join("\n");
+  } catch {
+    /* keep sentWindow */
+  }
+
   try {
     await recordPromptRequest({
       userId: input.userId,
@@ -155,11 +264,11 @@ export async function runAgentStep(
       model: result.model,
       optimizationProfile: "agent-pass-through",
       originalTokens: inTok,
-      optimizedTokens: inTok,
+      optimizedTokens: inTok, // pass-through: no token reduction claimed
       status: "ok",
-      prompt: "[agent-step]",
+      prompt: contextWindow,
       context: null,
-      optimizedPrompt: "[agent-pass-through — no optimize]",
+      optimizedPrompt: afterText,
     });
   } catch {
     /* ignore usage write failures */
