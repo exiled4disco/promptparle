@@ -1,5 +1,6 @@
 import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
 import { normalizeAdapterImages } from "./types";
+import { combineSystemMessage } from "../system-framing";
 
 /** xAI Grok — OpenAI-compatible chat completions API (vision when images present) */
 export const grokAdapter: ProviderAdapter = {
@@ -27,6 +28,14 @@ export const grokAdapter: ProviderAdapter = {
       ];
     }
 
+    const messages: Array<{ role: string; content: typeof content | string }> =
+      [];
+    const system = combineSystemMessage(req.system || "", req.runtime);
+    if (system) {
+      messages.push({ role: "system", content: system });
+    }
+    messages.push({ role: "user", content });
+
     const res = await fetch("https://api.x.ai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -35,12 +44,7 @@ export const grokAdapter: ProviderAdapter = {
       },
       body: JSON.stringify({
         model: req.model,
-        messages: [
-          {
-            role: "user",
-            content,
-          },
-        ],
+        messages,
         temperature: req.temperature ?? 0.2,
         max_tokens: req.maxOutputTokens ?? 4096,
       }),
@@ -60,13 +64,17 @@ export const grokAdapter: ProviderAdapter = {
       data?.choices?.[0]?.text ||
       "";
 
+    const usage = data?.usage || {};
     return {
       text,
       model: data?.model || req.model,
       providerRequestId: data?.id,
       rawUsage: {
-        inputTokens: data?.usage?.prompt_tokens,
-        outputTokens: data?.usage?.completion_tokens,
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        cacheReadTokens:
+          usage.prompt_tokens_details?.cached_tokens ??
+          usage.cached_tokens,
       },
     };
   },

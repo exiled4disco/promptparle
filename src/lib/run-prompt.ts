@@ -12,6 +12,7 @@ import { normalizeAdapterImages } from "./adapters/types";
 import { recordPromptRequest } from "./prompt-request";
 import type { ProviderId } from "./constants";
 import { normalizeCompressionLevel } from "./compression-level";
+import { resolveSystemAndUser } from "./system-framing";
 
 export type RunPromptInput = {
   userId: string;
@@ -22,6 +23,10 @@ export type RunPromptInput = {
   model?: string;
   prompt: string;
   context?: string;
+  /** Native system brief (0.14.12+). Not optimized; not stored in Before/After. */
+  system?: string;
+  /** Per-turn runtime note (tools/prep). Not optimized; not stored. */
+  runtime?: string;
   profile?: string;
   /** 1 max fidelity … 5 max savings */
   compressionLevel?: number;
@@ -53,6 +58,9 @@ export type RunPromptSuccess = {
     strategy?: string;
     signals?: Record<string, number | string | boolean>;
     provider_request_id?: string;
+    system_role?: boolean;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
   };
 };
 
@@ -92,8 +100,15 @@ export async function runOptimizedPrompt(
   const model = input.model || defaultModelFor(providerId);
   const images = normalizeAdapterImages(input.images);
 
-  const optimized = optimizePrompt({
+  // Separate product framing from user content (native system or baked [SYS] tags)
+  const framed = resolveSystemAndUser({
     prompt: input.prompt,
+    system: input.system,
+    runtime: input.runtime,
+  });
+
+  const optimized = optimizePrompt({
+    prompt: framed.userPrompt,
     context: input.context,
     profile,
     maxTokens: input.maxTokens,
@@ -102,6 +117,13 @@ export async function runOptimizedPrompt(
   });
 
   const notes = [...optimized.notes];
+  if (framed.system || framed.runtime) {
+    notes.push(
+      framed.system
+        ? "system role (native) — product brief not in user payload / usage Before"
+        : "system framing stripped for storage"
+    );
+  }
   if (images.length > 0) {
     const hasImageNote = notes.some((n) => /image/i.test(n));
     if (!hasImageNote) {
@@ -131,8 +153,10 @@ export async function runOptimizedPrompt(
     image_count: images.length,
     strategy: optimized.strategy,
     signals: optimized.signals,
+    system_role: Boolean(framed.system || framed.runtime),
   };
 
+  // Usage Before/After = user content only (never product [SYS] essay)
   const recordBase = {
     userId: input.userId,
     plan: input.plan,
@@ -143,7 +167,7 @@ export async function runOptimizedPrompt(
     optimizationProfile: profile,
     originalTokens: optimized.originalTokens,
     optimizedTokens: optimized.optimizedTokens,
-    prompt: input.prompt,
+    prompt: framed.storagePrompt,
     context: input.context,
     optimizedPrompt: optimized.optimizedPrompt,
   };
@@ -173,6 +197,8 @@ export async function runOptimizedPrompt(
       apiKey: cred.apiKey,
       model,
       prompt: optimized.optimizedPrompt,
+      system: framed.system || undefined,
+      runtime: framed.runtime || undefined,
       images: images.length > 0 ? images : undefined,
     });
     const usedModel = result.model || model;
@@ -190,6 +216,8 @@ export async function runOptimizedPrompt(
         ...baseMeta,
         model: usedModel,
         provider_request_id: result.providerRequestId,
+        cache_read_tokens: result.rawUsage?.cacheReadTokens,
+        cache_write_tokens: result.rawUsage?.cacheWriteTokens,
       },
     };
   } catch (providerErr) {

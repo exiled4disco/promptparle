@@ -1,5 +1,6 @@
 import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
 import { normalizeAdapterImages } from "./types";
+import { combineSystemMessage } from "../system-framing";
 
 export const geminiAdapter: ProviderAdapter = {
   id: "gemini",
@@ -24,21 +25,30 @@ export const geminiAdapter: ProviderAdapter = {
       });
     }
 
+    const payload: Record<string, unknown> = {
+      contents: [
+        {
+          role: "user",
+          parts,
+        },
+      ],
+      generationConfig: {
+        temperature: req.temperature ?? 0.2,
+        maxOutputTokens: req.maxOutputTokens ?? 4096,
+      },
+    };
+
+    const system = combineSystemMessage(req.system || "", req.runtime);
+    if (system) {
+      payload.systemInstruction = {
+        parts: [{ text: system }],
+      };
+    }
+
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts,
-          },
-        ],
-        generationConfig: {
-          temperature: req.temperature ?? 0.2,
-          maxOutputTokens: req.maxOutputTokens ?? 4096,
-        },
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -61,6 +71,7 @@ export const geminiAdapter: ProviderAdapter = {
       rawUsage: {
         inputTokens: data?.usageMetadata?.promptTokenCount,
         outputTokens: data?.usageMetadata?.candidatesTokenCount,
+        cacheReadTokens: data?.usageMetadata?.cachedContentTokenCount,
       },
     };
   },

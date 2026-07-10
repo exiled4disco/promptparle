@@ -143,21 +143,8 @@
       background: #ff2d2d;
       box-shadow: 0 0 0 2px rgba(255, 45, 45, 0.2);
     }
-    .side-activity-badge {
-      display: none;
-      min-width: 1.15rem;
-      height: 1.15rem;
-      padding: 0 0.28rem;
-      border-radius: 999px;
-      background: #ff2d2d;
-      color: #fff;
-      font-size: 0.65rem;
-      font-weight: 700;
-      line-height: 1.15rem;
-      text-align: center;
-      flex: 0 0 auto;
-    }
-    .side-activity.has-ops .side-activity-badge { display: inline-block; }
+    /* Numeric badge removed 0.14.12 — has-ops red dot is enough */
+    .side-activity-badge { display: none !important; }
     .side-legal {
       flex: 0 0 auto;
       padding: 0.35rem 0.2rem 0.1rem;
@@ -571,10 +558,76 @@
     }
     .row { display: flex; gap: .55rem; align-items: flex-end; }
     .row textarea {
-      min-height: 64px; max-height: 120px; flex: 1; resize: vertical;
-      font-family: inherit; font-size: .92rem;
+      /* ~10 rows at default line-height — more room to think/type */
+      min-height: 11.5rem; max-height: 22rem; flex: 1; resize: vertical;
+      font-family: inherit; font-size: .92rem; line-height: 1.45;
       background: #0a0e16; color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; padding: .55rem .65rem;
+    }
+    /* Local work-thinking bubble — client-only stages, zero API tokens */
+    .msg.thinking {
+      background: #0d1524;
+      border: 1px solid rgba(91, 140, 255, 0.28);
+      color: var(--muted);
+      font-size: .88rem;
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+    }
+    .msg.thinking .think-title {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      color: var(--text);
+      font-weight: 600;
+      font-size: .9rem;
+    }
+    .msg.thinking .think-dots::after {
+      content: '';
+      display: inline-block;
+      width: 1.1em;
+      animation: think-dots 1.2s steps(4, end) infinite;
+    }
+    @keyframes think-dots {
+      0% { content: ''; }
+      25% { content: '.'; }
+      50% { content: '..'; }
+      75% { content: '...'; }
+    }
+    .msg.thinking .think-stage {
+      color: var(--accent);
+      font-size: .82rem;
+    }
+    .msg.thinking .think-note {
+      font-size: .72rem;
+      color: var(--dim);
+    }
+    .msg.thinking .think-steps {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: .15rem;
+    }
+    .msg.thinking .think-steps li {
+      font-size: .78rem;
+      color: var(--dim);
+      padding-left: 1.1rem;
+      position: relative;
+    }
+    .msg.thinking .think-steps li::before {
+      content: '○';
+      position: absolute;
+      left: 0;
+      color: var(--dim);
+    }
+    .msg.thinking .think-steps li.done { color: var(--muted); }
+    .msg.thinking .think-steps li.done::before { content: '✓'; color: var(--success); }
+    .msg.thinking .think-steps li.active { color: var(--text); }
+    .msg.thinking .think-steps li.active::before {
+      content: '●';
+      color: var(--accent);
     }
     button.primary {
       border: 0; border-radius: 999px; padding: .7rem 1.1rem; font-weight: 600; cursor: pointer;
@@ -1070,28 +1123,13 @@
       justify-content: space-between;
       gap: .5rem;
     }
+    /* 0.14.12: no numeric count on ⋯ — subtle accent when ops pending */
     #menuBtn.has-ops {
       border-color: rgba(91, 140, 255, 0.55) !important;
       color: var(--accent) !important;
       box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.2);
     }
-    #menuBtn .ops-badge {
-      display: none;
-      position: absolute;
-      top: -4px;
-      right: -4px;
-      min-width: 1rem;
-      height: 1rem;
-      padding: 0 .22rem;
-      border-radius: 999px;
-      background: #ff2d2d;
-      color: #fff;
-      font-size: .62rem;
-      font-weight: 700;
-      line-height: 1rem;
-      text-align: center;
-    }
-    #menuBtn.has-ops .ops-badge { display: inline-block; }
+    #menuBtn .ops-badge { display: none !important; }
     #menuBtn { position: relative; }
     .term-head {
       flex: 0 0 auto;
@@ -1383,7 +1421,7 @@
               <span class="side-activity-dot" aria-hidden="true"></span>
               Activity log
             </span>
-            <span class="side-activity-badge" id="sideActivityBadge" aria-hidden="true">0</span>
+            <!-- numeric badge removed 0.14.12 — red dot via .has-ops is enough -->
           </button>
           <div class="side-legal" aria-label="Copyright and trademark">
             <p>© 2026 PromptParle. All rights reserved.</p>
@@ -1465,7 +1503,7 @@
         </div>
         <div class="chips" id="chips"></div>
         <div class="row">
-          <textarea id="input" placeholder="Message or /command — try /help · Enter to send"></textarea>
+          <textarea id="input" rows="10" placeholder="Message or /command — try /help · Enter to send"></textarea>
           <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
@@ -2010,44 +2048,34 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function updateOpsMenuBadge() {
       if (opsLogPopoutMode) return;
       const n = getOpsUnread();
+      // 0.14.12: no numeric badges — red dot (Activity log) / accent (⋯) only
       const label = n > 0
-        ? (n + ' new activity log event' + (n === 1 ? '' : 's'))
+        ? 'New activity (open log)'
         : 'Operational messages (updates, SSH, workspace, tools) — not chat';
 
       // Primary: left-sidebar control (always visible above legal footer)
       const sideBtn = document.getElementById('sideActivityLog');
-      const sideBadge = document.getElementById('sideActivityBadge');
       if (sideBtn) {
         if (n > 0) {
           sideBtn.classList.add('has-ops');
           sideBtn.title = label;
-          sideBtn.setAttribute('aria-label', 'Activity log · ' + label);
+          sideBtn.setAttribute('aria-label', 'Activity log · new events');
         } else {
           sideBtn.classList.remove('has-ops');
           sideBtn.title = label;
           sideBtn.setAttribute('aria-label', 'Activity log');
         }
       }
-      if (sideBadge) {
-        sideBadge.textContent = n > 99 ? '99+' : String(n);
-        sideBadge.setAttribute('aria-hidden', n > 0 ? 'false' : 'true');
-      }
 
-      // Secondary: ⋯ menu still shows a badge
+      // Secondary: ⋯ menu — subtle highlight only, no number
       if (!menuBtn) return;
-      let badge = menuBtn.querySelector('.ops-badge');
+      const oldBadge = menuBtn.querySelector('.ops-badge');
+      if (oldBadge) oldBadge.remove();
       if (n > 0) {
         menuBtn.classList.add('has-ops');
-        if (!badge) {
-          badge = document.createElement('span');
-          badge.className = 'ops-badge';
-          menuBtn.appendChild(badge);
-        }
-        badge.textContent = n > 99 ? '99+' : String(n);
-        menuBtn.title = 'Menu · ' + label;
+        menuBtn.title = 'Menu · new activity in log';
       } else {
         menuBtn.classList.remove('has-ops');
-        if (badge) badge.remove();
         menuBtn.title = 'Menu';
       }
     }
@@ -5573,19 +5601,69 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       sendBtn.textContent = 'Working…';
 
       const dialNow = parseInt(dialEl.value, 10) || 3;
-      const wait = document.createElement('div');
-      wait.className = 'msg sys';
-      wait.id = 'waiting';
       var toolsOn = !toolsEnabledEl || toolsEnabledEl.checked;
-      wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ')…'
-        : 'Sending (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · optimize on)' +
-          (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') +
-          (images.length ? ' · ' + images.length + ' img' : '') +
-          (clearedN ? ' · composer cleared' : '') +
-          (hist.length ? ' · mem ' + hist.length : '') + '…';
+      var optOnly = !!optimizeOnlyEl.checked;
+
+      /**
+       * Local work-thinking bubble — staged client feedback, ZERO API tokens.
+       * Stages advance by wall-clock while local prep + cloud optimize + model run.
+       * (Providers don't stream prep status; this mirrors Grok/Claude "working" UX.)
+       */
+      var thinkSteps = optOnly
+        ? [
+            { id: 'prep', label: 'Local tools & memory', at: 0 },
+            { id: 'opt', label: 'Optimizing (dial ' + dialNow + '/5)', at: 400 },
+            { id: 'done', label: 'Almost ready', at: 2500 }
+          ]
+        : [
+            { id: 'prep', label: 'Local tools & memory' + (hist.length ? ' · [MEM]' : ''), at: 0 },
+            { id: 'opt', label: 'High-fidelity optimize (dial ' + dialNow + '/5)', at: 600 },
+            { id: 'model', label: 'Model working', at: 2200 },
+            { id: 'long', label: 'Still working — large context or slow provider', at: 14000 }
+          ];
+      var wait = document.createElement('div');
+      wait.className = 'msg thinking';
+      wait.id = 'waiting';
+      wait.setAttribute('role', 'status');
+      wait.setAttribute('aria-live', 'polite');
+      var bits = [];
+      if (context) bits.push('context ' + context.length.toLocaleString() + 'c');
+      if (images.length) bits.push(images.length + ' img');
+      if (clearedN) bits.push('composer cleared');
+      if (hist.length) bits.push('mem ' + hist.length);
+      wait.innerHTML =
+        '<div class="think-title"><span class="think-dots">Working</span></div>' +
+        '<div class="think-stage" id="thinkStage"></div>' +
+        '<ul class="think-steps" id="thinkSteps"></ul>' +
+        '<div class="think-note">Local feedback only · no extra tokens · dial ' + dialNow +
+          '/5 · tools ' + (toolsOn ? 'on' : 'off') +
+          (bits.length ? ' · ' + bits.join(' · ') : '') + '</div>';
       chat.appendChild(wait);
       scrollChatToBottom();
+
+      var thinkTimers = [];
+      function paintThink(activeIdx) {
+        var stageEl = document.getElementById('thinkStage');
+        var listEl = document.getElementById('thinkSteps');
+        if (!stageEl || !listEl || !document.getElementById('waiting')) return;
+        var cur = thinkSteps[Math.min(activeIdx, thinkSteps.length - 1)];
+        stageEl.textContent = cur.label + '…';
+        var html = '';
+        for (var i = 0; i < thinkSteps.length; i++) {
+          // Hide "long wait" step until we reach it
+          if (thinkSteps[i].id === 'long' && i > activeIdx) continue;
+          if (thinkSteps[i].id === 'done' && i > activeIdx) continue;
+          var cls = i < activeIdx ? 'done' : (i === activeIdx ? 'active' : '');
+          html += '<li class="' + cls + '">' + thinkSteps[i].label + '</li>';
+        }
+        listEl.innerHTML = html;
+      }
+      paintThink(0);
+      for (var ti = 1; ti < thinkSteps.length; ti++) {
+        (function (idx) {
+          thinkTimers.push(setTimeout(function () { paintThink(idx); }, thinkSteps[idx].at));
+        })(ti);
+      }
 
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const timer = controller ? setTimeout(function () { controller.abort(); }, 180000) : null;
@@ -5597,13 +5675,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           compression_level: dialNow,
           prompt: prompt,
           context: context || undefined,
-          optimize_only: !!optimizeOnlyEl.checked,
+          optimize_only: optOnly,
           tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         };
         if (hist.length) {
           payload.history = hist;
         }
-        if (images.length && !optimizeOnlyEl.checked) {
+        if (images.length && !optOnly) {
           payload.images = images;
         }
 
@@ -5626,7 +5704,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
         if (!res.ok) {
           addMsg('bot', data.error || data.Error || ('Request failed HTTP ' + res.status), meta, true);
-        } else if (optimizeOnlyEl.checked) {
+        } else if (optOnly) {
           const text = data.optimized_prompt || data.OptimizedPrompt || data.optimizedPrompt || '(empty optimized prompt)';
           addMsg('bot', text, meta);
         } else {
@@ -5646,6 +5724,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         }
       } finally {
         if (timer) clearTimeout(timer);
+        for (var ci = 0; ci < thinkTimers.length; ci++) clearTimeout(thinkTimers[ci]);
         const w = document.getElementById('waiting');
         if (w) w.remove();
         // Belt-and-suspenders: never leave chips after a send attempt

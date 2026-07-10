@@ -20,6 +20,7 @@ import {
   coercePromptBody,
   formatZodDetails,
 } from "@/lib/coerce-prompt-body";
+import { resolveSystemAndUser } from "@/lib/system-framing";
 
 const imageSchema = z.object({
   media_type: z.string().optional(),
@@ -36,6 +37,14 @@ const schema = z.object({
   model: z.string().optional(),
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
+  /** Native system brief (0.14.12+) — not optimized, not stored in Before/After */
+  system: z.string().max(50_000).optional(),
+  system_prompt: z.string().max(50_000).optional(),
+  systemPrompt: z.string().max(50_000).optional(),
+  /** Per-turn runtime note (tools/prep) */
+  runtime: z.string().max(20_000).optional(),
+  runtime_note: z.string().max(20_000).optional(),
+  runtimeNote: z.string().max(20_000).optional(),
   optimization_profile: z.string().optional(),
   optimizationProfile: z.string().optional(),
   /** 1 max fidelity … 5 max savings — coerced from string by coercePromptBody */
@@ -133,8 +142,18 @@ export async function POST(req: NextRequest) {
     model = data.model || defaultModelFor(providerId);
     const images = parseImages(data.images);
 
-    const optimized = optimizePrompt({
+    const framed = resolveSystemAndUser({
       prompt: data.prompt,
+      system:
+        data.system || data.system_prompt || data.systemPrompt || undefined,
+      runtime:
+        data.runtime || data.runtime_note || data.runtimeNote || undefined,
+    });
+    // Store user content only (never product brief)
+    promptText = framed.storagePrompt;
+
+    const optimized = optimizePrompt({
+      prompt: framed.userPrompt,
       context: data.context,
       profile,
       maxTokens,
@@ -146,6 +165,11 @@ export async function POST(req: NextRequest) {
     optimizedPromptText = optimized.optimizedPrompt;
 
     const notes = [...optimized.notes];
+    if (framed.system || framed.runtime) {
+      notes.push(
+        "system role (native) — product brief not in user payload / usage Before"
+      );
+    }
     if (images.length > 0) {
       notes.push(
         `${images.length} image(s) attached — passed to the model on full AI calls (not text-optimized)`
@@ -164,7 +188,7 @@ export async function POST(req: NextRequest) {
         originalTokens,
         optimizedTokens,
         status: "completed",
-        prompt: data.prompt,
+        prompt: framed.storagePrompt,
         context: data.context,
         optimizedPrompt: optimized.optimizedPrompt,
       });
@@ -192,6 +216,7 @@ export async function POST(req: NextRequest) {
               image_count: images.length,
               strategy: optimized.strategy,
               signals: optimized.signals,
+              system_role: Boolean(framed.system || framed.runtime),
             }
           : undefined,
       });
@@ -211,17 +236,23 @@ export async function POST(req: NextRequest) {
     let aiText: string;
     let usedModel = model;
     let providerRequestId: string | undefined;
+    let cacheReadTokens: number | undefined;
+    let cacheWriteTokens: number | undefined;
 
     try {
       const result = await adapter.complete({
         apiKey: cred.apiKey,
         model,
         prompt: optimized.optimizedPrompt,
+        system: framed.system || undefined,
+        runtime: framed.runtime || undefined,
         images: images.length > 0 ? images : undefined,
       });
       aiText = result.text;
       usedModel = result.model || model;
       providerRequestId = result.providerRequestId;
+      cacheReadTokens = result.rawUsage?.cacheReadTokens;
+      cacheWriteTokens = result.rawUsage?.cacheWriteTokens;
       await touchProviderCredential(cred.credentialId);
     } catch (providerErr) {
       const message =
@@ -239,7 +270,7 @@ export async function POST(req: NextRequest) {
         originalTokens,
         optimizedTokens,
         status: "failed",
-        prompt: data.prompt,
+        prompt: framed.storagePrompt,
         context: data.context,
         optimizedPrompt: optimized.optimizedPrompt,
         errorMessage: message,
@@ -257,6 +288,7 @@ export async function POST(req: NextRequest) {
                 optimization_profile: profile,
                 compression_level: compressionLevel,
                 secrets_masked: optimized.secretsMasked,
+                system_role: Boolean(framed.system || framed.runtime),
               }
             : undefined,
         },
@@ -275,7 +307,7 @@ export async function POST(req: NextRequest) {
       originalTokens,
       optimizedTokens,
       status: "completed",
-      prompt: data.prompt,
+      prompt: framed.storagePrompt,
       context: data.context,
       optimizedPrompt: optimized.optimizedPrompt,
     });
@@ -303,6 +335,9 @@ export async function POST(req: NextRequest) {
             strategy: optimized.strategy,
             signals: optimized.signals,
             provider_request_id: providerRequestId,
+            system_role: Boolean(framed.system || framed.runtime),
+            cache_read_tokens: cacheReadTokens,
+            cache_write_tokens: cacheWriteTokens,
           }
         : undefined,
     });

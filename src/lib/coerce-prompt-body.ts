@@ -48,6 +48,25 @@ export function coercePromptBody(raw: unknown): Record<string, unknown> {
       prompt.length > PROMPT_MAX ? prompt.slice(0, PROMPT_MAX) : prompt;
   }
 
+  // Native system / runtime (0.14.12+) — coerce strings, drop empties
+  for (const k of [
+    "system",
+    "system_prompt",
+    "systemPrompt",
+    "runtime",
+    "runtime_note",
+    "runtimeNote",
+  ] as const) {
+    if (!(k in b)) continue;
+    if (b[k] === null || b[k] === undefined) {
+      delete b[k];
+      continue;
+    }
+    const s = asString(b[k]);
+    if (s == null || s.trim() === "") delete b[k];
+    else b[k] = s.length > 50_000 ? s.slice(0, 50_000) : s;
+  }
+
   if (b.context === null || b.context === undefined) {
     delete b.context;
   } else {

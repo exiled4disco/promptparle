@@ -1132,11 +1132,11 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      Dense product system brief — paid on EVERY model call, so keep short.
-      ~1/5 the size of the old essay; same hard bans (homework / invent UI / false ship).
+      Dense product system brief — static, cacheable via native role:system.
+      Same hard bans (homework / invent UI / false ship). Keep short.
     .NOTES
-      Stateless APIs cannot "remember" a prior system message — providers get a fresh
-      request each turn. Cost control = densify here; later: native system role + cache.
+      0.14.12+: sent as separate `system` field (not baked into user prompt).
+      Providers that support prompt cache (Anthropic) mark this block cacheable.
     #>
     # ~90–110 tokens. Order: role → evidence → act → bans → fidelity.
     return @(
@@ -1151,10 +1151,33 @@ function Get-PromptParleChatSystemPrompt {
     ) -join ' '
 }
 
+function Get-PromptParleChatFraming {
+    <#
+    .SYNOPSIS
+      Build native system + runtime + user parts (0.14.12+).
+      Prefer this over Format-PromptParleAgentPrompt (which bakes into one string).
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Prompt,
+        [string]$RuntimeNote = ''
+    )
+    $sys = Get-PromptParleChatSystemPrompt
+    $rt = if ($RuntimeNote) { $RuntimeNote.Trim() } else {
+        'Prep may have injected [CONN][SSH][MEM]. Act. No user status gathering.'
+    }
+    return [pscustomobject]@{
+        System  = $sys
+        Runtime = $rt
+        Prompt  = $Prompt
+    }
+}
+
 function Format-PromptParleAgentPrompt {
     <#
     .SYNOPSIS
-      Prepend dense system + runtime framing (paid every API call — keep lean).
+      Legacy: bake system + runtime into one user string.
+      Prefer Get-PromptParleChatFraming + Invoke-PromptParle -System/-Runtime (0.14.12+).
       AgentId/Doctrine/TurnNote kept for call-site compat; ignored.
     #>
     param(
@@ -1164,12 +1187,8 @@ function Format-PromptParleAgentPrompt {
         [string]$TurnNote = '',
         [string]$RuntimeNote = ''
     )
-    $sys = Get-PromptParleChatSystemPrompt
-    $rt = if ($RuntimeNote) { $RuntimeNote.Trim() } else {
-        'Prep may have injected [CONN][SSH][MEM]. Act. No user status gathering.'
-    }
-    # Compact labels — same structure, fewer framing tokens
-    return ("[SYS] {0}`n[RT] {1}`n[USER]`n{2}" -f $sys, $rt, $Prompt)
+    $f = Get-PromptParleChatFraming -Prompt $Prompt -RuntimeNote $RuntimeNote
+    return ("[SYS] {0}`n[RT] {1}`n[USER]`n{2}" -f $f.System, $f.Runtime, $f.Prompt)
 }
 
 #region Local-first tools (run on this PC before AI tokens are spent)
@@ -5466,6 +5485,17 @@ function Invoke-PromptParle {
         [AllowEmptyString()]
         [string]$Context,
 
+        # 0.14.12+: native role:system (product brief) — not baked into user prompt
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$System,
+
+        # Per-turn runtime note (tools/prep) — sent with system, not in usage Before
+        [Parameter()]
+        [AllowEmptyString()]
+        [Alias('RuntimeNote')]
+        [string]$Runtime,
+
         # Pipeline lines / FileInfo (Get-Content, Get-Item, etc.)
         [Parameter(ValueFromPipeline)]
         [object]$InputObject,
@@ -5536,6 +5566,13 @@ function Invoke-PromptParle {
         }
         if ($Model) { $body.model = [string]$Model }
         if ($contextText) { $body.context = [string]$contextText }
+        # Native system role — portal adapters put this in role:system (+ cache when supported)
+        if ($PSBoundParameters.ContainsKey('System') -and -not [string]::IsNullOrWhiteSpace($System)) {
+            $body.system = [string]$System
+        }
+        if ($PSBoundParameters.ContainsKey('Runtime') -and -not [string]::IsNullOrWhiteSpace($Runtime)) {
+            $body.runtime = [string]$Runtime
+        }
         if ($OptimizeOnly) { $body.optimize_only = $true }
 
         $imageList = @(ConvertTo-PromptParleImageList -Images $Images)
@@ -7863,19 +7900,21 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        # Dense runtime — full bans already in [SYS]; RT = this-turn evidence only
+                        # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
                         $rtNote = 'Prep ran when tools on. Evidence may include [CONN][SSH][SSH-PRODUCT][MEM][ATTACH]+images. Act; no homework; no invent UI; no false ship.'
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
                         }
-                        $prompt = Format-PromptParleAgentPrompt -Prompt $prompt -RuntimeNote $rtNote
+                        $frame = Get-PromptParleChatFraming -Prompt $prompt -RuntimeNote $rtNote
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} profile={1} dial={2} tools={3} optimize_only={4} prompt={5}c context={6}c images={7} local_notes={8}" -f `
-                            $provider, $profile, $dial, $toolsEnChat, $optOnly, $prompt.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} profile={1} dial={2} tools={3} optimize_only={4} prompt={5}c system={6}c context={7}c images={8} local_notes={9}" -f `
+                            $provider, $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
 
                         $params = @{
-                            Prompt            = $prompt
+                            Prompt            = [string]$frame.Prompt
+                            System            = [string]$frame.System
+                            Runtime           = [string]$frame.Runtime
                             Provider          = $provider
                             Profile           = $profile
                             CompressionLevel  = $dial
@@ -8207,9 +8246,11 @@ function Start-PromptParle {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
             $cliRt = 'Prep ran. Act on [CONN][SSH][SSH-PRODUCT][ATTACH]. No homework/invent UI/false ship.'
-            $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed -RuntimeNote $cliRt
+            $cliFrame = Get-PromptParleChatFraming -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
-                Prompt           = $sendPrompt
+                Prompt           = [string]$cliFrame.Prompt
+                System           = [string]$cliFrame.System
+                Runtime          = [string]$cliFrame.Runtime
                 Provider         = $sessionProvider
                 Profile          = $sessionProfile
                 CompressionLevel = $sessionDial

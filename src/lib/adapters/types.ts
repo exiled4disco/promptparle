@@ -9,8 +9,19 @@ export type AdapterImage = {
 export type AdapterRequest = {
   apiKey: string;
   model: string;
+  /** User-turn content (optimized). Do not bake product system brief here. */
   prompt: string;
-  /** optional system-ish framing already baked into prompt for MVP */
+  /**
+   * Native system message (product brief). Prefer this over baking into prompt.
+   * Providers that support prompt cache put cache_control on this static block.
+   */
+  system?: string;
+  /**
+   * Per-turn runtime note (tools/prep). Not cached — changes every call.
+   * Anthropic: second system block without cache_control.
+   * Others: appended to system string.
+   */
+  runtime?: string;
   temperature?: number;
   maxOutputTokens?: number;
   /** Optional vision images (BYOK multimodal). Text is still optimized separately. */
@@ -24,6 +35,9 @@ export type AdapterResponse = {
   rawUsage?: {
     inputTokens?: number;
     outputTokens?: number;
+    /** Provider-reported cache hits (Anthropic/OpenAI when available) */
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
   };
 };
 

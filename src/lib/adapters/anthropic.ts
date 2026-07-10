@@ -30,6 +30,44 @@ export const anthropicAdapter: ProviderAdapter = {
     }
     content.push({ type: "text", text: req.prompt });
 
+    // Static product brief is cacheable; runtime note changes every turn.
+    type SysBlock = {
+      type: "text";
+      text: string;
+      cache_control?: { type: "ephemeral" };
+    };
+    const systemBlocks: SysBlock[] = [];
+    const staticSys = (req.system || "").trim();
+    const runtime = (req.runtime || "").trim();
+    if (staticSys) {
+      systemBlocks.push({
+        type: "text",
+        text: staticSys,
+        cache_control: { type: "ephemeral" },
+      });
+    }
+    if (runtime) {
+      systemBlocks.push({ type: "text", text: `[RT] ${runtime}` });
+    }
+
+    const body: Record<string, unknown> = {
+      model: req.model,
+      max_tokens: req.maxOutputTokens ?? 4096,
+      messages: [
+        {
+          role: "user",
+          content: images.length === 0 ? req.prompt : content,
+        },
+      ],
+      temperature: req.temperature ?? 0.2,
+    };
+    if (systemBlocks.length === 1 && !runtime && staticSys) {
+      // Single cached system string is fine; keep array form for cache_control
+      body.system = systemBlocks;
+    } else if (systemBlocks.length > 0) {
+      body.system = systemBlocks;
+    }
+
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -37,17 +75,7 @@ export const anthropicAdapter: ProviderAdapter = {
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: req.model,
-        max_tokens: req.maxOutputTokens ?? 4096,
-        messages: [
-          {
-            role: "user",
-            content: images.length === 0 ? req.prompt : content,
-          },
-        ],
-        temperature: req.temperature ?? 0.2,
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -65,13 +93,16 @@ export const anthropicAdapter: ProviderAdapter = {
       .map((b: { text?: string }) => b.text || "")
       .join("\n");
 
+    const usage = data?.usage || {};
     return {
       text,
       model: data?.model || req.model,
       providerRequestId: data?.id,
       rawUsage: {
-        inputTokens: data?.usage?.input_tokens,
-        outputTokens: data?.usage?.output_tokens,
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheReadTokens: usage.cache_read_input_tokens,
+        cacheWriteTokens: usage.cache_creation_input_tokens,
       },
     };
   },

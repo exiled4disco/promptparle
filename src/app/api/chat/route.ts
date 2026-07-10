@@ -23,6 +23,12 @@ const schema = z.object({
   model: z.string().optional(),
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
+  system: z.string().max(50_000).optional(),
+  system_prompt: z.string().max(50_000).optional(),
+  systemPrompt: z.string().max(50_000).optional(),
+  runtime: z.string().max(20_000).optional(),
+  runtime_note: z.string().max(20_000).optional(),
+  runtimeNote: z.string().max(20_000).optional(),
   profile: z.string().optional(),
   /** 1 max fidelity … 5 max savings */
   compressionLevel: z.number().int().min(1).max(5).optional(),
@@ -71,6 +77,14 @@ export async function POST(req: NextRequest) {
       model: parsed.data.model,
       prompt: parsed.data.prompt,
       context: parsed.data.context,
+      system:
+        parsed.data.system ||
+        parsed.data.system_prompt ||
+        parsed.data.systemPrompt,
+      runtime:
+        parsed.data.runtime ||
+        parsed.data.runtime_note ||
+        parsed.data.runtimeNote,
       profile: parsed.data.profile,
       compressionLevel:
         parsed.data.compressionLevel ?? parsed.data.compression_level,
