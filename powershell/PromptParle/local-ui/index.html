@@ -282,6 +282,55 @@
       background:#3a1520 !important; border:1px solid rgba(248,113,113,.45) !important; color:#fecaca !important;
       border-radius: 999px; padding: .4rem .7rem; font-size: .78rem; font-weight: 600; cursor: pointer; width: 100%;
     }
+    .top-actions { display: flex; align-items: center; gap: .4rem; position: relative; }
+    .icon-btn {
+      background: #0a0e16; border: 1px solid var(--border); color: var(--text);
+      border-radius: 999px; padding: .35rem .7rem; font-size: .8rem; font-weight: 600;
+      cursor: pointer; font: inherit;
+    }
+    .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .menu {
+      display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+      min-width: 200px; background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: .35rem; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+    }
+    .menu.open { display: block; }
+    .menu button, .menu a {
+      display: block; width: 100%; text-align: left; background: transparent; border: 0;
+      color: var(--text); padding: .55rem .7rem; border-radius: 8px; font: inherit;
+      font-size: .85rem; cursor: pointer; text-decoration: none;
+    }
+    .menu button:hover, .menu a:hover { background: var(--accent-soft); }
+    .menu .danger { color: #fecaca; }
+    .menu .sep { height: 1px; background: var(--border); margin: .3rem .4rem; }
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 50;
+      background: rgba(0,0,0,.55); align-items: center; justify-content: center; padding: 1rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(560px, 100%); max-height: min(80vh, 720px); overflow: auto;
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1rem 1.1rem 1.1rem; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    .modal h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
+    .modal .sub { color: var(--muted); font-size: .82rem; margin-bottom: .75rem; }
+    .modal h3 {
+      margin: .9rem 0 .35rem; font-size: .72rem; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--dim);
+    }
+    .modal pre {
+      margin: 0; padding: .65rem .75rem; background: #0a0e16; border: 1px solid var(--border);
+      border-radius: 10px; font-size: .78rem; line-height: 1.45; white-space: pre-wrap;
+      color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .modal .row-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .85rem; }
+    .profile-chip {
+      display: inline-block; margin-top: .4rem; font-size: .72rem; color: var(--dim);
+      padding: .15rem .45rem; border-radius: 999px; border: 1px solid var(--border);
+      background: #0a0e16;
+    }
+    .hidden-profile { display: none !important; }
   </style>
 </head>
 <body>
@@ -299,14 +348,15 @@
         <div class="side-section">
           <h2>Client</h2>
           <div class="ver-line" id="versionLine">Checking version…</div>
-          <button type="button" class="update-btn secondary-look" id="updateBtn" disabled>Update</button>
+          <button type="button" class="update-btn" id="updateBtn">Update client</button>
         </div>
 
         <div class="side-section">
           <h2>Agent</h2>
-          <label for="agentSelect">Active agent</label>
+          <label for="agentSelect">Who answers</label>
           <select id="agentSelect"></select>
-          <div class="ver-line" id="agentHint">/agents · /agent security · /audit</div>
+          <div class="profile-chip" id="agentMeta">profile · dial from agent</div>
+          <div class="ver-line" id="agentHint">Shortcuts: /audit · /summary · /review</div>
         </div>
 
         <div class="side-section">
@@ -316,9 +366,9 @@
         </div>
 
         <div class="side-section">
-          <h2>Optimization</h2>
-          <label for="profile">Profile</label>
-          <select id="profile">
+          <h2>Compression</h2>
+          <!-- profile follows agent; hidden select kept for API payload -->
+          <select id="profile" class="hidden-profile" aria-hidden="true" tabindex="-1">
             <option value="general">General</option>
             <option value="developer">Developer</option>
             <option value="security-review">Security review</option>
@@ -326,40 +376,42 @@
             <option value="documentation">Documentation</option>
             <option value="executive-summary">Executive summary</option>
           </select>
-          <div style="margin-top:.65rem">
-            <div class="dial-labels"><span>Fidelity</span><span>Savings</span></div>
-            <label for="dial">Compression dial</label>
-            <input type="range" id="dial" min="1" max="5" step="1" value="3" />
-            <div class="dial-value">
-              <strong id="dialLabel">3 · Balanced</strong>
-              <span class="hint" id="dialHint">~45–60% fewer tokens</span>
-            </div>
+          <div class="dial-labels"><span>Fidelity</span><span>Savings</span></div>
+          <label for="dial">Dial</label>
+          <input type="range" id="dial" min="1" max="5" step="1" value="3" />
+          <div class="dial-value">
+            <strong id="dialLabel">3 · Balanced</strong>
+            <span class="hint" id="dialHint">~45–60% fewer tokens</span>
           </div>
           <div class="checks" style="margin-top:.55rem">
             <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend)</label>
           </div>
         </div>
 
-        <div class="side-section">
-          <div class="tool-links">
-            <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
-            <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage</a>
-            <a href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">API keys</a>
-          </div>
-          <button type="button" class="stop-btn" id="stopBtn" style="margin-top:.55rem">Stop server</button>
-        </div>
-
-        <p class="side-foot">Dial = how hard to compress. Attach files or paste into the message box.</p>
+        <p class="side-foot">Agent sets persona + optimization profile. Dial is how hard to compress. Menu (⋯) has Help, portal links, Update, Stop.</p>
       </div>
     </aside>
 
     <div class="main">
       <div class="main-top">
         <div class="title">Chat · only this pane scrolls</div>
-        <div class="hint" id="attachHint">No files attached</div>
+        <div class="top-actions">
+          <span class="hint" id="attachHint"></span>
+          <button type="button" class="icon-btn" id="helpBtn" title="Help &amp; commands">Help</button>
+          <button type="button" class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">⋯</button>
+          <div class="menu" id="appMenu" role="menu">
+            <button type="button" id="menuHelp">Help &amp; slash commands</button>
+            <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
+            <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage / savings</a>
+            <a href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">API keys</a>
+            <div class="sep"></div>
+            <button type="button" id="menuUpdate">Update client</button>
+            <div class="sep"></div>
+            <button type="button" class="danger" id="menuStop">Stop server</button>
+          </div>
+        </div>
       </div>
 
-      <!-- Always-visible last savings (not buried under long replies) -->
       <div class="savings-strip" id="savingsStrip" aria-live="polite"></div>
 
       <div id="chat" class="chat" role="log" aria-relevant="additions"></div>
@@ -369,16 +421,54 @@
           <button type="button" class="secondary" id="attachBtn">Attach files</button>
           <input type="file" id="fileInput" multiple
             accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
-          <span class="hint">Docs · code · CSV · paste screenshot · dial sets fidelity vs savings</span>
+          <span class="hint">Docs · code · CSV · paste screenshot</span>
         </div>
         <div class="chips" id="chips"></div>
         <div class="row">
-          <textarea id="input" placeholder="Message, paste, or /command — e.g. /help /agents /agent security /audit · Enter to send"></textarea>
+          <textarea id="input" placeholder="Message or /command — try /help · Enter to send"></textarea>
           <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
     </div>
   </div>
+
+  <div class="modal-backdrop" id="helpModal" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+    <div class="modal">
+      <h2 id="helpTitle">Help &amp; commands</h2>
+      <div class="sub">Type these in the chat box (same as CLI). Agent shortcuts change with the active agent.</div>
+
+      <h3>Session</h3>
+      <pre>/help                 this help
+/status               agent, provider, dial, profile
+/agents               list local agents
+/agent &lt;name&gt;         switch agent (security, docs, code…)
+/agent new name | system text…
+/dial 1-5             compression dial
+/provider openai|anthropic|gemini|grok
+/optimize             toggle optimize-only
+/usage                cloud token savings
+/clear                clear chat
+/ssh                  SSH (coming soon — keys stay on PC)</pre>
+
+      <h3>Agent shortcuts (examples)</h3>
+      <pre>security:  /audit  /threats
+docs:      /summary  /risks
+code:      /review  /explain</pre>
+
+      <h3>Portal &amp; server</h3>
+      <div class="row-actions">
+        <a class="icon-btn" href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
+        <a class="icon-btn" href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage</a>
+        <a class="icon-btn" href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">API keys</a>
+        <button type="button" class="icon-btn" id="helpUpdate">Update client</button>
+        <button type="button" class="stop-btn" id="helpStop" style="width:auto">Stop server</button>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="secondary" id="helpClose">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const chat = document.getElementById('chat');
     const providerEl = document.getElementById('provider');
@@ -402,6 +492,11 @@
     const attachHint = document.getElementById('attachHint');
     const agentSelect = document.getElementById('agentSelect');
     const agentHint = document.getElementById('agentHint');
+    const agentMeta = document.getElementById('agentMeta');
+    const helpBtn = document.getElementById('helpBtn');
+    const menuBtn = document.getElementById('menuBtn');
+    const appMenu = document.getElementById('appMenu');
+    const helpModal = document.getElementById('helpModal');
 
     const DIAL_META = {
       1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
@@ -602,11 +697,85 @@
       const n = attachments.length;
       const chars = attachments.filter(function (a) { return a.kind === 'text'; })
         .reduce(function (s, a) { return s + (a.text ? a.text.length : 0); }, 0);
-      if (!n) {
-        attachHint.textContent = 'No files attached';
-      } else {
-        attachHint.textContent = n + ' attachment(s)' + (chars ? ' · ' + chars.toLocaleString() + ' chars' : '');
+      // Keep top bar quiet — only show when something is attached
+      attachHint.textContent = n
+        ? (n + ' file' + (n === 1 ? '' : 's') + (chars ? ' · ' + chars.toLocaleString() + ' chars' : ''))
+        : '';
+    }
+
+    function openHelp() {
+      closeMenu();
+      helpModal.classList.add('open');
+    }
+    function closeHelp() {
+      helpModal.classList.remove('open');
+    }
+    function openMenu() {
+      appMenu.classList.add('open');
+      menuBtn.setAttribute('aria-expanded', 'true');
+    }
+    function closeMenu() {
+      appMenu.classList.remove('open');
+      menuBtn.setAttribute('aria-expanded', 'false');
+    }
+    function toggleMenu() {
+      if (appMenu.classList.contains('open')) closeMenu();
+      else openMenu();
+    }
+
+    async function stopServer() {
+      closeMenu();
+      closeHelp();
+      if (!confirm('Stop local PromptParle server?')) return;
+      try {
+        await fetch('/api/stop', { method: 'POST' });
+        addMsg('sys', 'Server stop requested. Run  pp  to start again.');
+      } catch (e) {
+        addMsg('sys', 'Stop sent (or already down). Run  pp  to start again.', null, true);
       }
+    }
+
+    async function runUpdate() {
+      closeMenu();
+      closeHelp();
+      if (!confirm('Download latest PromptParle and restart local chat?')) return;
+      setUpdateBusy(true);
+      addMsg('sys', 'Updating client…');
+      try {
+        const res = await fetch('/api/update', { method: 'POST' });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        addMsg('sys', (data.message || 'Updated') + ' — restarting…');
+        const url = data.url || (window.location.origin + '/');
+        const up = await waitForServer(url.endsWith('/') ? url : url + '/', 40);
+        if (up) window.location.href = url;
+        else addMsg('sys', 'Updated. Run  pp  if the page does not reload.', null, true);
+      } catch (e) {
+        const up = await waitForServer(window.location.origin + '/', 40);
+        if (up) window.location.reload();
+        else {
+          addMsg('sys', 'Update/restart issue: ' + (e.message || e) + ' — run pp', null, true);
+          setUpdateBusy(false, 'Retry update');
+        }
+      }
+    }
+
+    function setUpdateBusy(busy, label) {
+      const text = label || (busy ? 'Updating…' : 'Update client');
+      [updateBtn, document.getElementById('menuUpdate'), document.getElementById('helpUpdate')].forEach(function (btn) {
+        if (!btn) return;
+        btn.disabled = !!busy;
+        if (btn === updateBtn) btn.textContent = text;
+      });
+    }
+
+    function updateAgentMeta(s) {
+      if (!agentMeta) return;
+      const prof = (s && s.profile) || profileEl.value || 'general';
+      const dial = (s && s.dial != null) ? s.dial : (parseInt(dialEl.value, 10) || 3);
+      const name = (s && (s.agent_name || s.active_agent)) || agentSelect.value || 'default';
+      agentMeta.textContent = name + ' · ' + prof + ' · dial ' + dial + '/5';
     }
 
     function renderChips() {
@@ -801,11 +970,17 @@
         optimizeOnlyEl.checked = s.optimize_only;
       }
       if (s.active_agent && agentSelect) {
-        agentSelect.value = s.active_agent;
+        // option may not exist yet if agents still loading — set after load too
+        if (agentSelect.querySelector('option[value="' + s.active_agent + '"]')) {
+          agentSelect.value = s.active_agent;
+        } else {
+          agentSelect.dataset.pendingAgent = s.active_agent;
+        }
       }
       const cmds = s.agent_commands || [];
       const name = s.agent_name || s.active_agent || 'default';
       agentHint.textContent = name + (cmds.length ? ' · /' + cmds.join(' /') : ' · /agents');
+      updateAgentMeta(s);
     }
 
     async function loadAgents() {
@@ -821,6 +996,14 @@
           agentSelect.appendChild(opt);
         });
         if (data.active_agent) agentSelect.value = data.active_agent;
+        if (agentSelect.dataset.pendingAgent) {
+          const pend = agentSelect.dataset.pendingAgent;
+          if (agentSelect.querySelector('option[value="' + pend + '"]')) {
+            agentSelect.value = pend;
+          }
+          delete agentSelect.dataset.pendingAgent;
+        }
+        updateAgentMeta({ active_agent: agentSelect.value, profile: profileEl.value, dial: parseInt(dialEl.value, 10) || 3 });
       } catch (e) {
         agentSelect.innerHTML = '<option value="default">Default</option>';
       }
@@ -923,34 +1106,48 @@
       return false;
     }
 
-    updateBtn.addEventListener('click', async function () {
-      if (!confirm('Download latest PromptParle and restart local chat?')) return;
-      updateBtn.disabled = true;
-      updateBtn.textContent = 'Updating…';
-      addMsg('sys', 'Updating client…');
-      try {
-        const res = await fetch('/api/update', { method: 'POST' });
-        let data = {};
-        try { data = await res.json(); } catch (e) { data = {}; }
-        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-        addMsg('sys', (data.message || 'Updated') + ' — restarting…');
-        const url = data.url || (window.location.origin + '/');
-        const up = await waitForServer(url.endsWith('/') ? url : url + '/', 40);
-        if (up) window.location.href = url;
-        else addMsg('sys', 'Updated. Run  pp  if the page does not reload.', null, true);
-      } catch (e) {
-        const up = await waitForServer(window.location.origin + '/', 40);
-        if (up) window.location.reload();
-        else {
-          addMsg('sys', 'Update/restart issue: ' + (e.message || e) + ' — run pp', null, true);
-          updateBtn.disabled = false;
-          updateBtn.textContent = 'Retry update';
-        }
+    updateBtn.addEventListener('click', function () { runUpdate(); });
+
+    // Help modal + ⋯ menu
+    helpBtn.addEventListener('click', openHelp);
+    document.getElementById('menuHelp').addEventListener('click', openHelp);
+    document.getElementById('helpClose').addEventListener('click', closeHelp);
+    helpModal.addEventListener('click', function (e) {
+      if (e.target === helpModal) closeHelp();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        closeHelp();
+        closeMenu();
       }
+    });
+    menuBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      toggleMenu();
+    });
+    document.addEventListener('click', function (e) {
+      if (!appMenu.contains(e.target) && e.target !== menuBtn) closeMenu();
+    });
+    document.getElementById('menuUpdate').addEventListener('click', function () { runUpdate(); });
+    document.getElementById('helpUpdate').addEventListener('click', function () { runUpdate(); });
+    document.getElementById('menuStop').addEventListener('click', function () { stopServer(); });
+    document.getElementById('helpStop').addEventListener('click', function () { stopServer(); });
+
+    // Keep agent meta chip in sync when dial moves
+    dialEl.addEventListener('input', function () {
+      updateAgentMeta({
+        active_agent: agentSelect.value,
+        agent_name: agentSelect.options[agentSelect.selectedIndex]
+          ? agentSelect.options[agentSelect.selectedIndex].textContent.split(' (')[0]
+          : agentSelect.value,
+        profile: profileEl.value,
+        dial: parseInt(dialEl.value, 10) || 3
+      });
     });
 
     checkVersion();
     loadAgents().then(loadSession);
+    refreshAttachHint();
 
     async function loadProviders() {
       const res = await fetch('/api/providers');
@@ -980,16 +1177,6 @@
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         form.requestSubmit();
-      }
-    });
-
-    document.getElementById('stopBtn').addEventListener('click', async function () {
-      if (!confirm('Stop local PromptParle server?')) return;
-      try {
-        await fetch('/api/stop', { method: 'POST' });
-        addMsg('sys', 'Server stop requested.');
-      } catch (e) {
-        addMsg('sys', 'Stop sent (or already down).', null, true);
       }
     });
 

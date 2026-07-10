@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.9.0'
+    ModuleVersion     = '0.9.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -40,6 +40,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.9.1: Help modal + ⋯ menu (Providers/Usage/API keys/Update/Stop); single Agent control; Update always available
 0.9.0: Local agents + / commands (shared CLI/UI); product surface for free desktop / paid cloud
 0.8.3: Drop Extra text panel — one chat box for message + paste
 0.8.2: Fixed chat viewport (only replies scroll) + always-visible savings
