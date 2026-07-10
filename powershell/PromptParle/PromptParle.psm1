@@ -751,12 +751,129 @@ function Test-PromptParleCommandAvailable {
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Get-PromptParleDefaultCloneRoot {
-    if ($script:PromptParleIsWindows -and $env:USERPROFILE) {
-        $p = Join-Path $env:USERPROFILE 'src'
-    } else {
-        $p = Join-Path $HOME 'src'
+function Get-PromptParleHomePath {
+    if ($env:USERPROFILE -and "$env:USERPROFILE".Trim()) { return [string]$env:USERPROFILE }
+    if ($HOME -and "$HOME".Trim()) { return [string]$HOME }
+    if ($env:HOME -and "$env:HOME".Trim()) { return [string]$env:HOME }
+    return [string][Environment]::GetFolderPath('UserProfile')
+}
+
+function ConvertTo-PromptParleSingleString {
+    <#
+    .SYNOPSIS
+      Coerce PathInfo / arrays / PSObject wrappers to one System.String (avoids "Argument types do not match").
+    #>
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [string]) { return $Value }
+    # Resolve-Path can yield PathInfo or Object[]
+    if ($Value -is [System.Management.Automation.PathInfo]) {
+        return [string]$Value.Path
     }
+    if ($Value -is [System.Array] -or ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string]))) {
+        foreach ($item in @($Value)) {
+            if ($null -eq $item) { continue }
+            $s = ConvertTo-PromptParleSingleString $item
+            if ($s) { return $s }
+        }
+        return ''
+    }
+    if ($Value.PSObject -and $Value.PSObject.Properties['Path']) {
+        return [string]$Value.Path
+    }
+    return [string]$Value
+}
+
+function Get-PromptParleTrimPath {
+    param([string]$Path)
+    $p = ConvertTo-PromptParleSingleString $Path
+    if (-not $p) { return '' }
+    # Use char[] — string overloads of TrimEnd cause "Argument types do not match" on Windows PS 5.1
+    return $p.TrimEnd([char[]]@([char]0x5C, [char]0x2F))
+}
+
+function Test-PromptParlePathEqual {
+    param([string]$A, [string]$B)
+    $a = ConvertTo-PromptParleSingleString $A
+    $b = ConvertTo-PromptParleSingleString $B
+    return [string]::Equals($a, $b, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-PromptParlePathStartsWith {
+    param([string]$Path, [string]$Prefix)
+    $p = ConvertTo-PromptParleSingleString $Path
+    $pre = ConvertTo-PromptParleSingleString $Prefix
+    if (-not $p -or -not $pre) { return $false }
+    return $p.StartsWith($pre, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-PromptParleExistingPath {
+    <#
+    .SYNOPSIS
+      Resolve a user path to a single existing full path string.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [switch]$DirectoryOnly
+    )
+    $raw = (ConvertTo-PromptParleSingleString $Path).Trim().Trim([char]'"').Trim([char]"'")
+    if (-not $raw) { throw 'Path is empty' }
+
+    $home = Get-PromptParleHomePath
+    if ($raw -eq '~' -or $raw -eq '~/' -or $raw -eq '~\') {
+        $raw = $home
+    } elseif ($raw.Length -ge 2 -and $raw[0] -eq [char]'~' -and ($raw[1] -eq [char]'/' -or $raw[1] -eq [char]'\')) {
+        $rest = $raw.Substring(2)
+        if ($home) { $raw = [IO.Path]::Combine($home, $rest) }
+    }
+
+    # Expand simple env vars like %USERPROFILE%
+    if ($raw -match '%[^%]+%') {
+        $raw = [Environment]::ExpandEnvironmentVariables($raw)
+    }
+
+    $candidate = $raw
+    if (-not [IO.Path]::IsPathRooted($candidate)) {
+        try {
+            $candidate = [IO.Path]::GetFullPath((Join-Path -Path (Get-Location).Path -ChildPath $candidate))
+        } catch {
+            $candidate = $raw
+        }
+    } else {
+        try {
+            $candidate = [IO.Path]::GetFullPath($candidate)
+        } catch {
+            # keep as-is
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $candidate)) {
+        # Last chance: Resolve-Path (handles some provider paths)
+        try {
+            $rp = Resolve-Path -LiteralPath $raw -ErrorAction Stop | Select-Object -First 1
+            $candidate = ConvertTo-PromptParleSingleString $rp
+        } catch {
+            try {
+                $rp = Resolve-Path -Path $raw -ErrorAction Stop | Select-Object -First 1
+                $candidate = ConvertTo-PromptParleSingleString $rp
+            } catch {
+                throw "Path not found: $Path"
+            }
+        }
+    }
+
+    $candidate = ConvertTo-PromptParleSingleString $candidate
+    if (-not $candidate) { throw "Path not found: $Path" }
+
+    if ($DirectoryOnly -and -not (Test-Path -LiteralPath $candidate -PathType Container)) {
+        throw "Workspace must be a directory: $candidate"
+    }
+    return $candidate
+}
+
+function Get-PromptParleDefaultCloneRoot {
+    $home = Get-PromptParleHomePath
+    $p = Join-Path -Path $home -ChildPath 'src'
     if (-not (Test-Path -LiteralPath $p)) {
         New-Item -ItemType Directory -Path $p -Force | Out-Null
     }
@@ -764,29 +881,40 @@ function Get-PromptParleDefaultCloneRoot {
 }
 
 function Test-PromptParlePathIsGitRepo {
-    param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
-    $gitDir = Join-Path $Path '.git'
+    param($Path)
+    $p = ConvertTo-PromptParleSingleString $Path
+    if (-not $p) { return $false }
+    if (-not (Test-Path -LiteralPath $p)) { return $false }
+    $gitDir = Join-Path -Path $p -ChildPath '.git'
     return (Test-Path -LiteralPath $gitDir)
 }
 
 function Add-PromptParleWorkspaceRecent {
-    param([string]$Path, [int]$Max = 12)
-    if (-not $Path) { return @() }
+    param(
+        [string]$Path,
+        [int]$Max = 12
+    )
+    $pathStr = ConvertTo-PromptParleSingleString $Path
+    if (-not $pathStr) { return [string[]]@() }
+
     $state = Get-PromptParleSessionState
-    $list = @()
-    $list += $Path
+    $list = New-Object System.Collections.Generic.List[string]
+    [void]$list.Add($pathStr)
+
     $existing = Get-PromptParleProp $state 'workspace_recent'
     if ($null -ne $existing) {
         foreach ($item in @($existing)) {
-            $s = [string]$item
+            $s = ConvertTo-PromptParleSingleString $item
             if (-not $s) { continue }
-            if ($s.Equals($Path, [StringComparison]::OrdinalIgnoreCase)) { continue }
-            if (Test-Path -LiteralPath $s -PathType Container) { $list += $s }
+            if (Test-PromptParlePathEqual -A $s -B $pathStr) { continue }
+            if (Test-Path -LiteralPath $s -PathType Container) {
+                [void]$list.Add($s)
+            }
         }
     }
-    if ($list.Count -gt $Max) { $list = $list[0..($Max - 1)] }
-    return $list
+    while ($list.Count -gt $Max) { $list.RemoveAt($list.Count - 1) }
+    # Force array (never unwrap single element to bare string)
+    return [string[]]@($list.ToArray())
 }
 
 function Set-PromptParleWorkspace {
@@ -797,40 +925,23 @@ function Set-PromptParleWorkspace {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Path
+        [Parameter(Mandatory)]$Path
     )
-    $resolved = $null
-    # Expand ~ and environment-style paths
-    $raw = $Path.Trim().Trim('"').Trim("'")
-    if ($raw -eq '~' -or $raw -eq '~/') {
-        $raw = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-    } elseif ($raw.StartsWith('~/') -or $raw.StartsWith('~\')) {
-        $home = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-        $raw = Join-Path $home $raw.Substring(2)
-    }
     try {
-        $resolved = (Resolve-Path -LiteralPath $raw -ErrorAction Stop).Path
-    } catch {
-        # try as relative to current location
-        try {
-            $resolved = (Resolve-Path -Path $raw -ErrorAction Stop).Path
-        } catch {
-            throw "Path not found: $Path"
+        $resolved = Resolve-PromptParleExistingPath -Path (ConvertTo-PromptParleSingleString $Path) -DirectoryOnly
+        $kind = if (Test-PromptParlePathIsGitRepo -Path $resolved) { 'git' } else { 'local' }
+        $recent = [string[]]@(Add-PromptParleWorkspaceRecent -Path $resolved)
+        $state = Get-PromptParleSessionState
+        $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $resolved -WorkspaceKind $kind -WorkspaceRecent $recent
+        Save-PromptParleSessionState -State $state
+        return [pscustomobject]@{
+            path   = $resolved
+            kind   = $kind
+            is_git = [bool]($kind -eq 'git')
+            recent = $recent
         }
-    }
-    if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
-        throw "Workspace must be a directory: $resolved"
-    }
-    $kind = if (Test-PromptParlePathIsGitRepo -Path $resolved) { 'git' } else { 'local' }
-    $recent = Add-PromptParleWorkspaceRecent -Path $resolved
-    $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $resolved -WorkspaceKind $kind -WorkspaceRecent $recent
-    Save-PromptParleSessionState -State $state
-    return [pscustomobject]@{
-        path     = $resolved
-        kind     = $kind
-        is_git   = ($kind -eq 'git')
-        recent   = $recent
+    } catch {
+        throw "Attach folder failed ($Path): $_"
     }
 }
 
@@ -888,54 +999,65 @@ function Get-PromptParleFsRoots {
       Common starting places for the local folder browser (this PC only).
     #>
     $roots = New-Object System.Collections.Generic.List[object]
-    function Add-Root([string]$Label, [string]$Path) {
-        if (-not $Path) { return }
-        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
-        $full = (Resolve-Path -LiteralPath $Path).Path
-        $roots.Add([pscustomobject]@{ label = $Label; path = $full; kind = 'root' })
+    $addRoot = {
+        param([string]$Label, $PathIn)
+        $p = ConvertTo-PromptParleSingleString $PathIn
+        if (-not $p) { return }
+        if (-not (Test-Path -LiteralPath $p -PathType Container)) { return }
+        try {
+            $full = ConvertTo-PromptParleSingleString (Resolve-Path -LiteralPath $p | Select-Object -First 1)
+        } catch {
+            $full = $p
+        }
+        if (-not $full) { return }
+        [void]$roots.Add([pscustomobject]@{ label = [string]$Label; path = [string]$full; kind = 'root' })
     }
-    $home = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($HOME) { $HOME } else { $null }
-    Add-Root 'Home' $home
+    $home = Get-PromptParleHomePath
+    & $addRoot 'Home' $home
     if ($home) {
-        Add-Root 'Documents' (Join-Path $home 'Documents')
-        Add-Root 'Desktop' (Join-Path $home 'Desktop')
-        Add-Root 'Downloads' (Join-Path $home 'Downloads')
-        Add-Root 'src' (Join-Path $home 'src')
-        Add-Root 'Projects' (Join-Path $home 'Projects')
-        Add-Root 'repos' (Join-Path $home 'repos')
+        & $addRoot 'Documents' (Join-Path -Path $home -ChildPath 'Documents')
+        & $addRoot 'Desktop' (Join-Path -Path $home -ChildPath 'Desktop')
+        & $addRoot 'Downloads' (Join-Path -Path $home -ChildPath 'Downloads')
+        & $addRoot 'src' (Join-Path -Path $home -ChildPath 'src')
+        & $addRoot 'Projects' (Join-Path -Path $home -ChildPath 'Projects')
+        & $addRoot 'repos' (Join-Path -Path $home -ChildPath 'repos')
     }
     if ($script:PromptParleIsWindows) {
         try {
             Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | ForEach-Object {
-                $rootPath = $_.Root
+                $rootPath = ConvertTo-PromptParleSingleString $_.Root
                 if ($rootPath -and (Test-Path -LiteralPath $rootPath)) {
-                    Add-Root ("Drive " + $_.Name + ":") $rootPath
+                    & $addRoot ("Drive " + $_.Name + ":") $rootPath
                 }
             }
         } catch { }
     } else {
-        Add-Root '/' '/'
-        Add-Root '/home' '/home'
-        Add-Root '/opt' '/opt'
-        Add-Root '/var' '/var'
+        & $addRoot '/' '/'
+        & $addRoot '/home' '/home'
+        & $addRoot '/opt' '/opt'
+        & $addRoot '/var' '/var'
     }
     $ws = Get-PromptParleWorkspace
     if ($ws.path -and $ws.exists) {
-        Add-Root 'Current workspace' $ws.path
+        & $addRoot 'Current workspace' $ws.path
     }
     foreach ($r in @($ws.recent)) {
-        Add-Root ('Recent: ' + [IO.Path]::GetFileName($r.TrimEnd('\', '/'))) $r
+        $rp = ConvertTo-PromptParleSingleString $r
+        if (-not $rp) { continue }
+        $leaf = [IO.Path]::GetFileName((Get-PromptParleTrimPath $rp))
+        if (-not $leaf) { $leaf = $rp }
+        & $addRoot ('Recent: ' + $leaf) $rp
     }
     # de-dupe by path
     $seen = @{}
-    $out = @()
+    $out = New-Object System.Collections.Generic.List[object]
     foreach ($r in $roots) {
-        $key = $r.path.ToLowerInvariant()
-        if ($seen.ContainsKey($key)) { continue }
+        $key = (ConvertTo-PromptParleSingleString $r.path).ToLowerInvariant()
+        if (-not $key -or $seen.ContainsKey($key)) { continue }
         $seen[$key] = $true
-        $out += $r
+        [void]$out.Add($r)
     }
-    return $out
+    return @($out.ToArray())
 }
 
 function Get-PromptParleFsList {
@@ -944,37 +1066,36 @@ function Get-PromptParleFsList {
       List a local directory for the folder browser (dirs + light file info).
     #>
     param(
-        [string]$Path,
+        $Path,
         [int]$Max = 400
     )
-    if (-not $Path -or -not $Path.Trim()) {
+    $pathStr = ConvertTo-PromptParleSingleString $Path
+    if (-not $pathStr -or -not $pathStr.Trim()) {
+        $rootEntries = @()
+        foreach ($r in @(Get-PromptParleFsRoots)) {
+            $rootEntries += [pscustomobject]@{
+                name   = [string]$r.label
+                path   = [string]$r.path
+                is_dir = $true
+                is_git = [bool](Test-PromptParlePathIsGitRepo -Path $r.path)
+                size   = $null
+            }
+        }
         return [pscustomobject]@{
             path    = ''
             parent  = $null
-            entries = @(Get-PromptParleFsRoots | ForEach-Object {
-                [pscustomobject]@{
-                    name     = $_.label
-                    path     = $_.path
-                    is_dir   = $true
-                    is_git   = (Test-PromptParlePathIsGitRepo -Path $_.path)
-                    size     = $null
-                }
-            })
+            entries = $rootEntries
             roots   = $true
         }
     }
-    $raw = $Path.Trim().Trim('"').Trim("'")
-    if (-not (Test-Path -LiteralPath $raw)) {
-        throw "Path not found: $raw"
-    }
-    $full = (Resolve-Path -LiteralPath $raw).Path
-    if (-not (Test-Path -LiteralPath $full -PathType Container)) {
-        throw "Not a directory: $full"
-    }
+
+    $full = Resolve-PromptParleExistingPath -Path $pathStr -DirectoryOnly
     $parent = $null
     try {
         $p = Split-Path -Parent $full
-        if ($p -and (Test-Path -LiteralPath $p)) { $parent = (Resolve-Path -LiteralPath $p).Path }
+        if ($p -and (Test-Path -LiteralPath $p)) {
+            $parent = ConvertTo-PromptParleSingleString (Resolve-Path -LiteralPath $p | Select-Object -First 1)
+        }
     } catch { }
 
     $skip = $script:PromptParleSkipDirNames
@@ -985,26 +1106,27 @@ function Get-PromptParleFsList {
             if (-not $_.PSIsContainer -and ($_.Name -eq '.env' -or $_.Name -like '.env.*')) { return $false }
             return $true
         } |
-        Sort-Object { -not $_.PSIsContainer }, Name |
+        Sort-Object @{ Expression = { if ($_.PSIsContainer) { 0 } else { 1 } } }, Name |
         Select-Object -First $Max)
 
     foreach ($item in $items) {
-        $entries.Add([pscustomobject]@{
-            name   = $item.Name
-            path   = $item.FullName
-            is_dir = [bool]$item.PSIsContainer
-            is_git = if ($item.PSIsContainer) { Test-PromptParlePathIsGitRepo -Path $item.FullName } else { $false }
-            size   = if (-not $item.PSIsContainer) { [long]$item.Length } else { $null }
+        $isDir = [bool]$item.PSIsContainer
+        [void]$entries.Add([pscustomobject]@{
+            name   = [string]$item.Name
+            path   = [string]$item.FullName
+            is_dir = $isDir
+            is_git = if ($isDir) { [bool](Test-PromptParlePathIsGitRepo -Path $item.FullName) } else { $false }
+            size   = if (-not $isDir) { [long]$item.Length } else { $null }
         })
     }
 
     return [pscustomobject]@{
-        path    = $full
+        path    = [string]$full
         parent  = $parent
-        entries = @($entries)
+        entries = @($entries.ToArray())
         roots   = $false
-        is_git  = (Test-PromptParlePathIsGitRepo -Path $full)
-        count   = $entries.Count
+        is_git  = [bool](Test-PromptParlePathIsGitRepo -Path $full)
+        count   = [int]$entries.Count
     }
 }
 
@@ -1053,25 +1175,26 @@ function Resolve-PromptParleWorkspacePath {
     if (-not $Root -or -not (Test-Path -LiteralPath $Root)) {
         throw 'No workspace attached. Use /workspace C:\path\to\repo'
     }
-    $rel = $RelativePath.Trim().TrimStart('/', '\').Replace('/', [IO.Path]::DirectorySeparatorChar)
+    $rootStr = ConvertTo-PromptParleSingleString $Root
+    $rel = (ConvertTo-PromptParleSingleString $RelativePath).Trim().TrimStart([char[]]@([char]0x2F, [char]0x5C))
+    $rel = $rel.Replace([char]0x2F, [IO.Path]::DirectorySeparatorChar)
     if ($rel -match '(^|[\\/])\.\.([\\/]|$)') {
         throw 'Path may not contain ..'
     }
-    $combined = Join-Path $Root $rel
+    $combined = Join-Path -Path $rootStr -ChildPath $rel
     $full = $null
     try {
         if (Test-Path -LiteralPath $combined) {
-            $full = (Resolve-Path -LiteralPath $combined -ErrorAction Stop).Path
+            $full = ConvertTo-PromptParleSingleString (Resolve-Path -LiteralPath $combined -ErrorAction Stop | Select-Object -First 1)
         } else {
-            # Allow non-existent for messaging, still normalize
             $full = [IO.Path]::GetFullPath($combined)
         }
     } catch {
         throw "Invalid path: $RelativePath"
     }
-    $rootFull = (Resolve-Path -LiteralPath $Root).Path
-    $rootPrefix = $rootFull.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
-    if ($full -ne $rootFull -and -not $full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $rootFull = ConvertTo-PromptParleSingleString (Resolve-Path -LiteralPath $rootStr | Select-Object -First 1)
+    $rootPrefix = (Get-PromptParleTrimPath $rootFull) + [string][IO.Path]::DirectorySeparatorChar
+    if (-not (Test-PromptParlePathEqual -A $full -B $rootFull) -and -not (Test-PromptParlePathStartsWith -Path $full -Prefix $rootPrefix)) {
         throw "Path escapes workspace: $RelativePath"
     }
     return $full
@@ -1178,18 +1301,19 @@ function Find-PromptParleWorkspaceFiles {
     $ws = Get-PromptParleWorkspace
     if (-not $ws.exists) { throw 'No workspace attached.' }
     $skip = $script:PromptParleSkipDirNames
-    $files = Get-ChildItem -LiteralPath $ws.path -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
-        $rel = $_.FullName.Substring($ws.path.Length).TrimStart('\', '/')
+    $wsPath = ConvertTo-PromptParleSingleString $ws.path
+    $files = Get-ChildItem -LiteralPath $wsPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+        $rel = $_.FullName.Substring($wsPath.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
         foreach ($s in $skip) {
             if ($rel -like "$s\*" -or $rel -like "$s/*" -or $rel -eq $s) { return $false }
         }
         if ($_.Name -eq '.env' -or $_.Name -like '.env.*') { return $false }
         return ($_.Name -like $Pattern -or $rel -like $Pattern)
     } | Select-Object -First $Max
-    $wsRoot = $ws.path.TrimEnd('\', '/')
+    $wsRoot = Get-PromptParleTrimPath $wsPath
     $lines = @("Matches for '$Pattern' (max $Max):")
     foreach ($f in $files) {
-        $rel = $f.FullName.Substring($wsRoot.Length).TrimStart('\', '/')
+        $rel = $f.FullName.Substring($wsRoot.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
         $lines += "  $rel  ($([math]::Round($f.Length/1KB,1)) KB)"
     }
     if ($files.Count -eq 0) { $lines += '  (none)' }
@@ -1205,8 +1329,9 @@ function Get-PromptParleWorkspacePack {
     $ws = Get-PromptParleWorkspace
     if (-not $ws.exists) { throw 'No workspace attached.' }
     $skip = $script:PromptParleSkipDirNames
-    $files = @(Get-ChildItem -LiteralPath $ws.path -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
-        $rel = $_.FullName.Substring($ws.path.Length).TrimStart('\', '/')
+    $wsPath = ConvertTo-PromptParleSingleString $ws.path
+    $files = @(Get-ChildItem -LiteralPath $wsPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+        $rel = $_.FullName.Substring($wsPath.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
         foreach ($s in $skip) {
             if ($rel -like "$s\*" -or $rel -like "$s/*") { return $false }
         }
@@ -1215,21 +1340,21 @@ function Get-PromptParleWorkspacePack {
         return ($_.Name -like $Pattern -or $rel -like $Pattern)
     } | Select-Object -First $MaxFiles)
 
-    $packed = @()
-    $wsRoot = $ws.path.TrimEnd('\', '/')
+    $packed = New-Object System.Collections.Generic.List[object]
+    $wsRoot = Get-PromptParleTrimPath $wsPath
     foreach ($f in $files) {
         try {
             $read = Read-PromptParleTextFileSafe -Path $f.FullName
-            $rel = $f.FullName.Substring($wsRoot.Length).TrimStart('\', '/')
-            $packed += [pscustomobject]@{
-                name = $rel.Replace('\', '/')
+            $rel = $f.FullName.Substring($wsRoot.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
+            [void]$packed.Add([pscustomobject]@{
+                name = $rel.Replace([char]0x5C, [char]0x2F)
                 text = $read.text
-            }
+            })
         } catch {
             # skip binary / unreadable
         }
     }
-    return $packed
+    return @($packed.ToArray())
 }
 
 function Invoke-PromptParleGit {
@@ -1747,8 +1872,10 @@ Paths and credentials stay on this PC.
                     # also use relative name when under workspace
                     try {
                         $ws = Get-PromptParleWorkspace
-                        if ($ws.path -and $file.path.StartsWith($ws.path, [StringComparison]::OrdinalIgnoreCase)) {
-                            $relName = $file.path.Substring($ws.path.Length).TrimStart('\', '/').Replace('\', '/')
+                        $wsP = ConvertTo-PromptParleSingleString $ws.path
+                        $fp = ConvertTo-PromptParleSingleString $file.path
+                        if ($wsP -and (Test-PromptParlePathStartsWith -Path $fp -Prefix $wsP)) {
+                            $relName = $fp.Substring($wsP.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F)).Replace([char]0x5C, [char]0x2F)
                             $files = @(@{ name = $relName; text = $file.text })
                         }
                     } catch { }
@@ -3316,20 +3443,26 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                             $rawW = $readerW.ReadToEnd()
                             $readerW.Close()
                             $bodyW = ConvertFrom-PromptParleJson -Json $rawW
-                            $action = [string](Get-PromptParleProp $bodyW 'action' 'set')
+                            $action = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'action' 'set')
+                            if (-not $action) { $action = 'set' }
                             if ($action -eq 'clear') {
                                 Clear-PromptParleWorkspace
                                 $payload = @{ ok = $true; path = ''; kind = 'none'; message = 'Workspace detached.' } | ConvertTo-Json -Compress
                             } else {
-                                $wp = [string](Get-PromptParleProp $bodyW 'path' '')
+                                $wp = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'path' '')
                                 if (-not $wp) { throw 'Missing path' }
                                 $wsSet = Set-PromptParleWorkspace -Path $wp
+                                $recentOut = @()
+                                foreach ($r in @($wsSet.recent)) {
+                                    $rs = ConvertTo-PromptParleSingleString $r
+                                    if ($rs) { $recentOut += $rs }
+                                }
                                 $payload = @{
-                                    ok     = $true
-                                    path   = $wsSet.path
-                                    kind   = $wsSet.kind
-                                    is_git = $wsSet.is_git
-                                    recent = @($wsSet.recent)
+                                    ok      = $true
+                                    path    = [string]$wsSet.path
+                                    kind    = [string]$wsSet.kind
+                                    is_git  = [bool]$wsSet.is_git
+                                    recent  = $recentOut
                                     message = "Attached $($wsSet.path)"
                                 } | ConvertTo-Json -Depth 5 -Compress
                             }
