@@ -41,6 +41,11 @@ export async function POST(req: NextRequest) {
         original_tokens: result.originalTokens,
         optimized_tokens: result.optimizedTokens,
         token_reduction_percent: result.reductionPercent,
+        expanded: result.expanded,
+        tokens_saved: Math.max(
+          0,
+          result.originalTokens - result.optimizedTokens
+        ),
         optimization_profile: result.profile,
         secrets_masked: result.secretsMasked,
         secret_findings: result.secretFindings,

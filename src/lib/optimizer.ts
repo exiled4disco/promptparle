@@ -15,26 +15,53 @@ export type OptimizeResult = {
   originalTokens: number;
   optimizedTokens: number;
   reductionPercent: number;
+  /** true when final payload is larger than the raw input (should be rare) */
+  expanded: boolean;
   profile: string;
   secretsMasked: boolean;
   secretFindings: string[];
   notes: string[];
 };
 
-const PROFILE_INSTRUCTIONS: Record<string, string> = {
-  general:
-    "Clean the request, remove filler, preserve the user's intent and constraints.",
-  developer:
-    "Preserve code structure, filenames, stack traces, function names, and exact errors. Remove unrelated chatter.",
-  "security-review":
-    "Preserve IPs, domains, ports, protocols, logs, firewall rules, auth events, and risk indicators. Remove noise.",
-  "log-analysis":
-    "Deduplicate repetitive log lines, keep outliers and time windows, retain representative raw events.",
-  documentation:
-    "Organize material, remove repetition, preserve required terms and structure for clear docs.",
-  "executive-summary":
-    "Reduce technical noise into concise business-readable context while keeping decisions and risks.",
-};
+/**
+ * Build the payload that actually goes to the model.
+ * Keep this LEAN — heavy boilerplate was inflating tokens on small prompts
+ * and made portal stats look broken (e.g. 7 → 75 tokens, 0% "savings").
+ */
+function buildPayload(
+  profile: string,
+  userPrompt: string,
+  context: string | undefined,
+  notes: string[]
+): string {
+  const p = userPrompt.trim();
+  const c = context?.trim();
+
+  // Tiny request, no context: pass through cleaned prompt only
+  if (!c) {
+    if (notes.length === 0 && (profile === "general" || !profile)) {
+      return p;
+    }
+    const lines = [p];
+    if (profile && profile !== "general") {
+      lines.push("", `Profile: ${profile}`);
+    }
+    if (notes.length) {
+      lines.push("", ...notes.map((n) => `Note: ${n}`));
+    }
+    return lines.join("\n");
+  }
+
+  // Prompt + context: minimal structure, no multi-paragraph instruction block
+  const lines = [p, "", "Context:", c];
+  if (profile && profile !== "general") {
+    lines.push("", `Profile: ${profile}`);
+  }
+  if (notes.length) {
+    lines.push("", ...notes.map((n) => `Note: ${n}`));
+  }
+  return lines.join("\n");
+}
 
 function collapseBlankLines(text: string): string {
   return text.replace(/\n{3,}/g, "\n\n").trim();
@@ -54,7 +81,10 @@ function stripChattyFiller(text: string): string {
     .join("\n");
 }
 
-/** Drop exact duplicate consecutive lines; for logs also drop high-frequency repeats. */
+/**
+ * Drop exact duplicate consecutive lines.
+ * Aggressive mode also caps non-consecutive identical lines (logs).
+ */
 function dedupeLines(text: string, aggressive: boolean): string {
   const lines = text.split("\n");
   const out: string[] = [];
@@ -64,13 +94,13 @@ function dedupeLines(text: string, aggressive: boolean): string {
   for (const line of lines) {
     const normalized = line.trimEnd();
     if (normalized === prev && normalized.trim() !== "") {
-      continue; // consecutive duplicate
+      continue;
     }
     if (aggressive && normalized.trim()) {
       const key = normalized.trim();
       const c = (counts.get(key) || 0) + 1;
       counts.set(key, c);
-      // keep first 2 occurrences of identical log lines
+      // keep first 2 occurrences of identical lines
       if (c > 2) continue;
     }
     out.push(line);
@@ -82,57 +112,20 @@ function dedupeLines(text: string, aggressive: boolean): string {
 function truncateToTokenBudget(text: string, maxTokens: number): string {
   const est = estimateTokens(text);
   if (est <= maxTokens) return text;
-  // keep head + tail (errors often at end)
   const maxChars = maxTokens * 4;
   const head = Math.floor(maxChars * 0.7);
   const tail = Math.floor(maxChars * 0.25);
   if (text.length <= head + tail + 80) return text;
   return (
     text.slice(0, head) +
-    "\n\n[... context truncated by PromptParle to fit token budget ...]\n\n" +
+    "\n\n[... truncated by PromptParle to fit token budget ...]\n\n" +
     text.slice(-tail)
   );
 }
 
-function buildStructuredPrompt(
-  profile: string,
-  userPrompt: string,
-  context: string | undefined,
-  notes: string[]
-): string {
-  const instruction =
-    PROFILE_INSTRUCTIONS[profile] || PROFILE_INSTRUCTIONS.general;
-
-  const parts = [
-    "User goal:",
-    userPrompt.trim(),
-    "",
-    "Optimization profile:",
-    `${profile} — ${instruction}`,
-  ];
-
-  if (context?.trim()) {
-    parts.push("", "Relevant context:", context.trim());
-  }
-
-  parts.push(
-    "",
-    "Instructions:",
-    "- Answer the user goal directly.",
-    "- Use only the relevant context provided.",
-    "- Keep output practical and concise unless asked otherwise."
-  );
-
-  if (notes.length) {
-    parts.push("", "PromptParle notes:", ...notes.map((n) => `- ${n}`));
-  }
-
-  return parts.join("\n");
-}
-
 /**
  * Context optimizer — MVP rules engine.
- * Not ML-based yet; focuses on structure, dedupe, secrets, budget.
+ * Goal: never make small prompts *worse*; shrink real context when possible.
  */
 export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   const profile = input.profile || "general";
@@ -143,16 +136,14 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     .join("\n\n");
   const originalTokens = estimateTokens(rawCombined);
 
-  // 1) Secret mask first (never forward secrets we can detect)
+  // 1) Secret mask first
   const promptScan = maskSecrets(input.prompt || "");
   const contextScan = maskSecrets(input.context || "");
   const secretFindings = [
     ...new Set([...promptScan.findings, ...contextScan.findings]),
   ];
   if (secretFindings.length) {
-    notes.push(
-      `Masked potential secrets: ${secretFindings.join(", ")}`
-    );
+    notes.push(`Masked secrets: ${secretFindings.join(", ")}`);
   }
 
   let prompt = promptScan.text;
@@ -180,8 +171,8 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   }
   prompt = dedupeLines(prompt, false);
 
-  // 4) Structure
-  let optimized = buildStructuredPrompt(profile, prompt, context, []);
+  // 4) Lean payload (no token-burning instruction essay)
+  let optimized = buildPayload(profile, prompt, context, notes);
 
   // 5) Token budget
   const maxTokens = input.maxTokens ?? 24000;
@@ -189,34 +180,63 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   optimized = truncateToTokenBudget(optimized, maxTokens);
   if (optimized !== beforeBudget) {
     notes.push(`Truncated to ~${maxTokens} token budget`);
-  }
-
-  // Re-attach notes into structured form once
-  if (notes.length) {
-    optimized = buildStructuredPrompt(
-      profile,
-      prompt,
-      context
-        ? truncateToTokenBudget(context, Math.floor(maxTokens * 0.75))
-        : undefined,
-      notes
+    // rebuild once so note is inside the text if we still have room
+    optimized = truncateToTokenBudget(
+      buildPayload(profile, prompt, context, notes),
+      maxTokens
     );
-    optimized = truncateToTokenBudget(optimized, maxTokens);
   }
 
   const optimizedTokens = estimateTokens(optimized);
+  const expanded = optimizedTokens > originalTokens;
   const saved = Math.max(0, originalTokens - optimizedTokens);
   const reductionPercent =
     originalTokens > 0 ? Math.round((saved / originalTokens) * 100) : 0;
+
+  // If we somehow expanded a short prompt, fall back to cleaned pass-through
+  // so portal stats never look like we made things worse without reason.
+  if (expanded && originalTokens < 200) {
+    const passthrough = truncateToTokenBudget(
+      collapseBlankLines(
+        [prompt, context].filter(Boolean).join("\n\n")
+      ),
+      maxTokens
+    );
+    const ptTokens = estimateTokens(passthrough);
+    if (ptTokens <= optimizedTokens) {
+      const ptSaved = Math.max(0, originalTokens - ptTokens);
+      return {
+        optimizedPrompt: passthrough,
+        originalTokens,
+        optimizedTokens: ptTokens,
+        reductionPercent:
+          originalTokens > 0
+            ? Math.round((ptSaved / originalTokens) * 100)
+            : 0,
+        expanded: ptTokens > originalTokens,
+        profile,
+        secretsMasked: secretFindings.length > 0,
+        secretFindings,
+        notes: notes.length
+          ? notes
+          : ["Pass-through (small prompt; no safe reduction)"],
+      };
+    }
+  }
 
   return {
     optimizedPrompt: optimized,
     originalTokens,
     optimizedTokens,
     reductionPercent,
+    expanded,
     profile,
     secretsMasked: secretFindings.length > 0,
     secretFindings,
-    notes,
+    notes: notes.length
+      ? notes
+      : originalTokens === optimizedTokens
+        ? ["No reduction needed (already compact)"]
+        : [],
   };
 }

@@ -99,9 +99,19 @@ export function UsageHistory({
                   {formatNumber(row.originalTokens)} →{" "}
                   {formatNumber(row.optimizedTokens)}
                 </span>
-                <span className="badge badge-success">
-                  {row.reductionPercent}%
-                </span>
+                {row.optimizedTokens > row.originalTokens ? (
+                  <span className="badge badge-warn" title="Payload grew vs raw input">
+                    expanded
+                  </span>
+                ) : row.reductionPercent > 0 ? (
+                  <span className="badge badge-success">
+                    −{row.reductionPercent}%
+                  </span>
+                ) : (
+                  <span className="badge" title="No size change">
+                    0%
+                  </span>
+                )}
                 <span
                   className={`badge ${
                     row.status === "completed" ? "badge-success" : "badge-warn"

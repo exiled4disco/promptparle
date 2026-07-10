@@ -119,6 +119,11 @@ export async function POST(req: NextRequest) {
               original_tokens: optimized.originalTokens,
               optimized_tokens: optimized.optimizedTokens,
               token_reduction_percent: optimized.reductionPercent,
+              expanded: optimized.expanded,
+              tokens_saved: Math.max(
+                0,
+                optimized.originalTokens - optimized.optimizedTokens
+              ),
               provider: providerId,
               model,
               optimization_profile: profile,
@@ -219,6 +224,11 @@ export async function POST(req: NextRequest) {
             original_tokens: optimized.originalTokens,
             optimized_tokens: optimized.optimizedTokens,
             token_reduction_percent: optimized.reductionPercent,
+            expanded: optimized.expanded,
+            tokens_saved: Math.max(
+              0,
+              optimized.originalTokens - optimized.optimizedTokens
+            ),
             provider: providerId,
             model: usedModel,
             optimization_profile: profile,
