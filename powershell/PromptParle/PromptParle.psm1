@@ -2115,6 +2115,7 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
         workspace_path   = [string]$wsOut.path
         workspace_kind   = [string]$wsOut.kind
         workspace_branch = $wsOut.branch
+        workspace_remote = $wsOut.remote
         workspace_recent = @($wsOut.recent)
         ssh_target       = [string]$wsOut.ssh_target
         ssh_port         = [int]$wsOut.ssh_port
@@ -3376,6 +3377,7 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                             workspace_path   = [string]$ws.path
                             workspace_kind   = [string]$ws.kind
                             workspace_branch = $ws.branch
+                            workspace_remote = $ws.remote
                             workspace_recent = @($ws.recent)
                             ssh_target       = [string]$ws.ssh_target
                             ssh_port         = [int]$ws.ssh_port
@@ -3452,6 +3454,7 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                                 $wp = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'path' '')
                                 if (-not $wp) { throw 'Missing path' }
                                 $wsSet = Set-PromptParleWorkspace -Path $wp
+                                $wsFull = Get-PromptParleWorkspace
                                 $recentOut = @()
                                 foreach ($r in @($wsSet.recent)) {
                                     $rs = ConvertTo-PromptParleSingleString $r
@@ -3462,6 +3465,8 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                                     path    = [string]$wsSet.path
                                     kind    = [string]$wsSet.kind
                                     is_git  = [bool]$wsSet.is_git
+                                    branch  = $wsFull.branch
+                                    remote  = $wsFull.remote
                                     recent  = $recentOut
                                     message = "Attached $($wsSet.path)"
                                 } | ConvertTo-Json -Depth 5 -Compress

@@ -384,6 +384,49 @@
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .recent-chip:hover { border-color: var(--accent); color: var(--accent); }
+    /* Connection / project status cards — empty vs active should be obvious */
+    .status-card {
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0a0e16;
+      padding: .5rem .6rem;
+      margin-bottom: .4rem;
+    }
+    .status-card .sc-label {
+      font-size: .65rem; font-weight: 700; letter-spacing: .05em;
+      text-transform: uppercase; color: var(--dim); margin-bottom: .2rem;
+    }
+    .status-card .sc-value {
+      font-size: .82rem; font-weight: 600; color: var(--muted);
+      word-break: break-all; line-height: 1.35;
+    }
+    .status-card .sc-meta {
+      font-size: .72rem; color: var(--dim); margin-top: .2rem; line-height: 1.3;
+    }
+    .status-card.is-on {
+      border-color: rgba(52,211,153,.45);
+      background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.08));
+    }
+    .status-card.is-on .sc-value { color: var(--success); font-weight: 700; }
+    .status-card.is-on .sc-meta { color: var(--muted); }
+    .status-card.is-warn {
+      border-color: rgba(251,191,36,.4);
+      background: rgba(251,191,36,.08);
+    }
+    .status-card.is-warn .sc-value { color: var(--warn); }
+    .conn-row {
+      display: flex; flex-direction: column; gap: .4rem;
+    }
+    .side-actions {
+      display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem;
+    }
+    .side-actions .secondary {
+      padding: .35rem .65rem; font-size: .78rem;
+    }
+    .recent-label {
+      font-size: .65rem; color: var(--dim); text-transform: uppercase;
+      letter-spacing: .04em; margin: .45rem 0 .15rem;
+    }
   </style>
 </head>
 <body>
@@ -413,15 +456,34 @@
         </div>
 
         <div class="side-section">
-          <h2>Local folder</h2>
-          <div class="ver-line" id="workspaceLine">No folder attached</div>
-          <div class="ver-line" id="sshLine" style="margin-top:.25rem">SSH: none</div>
-          <div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.45rem">
-            <button type="button" class="secondary" id="browseFolderBtn" style="padding:.35rem .65rem;font-size:.78rem">Browse folders</button>
-            <button type="button" class="secondary" id="clearFolderBtn" style="padding:.35rem .65rem;font-size:.78rem">Detach</button>
+          <h2>Project folder</h2>
+          <div class="status-card" id="projectCard">
+            <div class="sc-label">This PC</div>
+            <div class="sc-value" id="workspaceLine">No folder attached</div>
+            <div class="sc-meta" id="projectMeta">Browse a directory on this computer</div>
           </div>
-          <div id="recentFolders" style="margin-top:.4rem"></div>
-          <div class="ver-line" style="margin-top:.35rem">or /workspace path · /github · /ssh</div>
+          <div class="side-actions">
+            <button type="button" class="secondary" id="browseFolderBtn">Browse…</button>
+            <button type="button" class="secondary" id="clearFolderBtn">Detach</button>
+          </div>
+          <div class="recent-label" id="recentLabel" hidden>Recent</div>
+          <div id="recentFolders"></div>
+        </div>
+
+        <div class="side-section">
+          <h2>Connections</h2>
+          <div class="conn-row">
+            <div class="status-card" id="gitCard">
+              <div class="sc-label">Git / GitHub</div>
+              <div class="sc-value" id="gitLine">Not linked</div>
+              <div class="sc-meta" id="gitMeta">Attach a git repo or /github clone owner/repo</div>
+            </div>
+            <div class="status-card" id="sshCard">
+              <div class="sc-label">SSH</div>
+              <div class="sc-value" id="sshLine">Not connected</div>
+              <div class="sc-meta" id="sshMeta">/ssh user@host — keys stay on this PC</div>
+            </div>
+          </div>
         </div>
 
         <div class="side-section">
@@ -453,7 +515,7 @@
           </div>
         </div>
 
-        <p class="side-foot">Agent = persona. Workspace/git/ssh stay on this PC (keys never uploaded). Menu (⋯) has Help, account glance, Update, Stop.</p>
+        <p class="side-foot">Project folder is on this PC. Git/SSH use your local credentials — never uploaded. Menu (⋯): Help, account, Update, Stop.</p>
       </div>
     </aside>
 
@@ -508,14 +570,16 @@
 /agents · /agent &lt;name&gt;
 /dial 1-5 · /provider · /optimize · /usage · /clear</pre>
 
-      <h3>Local folders · Git · GitHub · SSH</h3>
-      <pre>/workspace &lt;path&gt;     attach any local directory
-/workspace recent|ls|cd|tree
-/workspace cat|find|pack
-/git status|diff|log|branch
-/github clone owner/repo
-/ssh user@host        keys stay on THIS PC
-UI: Browse folders (local disk via pp server)</pre>
+      <h3>Project folder (this PC)</h3>
+      <pre>/workspace &lt;path&gt;     attach directory
+/workspace recent|ls|cd|tree|cat|pack
+UI: Project folder → Browse…</pre>
+
+      <h3>Git / GitHub · SSH</h3>
+      <pre>/git status|diff|log|branch
+/github clone owner/repo · /github prs
+/ssh user@host · ls · cat · run
+(keys &amp; tokens stay on this PC)</pre>
 
       <h3>Agent shortcuts (examples)</h3>
       <pre>security:  /audit  /threats
@@ -594,8 +658,16 @@ code:      /review  /explain</pre>
     const agentHint = document.getElementById('agentHint');
     const agentMeta = document.getElementById('agentMeta');
     const workspaceLine = document.getElementById('workspaceLine');
+    const projectCard = document.getElementById('projectCard');
+    const projectMeta = document.getElementById('projectMeta');
+    const gitCard = document.getElementById('gitCard');
+    const gitLine = document.getElementById('gitLine');
+    const gitMeta = document.getElementById('gitMeta');
+    const sshCard = document.getElementById('sshCard');
     const sshLine = document.getElementById('sshLine');
+    const sshMeta = document.getElementById('sshMeta');
     const recentFolders = document.getElementById('recentFolders');
+    const recentLabel = document.getElementById('recentLabel');
     const browseFolderBtn = document.getElementById('browseFolderBtn');
     const clearFolderBtn = document.getElementById('clearFolderBtn');
     const fsModal = document.getElementById('fsModal');
@@ -603,6 +675,7 @@ code:      /review  /explain</pre>
     const fsPathInput = document.getElementById('fsPathInput');
     const helpBtn = document.getElementById('helpBtn');
     let fsBrowsePath = '';
+    let currentWorkspacePath = '';
     const menuBtn = document.getElementById('menuBtn');
     const appMenu = document.getElementById('appMenu');
     const helpModal = document.getElementById('helpModal');
@@ -1077,25 +1150,87 @@ code:      /review  /explain</pre>
       return '…' + s.slice(-40);
     }
 
+    function setStatusCard(card, on, warn) {
+      if (!card) return;
+      card.classList.remove('is-on', 'is-warn');
+      if (warn) card.classList.add('is-warn');
+      else if (on) card.classList.add('is-on');
+    }
+
+    function prettyRemote(url) {
+      if (!url) return '';
+      let u = String(url);
+      // git@github.com:owner/repo.git → github.com/owner/repo
+      const sshM = u.match(/^git@([^:]+):(.+?)(?:\.git)?$/i);
+      if (sshM) return sshM[1] + '/' + sshM[2].replace(/\.git$/i, '');
+      u = u.replace(/^https?:\/\//i, '').replace(/\.git$/i, '');
+      return u;
+    }
+
     function applyWorkspaceUi(s) {
       if (!workspaceLine) return;
       const path = s.workspace_path || s.workspacePath || '';
-      const kind = s.workspace_kind || s.workspaceKind || '';
+      const kind = (s.workspace_kind || s.workspaceKind || '').toLowerCase();
       const branch = s.workspace_branch || s.workspaceBranch || '';
+      const remote = s.workspace_remote || s.workspaceRemote || s.remote || '';
+      currentWorkspacePath = path || '';
+
+      // —— Project folder (this PC only) ——
       if (!path) {
-        workspaceLine.textContent = 'No folder — Browse or /workspace path';
+        workspaceLine.textContent = 'No folder attached';
+        workspaceLine.title = '';
+        if (projectMeta) projectMeta.textContent = 'Browse a directory on this computer';
+        setStatusCard(projectCard, false, false);
       } else {
-        const bits = [shortPath(path)];
-        if (kind && kind !== 'none') bits.push(kind);
-        if (branch) bits.push(branch);
-        workspaceLine.textContent = bits.join(' · ');
-        workspaceLine.title = path + (branch ? ' @ ' + branch : '');
+        const leaf = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
+        workspaceLine.textContent = leaf;
+        workspaceLine.title = path;
+        const metaBits = [shortPath(path)];
+        if (kind && kind !== 'none' && kind !== 'missing') metaBits.push(kind);
+        if (projectMeta) projectMeta.textContent = metaBits.join(' · ');
+        setStatusCard(projectCard, true, kind === 'missing');
       }
+
+      // —— Git / GitHub (separate from “local folder”) ——
+      if (gitLine) {
+        if (path && kind === 'git') {
+          gitLine.textContent = branch ? ('branch ' + branch) : 'Git repo';
+          if (gitMeta) {
+            gitMeta.textContent = remote
+              ? prettyRemote(remote)
+              : 'Local git · /git status · /github prs';
+          }
+          setStatusCard(gitCard, true, false);
+        } else if (path && kind === 'local') {
+          gitLine.textContent = 'Not a git repo';
+          if (gitMeta) gitMeta.textContent = 'Optional: /github clone owner/repo';
+          setStatusCard(gitCard, false, false);
+        } else if (path && kind === 'missing') {
+          gitLine.textContent = 'Folder missing';
+          if (gitMeta) gitMeta.textContent = 'Path no longer exists on disk';
+          setStatusCard(gitCard, false, true);
+        } else {
+          gitLine.textContent = 'Not linked';
+          if (gitMeta) gitMeta.textContent = 'Attach a git repo or /github clone owner/repo';
+          setStatusCard(gitCard, false, false);
+        }
+      }
+
+      // —— SSH ——
       if (sshLine) {
         const t = s.ssh_target || s.sshTarget || '';
         const port = s.ssh_port || s.sshPort || 22;
-        sshLine.textContent = t ? ('SSH ' + t + (port && port !== 22 ? ':' + port : '')) : 'SSH: none — /ssh user@host';
+        if (t) {
+          sshLine.textContent = t + (port && Number(port) !== 22 ? ':' + port : '');
+          if (sshMeta) sshMeta.textContent = '/ssh ls · cat · run — keys on this PC only';
+          setStatusCard(sshCard, true, false);
+        } else {
+          sshLine.textContent = 'Not connected';
+          if (sshMeta) sshMeta.textContent = '/ssh user@host — keys stay on this PC';
+          setStatusCard(sshCard, false, false);
+        }
       }
+
       renderRecentFolders(s.workspace_recent || s.workspaceRecent || s.recent || []);
     }
 
@@ -1103,6 +1238,7 @@ code:      /review  /explain</pre>
       if (!recentFolders) return;
       const arr = Array.isArray(list) ? list : [];
       recentFolders.innerHTML = '';
+      if (recentLabel) recentLabel.hidden = arr.length === 0;
       arr.slice(0, 6).forEach(function (p) {
         if (!p) return;
         const b = document.createElement('button');
@@ -1128,11 +1264,12 @@ code:      /review  /explain</pre>
         applyWorkspaceUi({
           workspace_path: data.path,
           workspace_kind: data.kind,
-          workspace_recent: data.recent
+          workspace_recent: data.recent,
+          workspace_branch: data.branch,
+          workspace_remote: data.remote
         });
-        addMsg('sys', 'Local folder attached: ' + data.path + ' (' + (data.kind || 'local') + ')');
+        addMsg('sys', 'Project folder: ' + data.path + ' (' + (data.kind || 'local') + ')');
         closeFsModal();
-        // refresh full session for branch etc.
         loadSession();
       } catch (e) {
         addMsg('sys', 'Could not attach folder: ' + (e.message || e), null, true);
@@ -1148,9 +1285,9 @@ code:      /review  /explain</pre>
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'clear failed');
-        applyWorkspaceUi({ workspace_path: '', workspace_kind: 'none', workspace_recent: [] });
+        // loadSession refreshes project + git + ssh cards from server
         loadSession();
-        addMsg('sys', 'Workspace detached.');
+        addMsg('sys', 'Project folder detached.');
       } catch (e) {
         addMsg('sys', 'Detach failed: ' + (e.message || e), null, true);
       }
@@ -1164,9 +1301,7 @@ code:      /review  /explain</pre>
       closeMenu();
       closeHelp();
       fsModal.classList.add('open');
-      // start at current workspace or roots
-      const start = (workspaceLine && workspaceLine.title) ? workspaceLine.title.split(' @ ')[0] : '';
-      loadFsList(start || '');
+      loadFsList(currentWorkspacePath || '');
     }
 
     async function loadFsList(path) {
