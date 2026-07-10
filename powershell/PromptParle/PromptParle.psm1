@@ -6733,6 +6733,10 @@ function Start-PromptParleLocalServer {
 
     $script:PromptParleShouldStop = $false
     $script:PromptParleStopAnnounced = $false
+    # When true, process exits after stop (successful Update handoff closes this window)
+    if ($null -eq $script:PromptParleExitProcessAfterStop) {
+        $script:PromptParleExitProcessAfterStop = $false
+    }
     # Shared ref so cancel handler and main loop can both print progress
     $script:PromptParleListener = $listener
 
@@ -6934,8 +6938,11 @@ function Start-PromptParleLocalServer {
 
                         if ($updated -and $restartReq) {
                             Write-Host ("  update: {0} — restarting server..." -f $msg) -ForegroundColor Green
-                            # Let the response flush, then stop this process (new one already spawned)
-                            Start-Sleep -Milliseconds 400
+                            Write-Host '  New window starting; this window will close.' -ForegroundColor DarkGray
+                            # Let the response flush, then stop listener and exit this process
+                            # (new process already spawned and is waiting for the port)
+                            Start-Sleep -Milliseconds 500
+                            $script:PromptParleExitProcessAfterStop = $true
                             $script:PromptParleShouldStop = $true
                             $script:PromptParleStopAnnounced = $true
                             try { $listener.Stop() } catch { }
@@ -7727,6 +7734,20 @@ function Start-PromptParleLocalServer {
         $script:PromptParleShouldStop = $false
         $script:PromptParleStopAnnounced = $false
         $script:PromptParleListener = $null
+        $exitAfter = $false
+        try { $exitAfter = [bool]$script:PromptParleExitProcessAfterStop } catch { $exitAfter = $false }
+        $script:PromptParleExitProcessAfterStop = $false
+        if ($exitAfter) {
+            Write-Host 'Local PromptParle server stopped — update handoff complete.' -ForegroundColor Green
+            Write-Host 'Closing this window (new server is in the other PowerShell window)...' -ForegroundColor Cyan
+            Start-Sleep -Milliseconds 400
+            # Hard exit so the console window closes (return alone leaves an idle PS window)
+            try {
+                [System.Environment]::Exit(0)
+            } catch {
+                exit 0
+            }
+        }
         Write-Host 'Local PromptParle server stopped.' -ForegroundColor Green
         Write-Host 'You can close this window or run:  pp' -ForegroundColor DarkGray
     }
