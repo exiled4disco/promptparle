@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { CountUpStats } from "@/components/CountUpStats";
+import { ComingSoonButton } from "@/components/ComingSoonButton";
 import { getSessionUser } from "@/lib/auth";
 import { TAGLINE } from "@/lib/constants";
 
@@ -106,14 +107,14 @@ export default async function LandingPage() {
                   Create free account
                 </Link>
               )}
-              <a href="#install" className="btn btn-secondary">
+              <ComingSoonButton className="btn btn-secondary">
                 Install desktop client
-              </a>
+              </ComingSoonButton>
             </div>
             <p className="mt-4 text-sm text-[var(--text-dim)]">
               Registration unlocks encrypted provider keys and a desktop{" "}
               <span className="mono text-[var(--accent-strong)]">pp_live_…</span>{" "}
-              API key. The local chat UI is free on your PC.
+              API key. Desktop install is coming soon.
             </p>
           </div>
 
@@ -180,19 +181,19 @@ Get-Content .\\firewall-rules.txt -Raw |
           </div>
         </section>
 
-        {/* Install + registration path */}
-        <section id="install" className="border-t border-[var(--border)] py-16">
+        {/* Registration path + desktop coming soon */}
+        <section id="get-started" className="border-t border-[var(--border)] py-16">
           <div className="container">
             <h2 className="page-title text-center">Get started</h2>
             <p className="page-sub mx-auto max-w-xl text-center">
-              Register for free, then install the desktop client. Two steps —
-              portal for keys, local UI for daily chat.
+              Create a free account now. Desktop install is coming soon —
+              register so you&apos;re ready when it ships.
             </p>
 
             <div className="mx-auto mt-10 grid max-w-4xl gap-4 md:grid-cols-2">
               <div className="card flex flex-col p-6">
                 <div className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-strong)]">
-                  Step 1 · Portal
+                  Available now · Portal
                 </div>
                 <h3 className="mt-2 text-lg font-semibold">Create free account</h3>
                 <ul className="mt-4 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
@@ -210,39 +211,22 @@ Get-Content .\\firewall-rules.txt -Raw |
               </div>
 
               <div className="card flex flex-col p-6">
-                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--success)]">
-                  Step 2 · Desktop
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--warning)]">
+                  Coming soon · Desktop
                 </div>
                 <h3 className="mt-2 text-lg font-semibold">Install desktop client</h3>
                 <p className="mt-3 text-sm text-[var(--text-muted)]">
-                  Windows PowerShell (requires{" "}
-                  <a
-                    className="text-[var(--accent-strong)] hover:underline"
-                    href="https://git-scm.com/download/win"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Git for Windows
-                  </a>
-                  ):
+                  Free local PowerShell chat on your PC — dial, agents, workspace,
+                  Git, and SSH — without putting the full chat SPA in the cloud.
                 </p>
-                <pre className="mt-3 overflow-x-auto rounded-xl border border-[var(--border)] bg-black/30 p-4 mono text-sm text-[#c7d7f5]">
-{`irm https://promptparle.com/install.ps1 | iex
-pp`}
-                </pre>
                 <ul className="mt-4 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
-                  <li>• Local chat at http://127.0.0.1:7788/</li>
+                  <li>• Local chat UI on 127.0.0.1</li>
                   <li>• Chat history, agents, dial, workspace / SSH / Git</li>
-                  <li>• Self-update when a new client ships</li>
+                  <li>• Self-update when new builds ship</li>
                 </ul>
-                <a
-                  href="https://github.com/exiled4disco/promptparle/blob/main/powershell/PromptParle/README.md"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="btn btn-secondary mt-6 w-full"
-                >
-                  Full install + troubleshooting
-                </a>
+                <ComingSoonButton className="btn btn-secondary mt-6 w-full">
+                  Install desktop client
+                </ComingSoonButton>
               </div>
             </div>
           </div>
