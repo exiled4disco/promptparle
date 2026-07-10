@@ -4203,16 +4203,35 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         agentCatalog = data.agents || [];
         if (data.tools && data.tools.length) toolCatalog = data.tools;
         agentSelect.innerHTML = '';
-        agentCatalog.forEach(function (a) {
+        // Deterministic default first: Auto
+        var sorted = (agentCatalog || []).slice().sort(function (a, b) {
+          var rank = function (id) {
+            if (id === 'auto') return 0;
+            if (id === 'default') return 1;
+            if (id === 'code') return 2;
+            if (id === 'security') return 3;
+            if (id === 'docs') return 4;
+            return 10;
+          };
+          return rank(a.id) - rank(b.id);
+        });
+        sorted.forEach(function (a) {
           const opt = document.createElement('option');
           opt.value = a.id;
           var extra = '';
-          if (a.tools && a.tools.length) extra = ' · ' + a.tools.length + ' tools';
+          if (a.id === 'auto') extra = ' · best lens each message';
+          else if (a.tools && a.tools.length) extra = ' · ' + a.tools.length + ' tools';
           else if (a.commands && a.commands.length) extra = ' (/' + a.commands.join(', /') + ')';
           opt.textContent = a.name + extra;
           agentSelect.appendChild(opt);
         });
-        if (data.active_agent) agentSelect.value = data.active_agent;
+        var wantAgent = data.active_agent || 'auto';
+        if (wantAgent === 'default') wantAgent = 'auto';
+        if (agentSelect.querySelector('option[value="' + wantAgent + '"]')) {
+          agentSelect.value = wantAgent;
+        } else if (data.active_agent) {
+          agentSelect.value = data.active_agent;
+        }
         if (agentSelect.dataset.pendingAgent) {
           const pend = agentSelect.dataset.pendingAgent;
           if (agentSelect.querySelector('option[value="' + pend + '"]')) {
@@ -4225,7 +4244,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           renderAgentList();
         }
       } catch (e) {
-        agentSelect.innerHTML = '<option value="default">Default</option>';
+        agentSelect.innerHTML = '<option value="auto">Auto · best lens each message</option>';
       }
     }
 

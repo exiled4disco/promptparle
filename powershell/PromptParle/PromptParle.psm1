@@ -481,8 +481,11 @@ function New-PromptParleAgentObject {
 function Initialize-PromptParleDefaultAgents {
     $dir = Get-PromptParleAgentsDir
     $defaults = @(
-        (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 `
-            -System 'You are a helpful assistant. Respect [CONN] Project connections (local PC folder, Git, SSH). Prefer attached local evidence; use [WEB] briefs when present.' `
+        (New-PromptParleAgentObject -Id 'auto' -Name 'Auto' -Description 'Deterministic default: pick best lens + tools for THIS message' -Profile 'general' -Dial 3 `
+            -System 'You are PromptParle Auto. Each turn is routed to the best lens for the user message (code, security, docs, general). Answer THIS message fully. Prior findings are context only — never trap the user in a previous mode. Honor [CONN]/[SSH]/[WEB] evidence.' `
+            -Tools @('files', 'workspace', 'git', 'ssh', 'secret_scan', 'code_brief', 'connections', 'web_search', 'relevant_slice', 'error_brief')),
+        (New-PromptParleAgentObject -Id 'default' -Name 'General' -Description 'General assistant (also used as Auto fallback lens)' -Profile 'general' -Dial 3 `
+            -System 'You are a helpful assistant. Respect [CONN] Project connections (local PC folder, Git, SSH). Prefer attached local evidence; use [WEB] briefs when present. Answer THIS user message; do not force a prior specialized mode.' `
             -Tools @('files', 'workspace', 'secret_scan', 'connections', 'web_search')),
         (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Security review for the current ask (not a permanent lock)' -Profile 'security-review' -Dial 3 `
             -System 'You are a security reviewer for THIS user message only. Prioritize real risk with evidence and concrete fixes. When [CONN] shows SSH cwd, [SSH] blocks are live remote file evidence — do not invent missing files. Prefer [SSH]/[CONN]/attachments. Do not invent ship-blockers. Do not refuse unrelated product/work questions if the user changed topics. PowerShell ExecutionPolicy is not a security boundary (Microsoft); do not treat -ExecutionPolicy Bypass alone as privilege escalation.' `
@@ -597,7 +600,7 @@ function Read-PromptParleAgentFile {
             commands    = $cmds
             tools       = $tools
             path        = $Path
-            builtin     = @('default', 'security', 'docs', 'code') -contains $id
+            builtin     = @('auto', 'default', 'security', 'docs', 'code') -contains $id
         }
     } catch {
         return $null
@@ -713,16 +716,20 @@ function Get-PromptParleActiveAgentId {
         try {
             $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
             $id = Get-PromptParleProp $s 'active_agent'
-            if ($id) { return [string]$id }
+            if ($id) {
+                # Legacy: bare 'default' as sticky → Auto router
+                if ([string]$id -eq 'default') { return 'auto' }
+                return [string]$id
+            }
         } catch { }
     }
-    return 'default'
+    return 'auto'
 }
 
 function Get-PromptParleSessionState {
     $path = Get-PromptParleSessionStatePath
     $state = [ordered]@{
-        active_agent      = 'default'
+        active_agent      = 'auto'
         provider          = 'openai'
         profile           = 'general'
         dial              = 3
@@ -761,6 +768,10 @@ function Get-PromptParleSessionState {
                 $state.workspace_recent = $list
             }
         } catch { }
+    }
+    # Deterministic default is Auto (legacy sessions with 'default' promote to auto)
+    if (-not $state.active_agent -or [string]$state.active_agent -eq 'default') {
+        $state.active_agent = 'auto'
     }
     # Apply agent defaults when agent selected
     $agent = Get-PromptParleAgent -Name $state.active_agent
@@ -931,74 +942,139 @@ function Get-PromptParlePromptIntent {
     return 'general'
 }
 
+function Get-PromptParleDeterministicLens {
+    <#
+    .SYNOPSIS
+      Fixed intent → agent/profile map (no model choice). Same input → same lens.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Intent
+    )
+    switch ($Intent) {
+        'security' {
+            return [pscustomobject]@{ agent_id = 'security'; profile = 'security-review'; dial = 3; label = 'Security' }
+        }
+        'code' {
+            return [pscustomobject]@{ agent_id = 'code'; profile = 'developer'; dial = 2; label = 'Code' }
+        }
+        'docs' {
+            return [pscustomobject]@{ agent_id = 'docs'; profile = 'documentation'; dial = 3; label = 'Docs' }
+        }
+        'logs' {
+            return [pscustomobject]@{ agent_id = 'default'; profile = 'log-analysis'; dial = 4; label = 'Logs' }
+        }
+        'meta' {
+            return [pscustomobject]@{ agent_id = 'default'; profile = 'general'; dial = 3; label = 'General' }
+        }
+        'product' {
+            return [pscustomobject]@{ agent_id = 'default'; profile = 'general'; dial = 3; label = 'General' }
+        }
+        default {
+            return [pscustomobject]@{ agent_id = 'default'; profile = 'general'; dial = 3; label = 'General' }
+        }
+    }
+}
+
+function Test-PromptParleAutoRouterAgent {
+    <# True when sticky selection means "pick best lens each turn". #>
+    param([string]$AgentId)
+    $id = if ($AgentId) { $AgentId.ToLowerInvariant() } else { 'auto' }
+    return ($id -eq 'auto' -or $id -eq 'default' -or $id -eq '' -or $id -eq 'general')
+}
+
 function Resolve-PromptParleTurnLens {
     <#
     .SYNOPSIS
-      Pick agent + profile for THIS turn from user intent + sticky preference.
+      Pick agent + profile for THIS turn.
     .DESCRIPTION
-      Sticky agent stays in session state, but a mismatched specialized lens
-      (especially security-review) must not trap unrelated questions.
+      Auto (deterministic default): always map intent → best lens/tools path.
+      Specialized sticky (security/code/docs): stay in lane, but soft-escape on
+      clear topic shift so the user is never trapped in a corridor.
+      AgentLocked: force sticky specialized lens (rare; UI can send later).
     #>
     [CmdletBinding()]
     param(
         [string]$Prompt = '',
-        [string]$StickyAgentId = 'default',
+        [string]$StickyAgentId = 'auto',
         [string]$StickyProfile = 'general',
         [switch]$AgentLocked
     )
     $intent = Get-PromptParlePromptIntent -Prompt $Prompt
-    $stickyId = if ($StickyAgentId) { $StickyAgentId } else { 'default' }
+    $lens = Get-PromptParleDeterministicLens -Intent $intent
+    $stickyId = if ($StickyAgentId) { $StickyAgentId } else { 'auto' }
+    if ($stickyId -eq 'default') { $stickyId = 'auto' }
+
     $sticky = $null
     try { $sticky = Get-PromptParleAgent -Name $stickyId } catch { $sticky = $null }
     $stickyProf = if ($sticky -and $sticky.profile) { [string]$sticky.profile } else { $StickyProfile }
     if (-not $stickyProf) { $stickyProf = 'general' }
 
+    $doctrine = 'Answer the CURRENT user message fully. Prior chat findings are optional context only — do not refuse unrelated work, restate old ship-blockers, or force a previous specialized conclusion unless the user asks about it this turn.'
+
+    $isAuto = Test-PromptParleAutoRouterAgent -AgentId $stickyId
     $agentId = $stickyId
     $profile = $stickyProf
     $override = $false
     $reason = 'sticky agent'
+    $mode = 'sticky'
 
-    $doctrine = 'Answer the CURRENT user message fully. Prior chat findings are optional context only — do not refuse unrelated work, restate old ship-blockers, or force a previous security conclusion unless the user asks about it this turn.'
+    if ($isAuto -and -not $AgentLocked) {
+        # Deterministic default: always best lens for this message
+        $agentId = [string]$lens.agent_id
+        $profile = [string]$lens.profile
+        $override = $true
+        $mode = 'auto'
+        $reason = "Auto → $($lens.label) (intent=$intent)"
+    }
+    elseif (-not $AgentLocked) {
+        # Specialized sticky: soft-escape on topic shift (never a prison)
+        $stickyIsSec = ($stickyProf -eq 'security-review') -or ($stickyId -eq 'security')
+        $stickyIsCode = ($stickyProf -eq 'developer') -or ($stickyId -eq 'code')
+        $stickyIsDocs = ($stickyProf -eq 'documentation') -or ($stickyId -eq 'docs')
 
-    $stickyIsSec = ($stickyProf -eq 'security-review') -or ($stickyId -eq 'security')
-    $stickyIsCode = ($stickyProf -eq 'developer') -or ($stickyId -eq 'code')
-    $stickyIsDocs = ($stickyProf -eq 'documentation') -or ($stickyId -eq 'docs')
-
-    if (-not $AgentLocked) {
         if ($stickyIsSec -and $intent -ne 'security') {
-            if ($intent -eq 'code') {
-                $agentId = 'code'; $profile = 'developer'
-            } elseif ($intent -eq 'docs') {
-                $agentId = 'docs'; $profile = 'documentation'
-            } else {
-                $agentId = 'default'; $profile = 'general'
-            }
+            $agentId = [string]$lens.agent_id
+            $profile = [string]$lens.profile
             $override = $true
-            $reason = "topic shift: this turn is '$intent', not security (sticky was $stickyId)"
+            $mode = 'escape'
+            $reason = "escape security → $($lens.label) (intent=$intent)"
         }
-        elseif ($stickyIsCode -and $intent -in @('meta', 'product', 'docs', 'logs')) {
-            $agentId = 'default'; $profile = 'general'
-            if ($intent -eq 'docs') { $agentId = 'docs'; $profile = 'documentation' }
+        elseif ($stickyIsCode -and $intent -ne 'code' -and $intent -in @('meta', 'product', 'docs', 'logs', 'security', 'general')) {
+            $agentId = [string]$lens.agent_id
+            $profile = [string]$lens.profile
             $override = $true
-            $reason = "topic shift: this turn is '$intent', not code review (sticky was $stickyId)"
+            $mode = 'escape'
+            $reason = "escape code → $($lens.label) (intent=$intent)"
         }
-        elseif ($stickyIsDocs -and $intent -in @('meta', 'code', 'security', 'product')) {
-            if ($intent -eq 'code') { $agentId = 'code'; $profile = 'developer' }
-            elseif ($intent -eq 'security') { $agentId = 'security'; $profile = 'security-review' }
-            else { $agentId = 'default'; $profile = 'general' }
+        elseif ($stickyIsDocs -and $intent -ne 'docs' -and $intent -in @('meta', 'code', 'security', 'product', 'general', 'logs')) {
+            $agentId = [string]$lens.agent_id
+            $profile = [string]$lens.profile
             $override = $true
-            $reason = "topic shift: this turn is '$intent' (sticky was $stickyId)"
+            $mode = 'escape'
+            $reason = "escape docs → $($lens.label) (intent=$intent)"
         }
-        elseif (($stickyId -eq 'default' -or $stickyProf -eq 'general') -and $intent -eq 'security') {
-            $agentId = 'security'; $profile = 'security-review'
-            $override = $true
-            $reason = 'this turn is an explicit security ask (sticky default)'
+        else {
+            $agentId = $stickyId
+            $profile = $stickyProf
+            $mode = 'sticky'
+            $reason = "sticky $stickyId (intent=$intent)"
         }
-        elseif (($stickyId -eq 'default' -or $stickyProf -eq 'general') -and $intent -eq 'code' -and ($Prompt -match '(?i)\b(review this code|code review|refactor this|fix this bug)\b')) {
-            $agentId = 'code'; $profile = 'developer'
-            $override = $true
-            $reason = 'this turn is an explicit code-review ask (sticky default)'
-        }
+    }
+    else {
+        # Hard lock specialized
+        $agentId = $stickyId
+        $profile = $stickyProf
+        $mode = 'locked'
+        $reason = "locked $stickyId"
+    }
+
+    # Never leave agent_id as 'auto' for system prompt — Auto is a router, not a persona
+    if ($agentId -eq 'auto') {
+        $agentId = [string]$lens.agent_id
+        $profile = [string]$lens.profile
+        $override = $true
+        if ($mode -eq 'auto') { $reason = "Auto → $($lens.label) (intent=$intent)" }
     }
 
     return [pscustomobject]@{
@@ -1011,6 +1087,9 @@ function Resolve-PromptParleTurnLens {
         reason         = $reason
         doctrine       = $doctrine
         locked         = [bool]$AgentLocked
+        mode           = $mode
+        lens_label     = [string]$lens.label
+        dial_hint      = $lens.dial
     }
 }
 
@@ -7470,21 +7549,34 @@ function Start-PromptParleLocalServer {
                         if ($skipAgent -ne $true) {
                             # Turn lens: sticky agent is preference; this message picks the real lens
                             try {
-                                $stickyAgentId = 'default'
+                                $stickyAgentId = 'auto'
                                 try {
                                     $stickyAgentId = Get-PromptParleActiveAgentId
-                                } catch { $stickyAgentId = 'default' }
+                                } catch { $stickyAgentId = 'auto' }
                                 $agentLock = $false
                                 $lockFlag = Get-PromptParleProp $body 'agent_locked' (Get-PromptParleProp $body 'agentLocked' $null)
                                 if ($null -ne $lockFlag) { $agentLock = [bool]$lockFlag }
                                 $turnLens = Resolve-PromptParleTurnLens -Prompt $prompt -StickyAgentId $stickyAgentId -StickyProfile $profile -AgentLocked:$agentLock
-                                if ($turnLens.override) {
+                                if ($turnLens) {
                                     $profile = [string]$turnLens.profile
-                                    $turnAgentNote = [string]$turnLens.reason
-                                    $localNotes = @($localNotes) + @("turn-lens:$($turnLens.sticky_agent)→$($turnLens.agent_id) ($($turnLens.intent))")
-                                    Write-Host ("  chat: turn-lens {0} → {1} ({2})" -f $turnLens.sticky_agent, $turnLens.agent_id, $turnLens.intent) -ForegroundColor DarkCyan
-                                } elseif ($turnLens) {
-                                    $profile = [string]$turnLens.profile
+                                    if ($turnLens.override -or $turnLens.mode -eq 'auto') {
+                                        $turnAgentNote = [string]$turnLens.reason
+                                        $localNotes = @($localNotes) + @("turn-lens:$($turnLens.mode):$($turnLens.sticky_agent)→$($turnLens.agent_id) ($($turnLens.intent))")
+                                        Write-Host ("  chat: {0}" -f $turnLens.reason) -ForegroundColor DarkCyan
+                                    }
+                                    # Optional dial hint from deterministic map (only if UI sent default-ish dial)
+                                    if ($null -ne $turnLens.dial_hint -and $dial -eq 3 -and $turnLens.mode -eq 'auto') {
+                                        try {
+                                            $dh = [int]$turnLens.dial_hint
+                                            if ($dh -ge 1 -and $dh -le 5 -and $dh -ne $dial) {
+                                                # Keep user dial unless map strongly prefers (code=2, logs=4)
+                                                if ($turnLens.intent -in @('code', 'logs')) {
+                                                    $dial = $dh
+                                                    $localNotes = @($localNotes) + @("dial-hint:$dh")
+                                                }
+                                            }
+                                        } catch { }
+                                    }
                                 }
                             } catch {
                                 Write-Host ("  chat: turn-lens skip - {0}" -f $_) -ForegroundColor DarkYellow
@@ -7515,8 +7607,8 @@ function Start-PromptParleLocalServer {
                             if ($turnLens -and $turnLens.agent_id) {
                                 $fmtParams.AgentId = [string]$turnLens.agent_id
                                 $fmtParams.Doctrine = [string]$turnLens.doctrine
-                                if ($turnLens.override) {
-                                    $fmtParams.TurnNote = ("using {0} this turn — {1}" -f $turnLens.agent_id, $turnLens.reason)
+                                if ($turnLens.override -or $turnLens.mode -eq 'auto') {
+                                    $fmtParams.TurnNote = [string]$turnLens.reason
                                 }
                             }
                             $prompt = Format-PromptParleAgentPrompt @fmtParams
@@ -7824,12 +7916,14 @@ function Start-PromptParle {
             $cliCtx = if ($sessionContext) { [string]$sessionContext } else { '' }
             $cliLens = $null
             try {
-                $cliSticky = 'default'
-                try { $cliSticky = Get-PromptParleActiveAgentId } catch { $cliSticky = 'default' }
+                $cliSticky = 'auto'
+                try { $cliSticky = Get-PromptParleActiveAgentId } catch { $cliSticky = 'auto' }
                 $cliLens = Resolve-PromptParleTurnLens -Prompt $trimmed -StickyAgentId $cliSticky -StickyProfile $sessionProfile
-                if ($cliLens.override) {
+                if ($cliLens) {
                     $sessionProfile = [string]$cliLens.profile
-                    Write-Host ("  turn-lens: {0} → {1} ({2})" -f $cliLens.sticky_agent, $cliLens.agent_id, $cliLens.intent) -ForegroundColor DarkCyan
+                    if ($cliLens.override -or $cliLens.mode -eq 'auto') {
+                        Write-Host ("  {0}" -f $cliLens.reason) -ForegroundColor DarkCyan
+                    }
                 }
             } catch {
                 Write-Host ("  turn-lens skip: {0}" -f $_) -ForegroundColor DarkYellow
@@ -7856,8 +7950,8 @@ function Start-PromptParle {
             if ($cliLens -and $cliLens.agent_id) {
                 $cliFmt.AgentId = [string]$cliLens.agent_id
                 $cliFmt.Doctrine = [string]$cliLens.doctrine
-                if ($cliLens.override) {
-                    $cliFmt.TurnNote = ("using {0} this turn — {1}" -f $cliLens.agent_id, $cliLens.reason)
+                if ($cliLens.override -or $cliLens.mode -eq 'auto') {
+                    $cliFmt.TurnNote = [string]$cliLens.reason
                 }
             }
             $sendPrompt = Format-PromptParleAgentPrompt @cliFmt
@@ -8032,6 +8126,8 @@ Export-ModuleMember -Function @(
     'Invoke-PromptParleLocalTool',
     'Invoke-PromptParleAgentLocalPrep',
     'Resolve-PromptParleTurnLens',
+    'Get-PromptParleDeterministicLens',
+    'Test-PromptParleAutoRouterAgent',
     'Get-PromptParlePromptIntent',
     'Optimize-PromptParleAgent',
     'Invoke-PromptParleSlashCommand',

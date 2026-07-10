@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.13.6'
+    ModuleVersion     = '0.13.7'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.13.7: Auto default — deterministic best-lens router each message (specialists optional)
 0.13.6: Turn-lens agents — sticky preference, not a prison; topic shift escapes security corridor
 0.13.5: SSH cwd is live — auto-fetch files named in the prompt into [SSH] evidence
 0.13.4: Update restart hardened — overlay install + durable restart.ps1 (no silent dead client)
