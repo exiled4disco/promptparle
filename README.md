@@ -101,7 +101,14 @@ Authenticated with the browser session cookie:
 Requires [Git for Windows](https://git-scm.com/download/win).
 
 ```powershell
-# Clone/update + install + prompt for API key + optional start
+# Clone/update + install + prompt for API key (works in Windows PowerShell 5.1)
+irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
+```
+
+Optional: auto-start local chat after install:
+
+```powershell
+$global:PromptParleStart = $true
 irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
 ```
 
