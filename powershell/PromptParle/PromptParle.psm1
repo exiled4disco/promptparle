@@ -677,14 +677,26 @@ function Write-PromptParleHttpResponse {
 }
 
 function Get-PromptParleListenersOnPort {
+    <#
+    .SYNOPSIS
+      PIDs listening on a local TCP port.
+    .OUTPUTS
+      System.Collections.Generic.List[int]  (always one List object; .Count is safe under StrictMode)
+    .NOTES
+      Do NOT return ,@() empty Object[] - in PS that nests an empty array and
+      foreach runs once with Id=@() which breaks Get-Process -Id.
+    #>
     param([int]$Port)
-    # Always return Object[] so StrictMode callers can use .Count safely
+
     $pids = New-Object System.Collections.Generic.List[int]
     try {
         if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
             $conns = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
             foreach ($c in $conns) {
-                if ($c.OwningProcess) { [void]$pids.Add([int]$c.OwningProcess) }
+                if ($c.OwningProcess) {
+                    $op = [int]$c.OwningProcess
+                    if ($op -gt 0 -and -not $pids.Contains($op)) { [void]$pids.Add($op) }
+                }
             }
         }
     } catch { }
@@ -699,15 +711,15 @@ function Get-PromptParleListenersOnPort {
                 if ($parts.Count -ge 5) {
                     $procId = 0
                     if ([int]::TryParse($parts[-1], [ref]$procId) -and $procId -gt 0) {
-                        [void]$pids.Add($procId)
+                        if (-not $pids.Contains($procId)) { [void]$pids.Add($procId) }
                     }
                 }
             }
         } catch { }
     }
-    $unique = @($pids | Select-Object -Unique)
-    # comma forces array even for 0 or 1 element
-    return ,$unique
+
+    # Unary comma: return the List as one object (empty List is fine; has .Count)
+    ,$pids
 }
 
 function Clear-PromptParleLocalPort {
@@ -721,8 +733,8 @@ function Clear-PromptParleLocalPort {
         [switch]$Quiet
     )
 
-    $pids = @(Get-PromptParleListenersOnPort -Port $Port)
-    if (@($pids).Length -eq 0) {
+    $pids = Get-PromptParleListenersOnPort -Port $Port
+    if ($null -eq $pids -or $pids.Count -eq 0) {
         # Nothing listening - do not wait on HTTP timeout
         return
     }
@@ -739,25 +751,38 @@ function Clear-PromptParleLocalPort {
         Start-Sleep -Milliseconds 200
     } catch { }
 
-    $pids = @(Get-PromptParleListenersOnPort -Port $Port)
-    foreach ($procId in @($pids)) {
-        if ($procId -eq $PID) { continue }
-        $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    $pids = Get-PromptParleListenersOnPort -Port $Port
+    if ($null -eq $pids) { return }
+
+    foreach ($procId in $pids) {
+        # Guard: never pass empty/non-int to Get-Process -Id (StrictMode / PS 5.1)
+        if ($null -eq $procId) { continue }
+        $id = 0
+        if (-not [int]::TryParse([string]$procId, [ref]$id) -or $id -le 0) { continue }
+        if ($id -eq $PID) { continue }
+
+        $proc = $null
+        try {
+            $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+        } catch {
+            continue
+        }
         if (-not $proc) { continue }
+
         $name = $proc.ProcessName
         if ($name -match '^(powershell|pwsh|powershell_ise)$') {
             if (-not $Quiet) {
-                Write-Host ("Stopping leftover {0} (PID {1}) on port {2}..." -f $name, $procId, $Port) -ForegroundColor Yellow
+                Write-Host ("Stopping leftover {0} (PID {1}) on port {2}..." -f $name, $id, $Port) -ForegroundColor Yellow
             }
             try {
-                Stop-Process -Id $procId -Force -ErrorAction Stop
-                if (-not $Quiet) { Write-Host ("Stopped PID {0}." -f $procId) -ForegroundColor Green }
+                Stop-Process -Id $id -Force -ErrorAction Stop
+                if (-not $Quiet) { Write-Host ("Stopped PID {0}." -f $id) -ForegroundColor Green }
             } catch {
-                if (-not $Quiet) { Write-Host ("Could not stop PID {0}: {1}" -f $procId, $_) -ForegroundColor Red }
+                if (-not $Quiet) { Write-Host ("Could not stop PID {0}: {1}" -f $id, $_) -ForegroundColor Red }
             }
         } else {
             if (-not $Quiet) {
-                Write-Host ("Port {0} held by {1} (PID {2}) - not auto-killed." -f $Port, $name, $procId) -ForegroundColor Yellow
+                Write-Host ("Port {0} held by {1} (PID {2}) - not auto-killed." -f $Port, $name, $id) -ForegroundColor Yellow
             }
         }
     }
@@ -783,8 +808,8 @@ function Stop-PromptParleLocalServer {
     if ($AllCommonPorts) {
         $any = $false
         foreach ($p in 7788..7798) {
-            $listeners = @(Get-PromptParleListenersOnPort -Port $p)
-            if (@($listeners).Length -gt 0) {
+            $listeners = Get-PromptParleListenersOnPort -Port $p
+            if ($null -ne $listeners -and $listeners.Count -gt 0) {
                 $any = $true
                 Clear-PromptParleLocalPort -Port $p
             }
@@ -854,8 +879,8 @@ function Start-PromptParleLocalServer {
 
     foreach ($tryPort in $tryPorts) {
         # Fast path: only clear when something is actually listening
-        $busy = @(Get-PromptParleListenersOnPort -Port $tryPort)
-        if ($busy.Count -gt 0) {
+        $busy = Get-PromptParleListenersOnPort -Port $tryPort
+        if ($null -ne $busy -and $busy.Count -gt 0) {
             Clear-PromptParleLocalPort -Port $tryPort -Quiet
         }
 
@@ -886,14 +911,33 @@ function Start-PromptParleLocalServer {
     }
 
     $script:PromptParleShouldStop = $false
+    $script:PromptParleStopAnnounced = $false
+    # Shared ref so cancel handler and main loop can both print progress
+    $script:PromptParleListener = $listener
+
     $cancelHandler = [System.ConsoleCancelEventHandler]{
         param($sender, $eventArgs)
+        # Keep process alive - we shut down cleanly in the main loop
         $eventArgs.Cancel = $true
         $script:PromptParleShouldStop = $true
-        Write-Host ''
-        Write-Host 'Ctrl+C - stopping local PromptParle...' -ForegroundColor Yellow
+        # CancelKeyPress runs on another thread; Write-Host can lag or look like dead air.
+        # Console.Out + Flush shows feedback immediately.
         try {
-            if ($listener.IsListening) { $listener.Stop() }
+            [Console]::Out.WriteLine('')
+            [Console]::Out.WriteLine('Ctrl+C received - stopping local PromptParle...')
+            [Console]::Out.WriteLine('  Closing listener and finishing any in-flight request...')
+            [Console]::Out.Flush()
+        } catch {
+            try {
+                Write-Host ''
+                Write-Host 'Ctrl+C received - stopping local PromptParle...' -ForegroundColor Yellow
+            } catch { }
+        }
+        $script:PromptParleStopAnnounced = $true
+        try {
+            if ($script:PromptParleListener -and $script:PromptParleListener.IsListening) {
+                $script:PromptParleListener.Stop()
+            }
         } catch { }
     }
     [Console]::add_CancelKeyPress($cancelHandler)
@@ -928,10 +972,14 @@ function Start-PromptParleLocalServer {
 
             while (-not $async.IsCompleted) {
                 if ($script:PromptParleShouldStop -or -not $listener.IsListening) {
+                    if (-not $script:PromptParleStopAnnounced) {
+                        Write-Host 'Stop requested - shutting down local server...' -ForegroundColor Yellow
+                        $script:PromptParleStopAnnounced = $true
+                    }
                     try { $listener.Stop() } catch { }
                     break
                 }
-                Start-Sleep -Milliseconds 250
+                Start-Sleep -Milliseconds 100
             }
 
             if ($script:PromptParleShouldStop -or -not $listener.IsListening) { break }
@@ -951,7 +999,9 @@ function Start-PromptParleLocalServer {
                 # Stop server from browser or Stop-PromptParleLocalServer
                 if (($req.HttpMethod -eq 'POST' -or $req.HttpMethod -eq 'GET') -and $path -eq '/api/stop') {
                     Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body '{"ok":true,"stopped":true}'
+                    Write-Host 'Stop requested from browser / remote - shutting down...' -ForegroundColor Yellow
                     $script:PromptParleShouldStop = $true
+                    $script:PromptParleStopAnnounced = $true
                     try { $listener.Stop() } catch { }
                     break
                 }
@@ -1015,13 +1065,23 @@ function Start-PromptParleLocalServer {
             }
         }
     } finally {
+        if (-not $script:PromptParleStopAnnounced) {
+            Write-Host 'Shutting down local PromptParle...' -ForegroundColor Yellow
+            $script:PromptParleStopAnnounced = $true
+        }
         try { [Console]::remove_CancelKeyPress($cancelHandler) } catch { }
         try {
-            if ($listener.IsListening) { $listener.Stop() }
+            if ($listener -and $listener.IsListening) {
+                Write-Host '  Closing HTTP listener...' -ForegroundColor DarkGray
+                $listener.Stop()
+            }
         } catch { }
-        try { $listener.Close() } catch { }
+        try { if ($listener) { $listener.Close() } } catch { }
         $script:PromptParleShouldStop = $false
-        Write-Host 'Local PromptParle server stopped. You can close this window or run pp again.' -ForegroundColor Green
+        $script:PromptParleStopAnnounced = $false
+        $script:PromptParleListener = $null
+        Write-Host 'Local PromptParle server stopped.' -ForegroundColor Green
+        Write-Host 'You can close this window or run:  pp' -ForegroundColor DarkGray
     }
 }
 
