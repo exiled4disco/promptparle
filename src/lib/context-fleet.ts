@@ -55,18 +55,125 @@ function dedupeLines(text: string, aggressive: boolean): string {
   return out.join("\n");
 }
 
+/**
+ * High-fidelity log shrink: always keep ERROR/FATAL/Exception/stack frames;
+ * drop DEBUG/TRACE spam and duplicate noise. Selection, not destruction.
+ */
 function compressLog(text: string, aggressive: boolean): {
   text: string;
   note?: string;
 } {
   const before = text.length;
-  const out = dedupeLines(text, aggressive);
-  if (out.length < before) {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  const seen = new Map<string, number>();
+  let contextWindow = 0;
+  let keptErr = 0;
+  let dropped = 0;
+  const maxDup = aggressive ? 1 : 2;
+  const errRe =
+    /\b(ERROR|FATAL|CRITICAL|EXCEPTION|Traceback|FAILED|FAILURE|PANIC|Assert|npm ERR!|Build failed)\b/i;
+  const stackRe =
+    /^\s*(at\s+\S+\(|File\s+".+",\s*line\s+\d+|Caused by:|--- End of|\.\.\. \d+ more)/i;
+  const noiseRe =
+    /^\s*(\[?(DEBUG|TRACE|VERBOSE)\]?|console\.(log|debug))\b/i;
+  const warnRe = /\bWARN(ING)?\b/i;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trim = raw.trimEnd();
+    const t = trim.trim();
+    if (!t) {
+      if (contextWindow > 0) {
+        out.push("");
+        contextWindow--;
+      }
+      continue;
+    }
+
+    const isErr = errRe.test(t) || stackRe.test(t);
+    const isNoise = noiseRe.test(t);
+    const isWarn = warnRe.test(t);
+
+    if (isErr) {
+      const key = t.length > 120 ? t.slice(0, 120) : t;
+      const c = (seen.get(key) || 0) + 1;
+      seen.set(key, c);
+      if (c > maxDup) {
+        dropped++;
+        continue;
+      }
+      out.push(trim);
+      keptErr++;
+      contextWindow = aggressive ? 2 : 4;
+      continue;
+    }
+
+    if (contextWindow > 0) {
+      if (stackRe.test(t) || (!isNoise && t.length < 300)) {
+        out.push(trim);
+        if (stackRe.test(t)) contextWindow = Math.max(contextWindow, 2);
+        else contextWindow--;
+        continue;
+      }
+      dropped++;
+      contextWindow--;
+      continue;
+    }
+
+    if (isNoise) {
+      dropped++;
+      continue;
+    }
+
+    if (isWarn) {
+      const wk = "W:" + (t.length > 80 ? t.slice(0, 80) : t);
+      if (!seen.has(wk)) {
+        seen.set(wk, 1);
+        out.push(trim);
+      } else dropped++;
+      continue;
+    }
+
+    // INFO: keep sparse shape only when aggressive
+    if (/^\s*\[?INFO\]?\b/i.test(t)) {
+      if (!aggressive && i % 10 === 0) out.push(trim);
+      else dropped++;
+      continue;
+    }
+
+    // Non-log prose mixed in: light keep of short early lines
+    if (!aggressive && t.length < 160 && i < 40) {
+      out.push(trim);
+    } else if (aggressive) {
+      dropped++;
+    } else {
+      // fallback dedupe path for general lines
+      const key = t;
+      const c = (seen.get(key) || 0) + 1;
+      seen.set(key, c);
+      if (c > 2) dropped++;
+      else out.push(trim);
+    }
+  }
+
+  let result = out.join("\n");
+  // Safety: if we destroyed almost everything, fall back to simple dedupe
+  if (result.length < Math.min(200, before * 0.05) && before > 500) {
+    result = dedupeLines(text, aggressive);
     return {
-      text: out,
+      text: result,
       note: aggressive
         ? "Log fleet: deduplicated repetitive lines"
         : "Log fleet: removed consecutive duplicates",
+    };
+  }
+
+  result = result.replace(/\n{3,}/g, "\n\n");
+  if (result.length < before) {
+    return {
+      text: result,
+      note: `Log fleet: kept ${keptErr} error/stack signals, dropped ~${dropped} noise lines`,
     };
   }
   return { text: text };

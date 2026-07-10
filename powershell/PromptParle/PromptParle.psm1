@@ -986,6 +986,24 @@ function Get-PromptParleToolCatalog {
             category = 'research'; local = $true
             description = 'Brief web results (DDG + Wikipedia); cached, char-capped.'
             auto = $true
+        },
+        [pscustomobject]@{
+            id = 'error_brief'; name = 'Error brief'
+            category = 'optimize'; local = $true
+            description = 'Keep exceptions/stacks; drop DEBUG spam (high fidelity).'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'relevant_slice'; name = 'Relevant slice'
+            category = 'optimize'; local = $true
+            description = 'Prompt-ranked code windows from workspace (select, not destroy).'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'chat_memory'; name = 'Chat memory'
+            category = 'optimize'; local = $true
+            description = 'Prior turns → compact [MEM] brief (recent full, older extractive).'
+            auto = $true
         }
     )
 }
@@ -1366,20 +1384,85 @@ function Invoke-PromptParleSecretScanLocal {
     return [pscustomobject]@{ text = $out; masked = $masked }
 }
 
+function Get-PromptParlePromptTokens {
+    <# Tokenize a prompt for fidelity scoring (local, free). #>
+    param([string]$Text)
+    if (-not $Text) { return @() }
+    $stop = @{
+        'a'=1;'an'=1;'the'=1;'and'=1;'or'=1;'but'=1;'if'=1;'in'=1;'on'=1;'at'=1;'to'=1;'for'=1;'of'=1;'as'=1;
+        'is'=1;'are'=1;'was'=1;'were'=1;'be'=1;'been'=1;'this'=1;'that'=1;'it'=1;'its'=1;'with'=1;'from'=1;
+        'by'=1;'please'=1;'review'=1;'code'=1;'file'=1;'look'=1;'analyze'=1;'explain'=1;'what'=1;'how'=1;
+        'why'=1;'fix'=1;'bug'=1;'issue'=1;'function'=1;'class'=1;'can'=1;'you'=1;'me'=1;'my'=1;'we'=1;
+        'need'=1;'help'=1;'about'=1;'into'=1;'using'=1;'use'=1;'just'=1;'also'=1;'any'=1;'all'=1;'not'=1
+    }
+    $raw = [regex]::Matches($Text.ToLowerInvariant(), '[a-z0-9][a-z0-9\-_./]{1,}')
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($m in $raw) {
+        $t = $m.Value
+        if ($t.Length -lt 3) { continue }
+        if ($stop.ContainsKey($t)) { continue }
+        if ($seen.ContainsKey($t)) { continue }
+        $seen[$t] = 1
+        $out.Add($t)
+        if ($out.Count -ge 40) { break }
+    }
+    return @($out)
+}
+
+function Test-PromptParleLineMatchesTokens {
+    param([string]$Line, [string[]]$Tokens)
+    if (-not $Tokens -or $Tokens.Count -eq 0) { return $false }
+    if (-not $Line) { return $false }
+    $low = $Line.ToLowerInvariant()
+    foreach ($t in $Tokens) {
+        if ($t -and $low.Contains($t)) { return $true }
+    }
+    return $false
+}
+
+function Get-PromptParleFidelityTrim {
+    <#
+    .SYNOPSIS
+      Head+tail trim that preserves signal at both ends (not a blind head cut).
+      Prefer keeping recent attach content (tail) + headers/imports (head).
+    #>
+    param(
+        [string]$Text,
+        [int]$MaxChars,
+        [string]$Marker = '…[fidelity budget]…'
+    )
+    if (-not $Text) { return '' }
+    if ($MaxChars -lt 200) { $MaxChars = 200 }
+    if ($Text.Length -le $MaxChars) { return $Text }
+    $mark = "`n$Marker`n"
+    $room = $MaxChars - $mark.Length
+    if ($room -lt 120) {
+        return $Text.Substring(0, $MaxChars) + '…'
+    }
+    $head = [int][Math]::Floor($room * 0.62)
+    $tail = $room - $head
+    if ($tail -lt 80) { $tail = 80; $head = $room - $tail }
+    return $Text.Substring(0, $head) + $mark + $Text.Substring($Text.Length - $tail)
+}
+
 function Invoke-PromptParleCodeBriefLocal {
     <#
     .SYNOPSIS
-      Proprietary local shrink: drop noise, keep signal. Brief by design. $0 AI tokens.
+      Fidelity-first local shrink: drop noise, keep signal. $0 AI tokens.
+      When -Prompt is set, lines matching prompt tokens are never dropped.
     #>
     param(
         [string]$Text,
         [int]$MaxChars = 48000,
-        [int]$Dial = 3
+        [int]$Dial = 3,
+        [string]$Prompt = ''
     )
     if (-not $Text) {
         return [pscustomobject]@{ text = ''; notes = @(); chars_in = 0; chars_out = 0 }
     }
     $charsIn = $Text.Length
+    $tokens = @(Get-PromptParlePromptTokens -Text $Prompt)
     $lines = $Text -split "`r?`n", -1
     $outLines = New-Object System.Collections.Generic.List[string]
     $inBlock = $false
@@ -1387,29 +1470,36 @@ function Invoke-PromptParleCodeBriefLocal {
     $dropped = 0
     $seen = @{}
     $dupDropped = 0
-    # Higher dial = drop more low-signal lines
+    $keptHot = 0
+    # Higher dial = drop more low-signal lines (never drop hot/error/FILE lines)
     $dropDebug = $Dial -ge 4
     $dropVerboseLog = $Dial -ge 3
     foreach ($line in $lines) {
         $trim = $line.TrimEnd()
         $t = $trim.Trim()
+        $isHot = $false
+        if ($t -match '(?i)^===== FILE:') { $isHot = $true }
+        elseif ($t -match '(?i)\b(ERROR|FATAL|EXCEPTION|Traceback|FAILED|CRITICAL|SECURITY|TODO|FIXME)\b') { $isHot = $true }
+        elseif ($t -match '(?i)^\s*(at\s+\S+\(|File\s+".+",\s*line\s+\d+|#+ Step |\[CONN\]|\[WEB\]|\[MEM\]|\[SLICE\]|\[ERR\])') { $isHot = $true }
+        elseif (Test-PromptParleLineMatchesTokens -Line $t -Tokens $tokens) { $isHot = $true; $keptHot++ }
+
         if ($inBlock) {
             if ($t -match '\*/') { $inBlock = $false }
-            $dropped++; continue
+            if (-not $isHot) { $dropped++; continue }
         }
-        if ($t -match '^/\*' -and $t -notmatch '\*/') {
+        if (-not $isHot -and $t -match '^/\*' -and $t -notmatch '\*/') {
             if ($t -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
                 $inBlock = $true; $dropped++; continue
             }
         }
-        if ($t -match '^/\*.*\*/$' -and $t -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
+        if (-not $isHot -and $t -match '^/\*.*\*/$' -and $t -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
             $dropped++; continue
         }
-        if ($t -match '^//' -or $t -match '^#(?!!)' -or $t -match '^;' -or $t -match '^--\s') {
+        if (-not $isHot -and ($t -match '^//' -or $t -match '^#(?!!)' -or $t -match '^;' -or $t -match '^--\s')) {
             if ($t -notmatch 'TODO|FIXME|HACK|SECURITY|XXX|BUG') { $dropped++; continue }
         }
         # Inline trailing comments (light) — keep code left of // when obvious
-        if ($t -match '^(.+?)\s+//(?!/).*$' -and $t -notmatch 'https?://' -and $t -notmatch 'TODO|FIXME') {
+        if (-not $isHot -and $t -match '^(.+?)\s+//(?!/).*$' -and $t -notmatch 'https?://' -and $t -notmatch 'TODO|FIXME') {
             $left = $Matches[1].TrimEnd()
             if ($left.Length -gt 0 -and $left -notmatch '["''].*//') {
                 $trim = $left
@@ -1423,36 +1513,37 @@ function Invoke-PromptParleCodeBriefLocal {
             continue
         }
         $blankRun = 0
-        # Collapse pure noise / debug spam
-        if ($dropDebug -and $t -match '(?i)^\s*(console\.(log|debug|info)|Write-Host|print\(|logger\.(debug|info))\b') {
+        # Collapse pure noise / debug spam — never if hot
+        if (-not $isHot -and $dropDebug -and $t -match '(?i)^\s*(console\.(log|debug|info)|Write-Host|print\(|logger\.(debug|info))\b') {
             $dropped++; continue
         }
-        if ($dropVerboseLog -and $t -match '(?i)^\s*(DEBUG|TRACE)\b' -and $t.Length -lt 200) {
+        if (-not $isHot -and $dropVerboseLog -and $t -match '(?i)^\s*(DEBUG|TRACE)\b' -and $t.Length -lt 200) {
             $dropped++; continue
         }
-        # Dedup exact consecutive-ish lines (logs)
+        # Dedup exact lines (logs) — keep first 2 of noise; always keep hot
         $key = $t
-        if ($key.Length -gt 24 -and $seen.ContainsKey($key)) {
+        if (-not $isHot -and $key.Length -gt 24 -and $seen.ContainsKey($key)) {
             $dupDropped++
             if ($dupDropped -gt 2 -or $Dial -ge 3) { $dropped++; continue }
         } else {
             if ($seen.Count -lt 4000) { $seen[$key] = 1 }
         }
-        # Cap ultra-long lines (base64 / minified)
-        if ($trim.Length -gt 400) {
-            $trim = $trim.Substring(0, 400) + '…'
+        # Cap ultra-long lines (base64 / minified) — keep more of hot lines
+        $cap = if ($isHot) { 600 } else { 400 }
+        if ($trim.Length -gt $cap) {
+            $trim = $trim.Substring(0, $cap) + '…'
             $dropped++
         }
         $outLines.Add($trim)
     }
     $out = ($outLines -join "`n")
-    # Collapse 3+ blank runs that survived
     $out = [regex]::Replace($out, "(`n){3,}", "`n`n")
     if ($out.Length -gt $MaxChars) {
-        $out = $out.Substring(0, $MaxChars) + "`n…[brief]"
+        $out = Get-PromptParleFidelityTrim -Text $out -MaxChars $MaxChars -Marker '…[brief budget]…'
     }
     $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
     $notes = @("brief −${pct}% ($charsIn→$($out.Length))")
+    if ($keptHot -gt 0) { $notes += "hot-keep $keptHot" }
     return [pscustomobject]@{
         text      = $out
         notes     = $notes
@@ -1461,8 +1552,555 @@ function Invoke-PromptParleCodeBriefLocal {
     }
 }
 
+function Test-PromptParleLooksLikeErrorLog {
+    param([string]$Text)
+    if (-not $Text -or $Text.Length -lt 40) { return $false }
+    $sample = if ($Text.Length -gt 8000) { $Text.Substring(0, 8000) } else { $Text }
+    $hits = 0
+    if ($sample -match '(?im)^\s*(ERROR|FATAL|CRITICAL|WARN(ING)?|Exception|Traceback)\b') { $hits += 2 }
+    if ($sample -match '(?i)\b(NullReferenceException|TypeError|ReferenceError|panic:|Segmentation fault)\b') { $hits += 2 }
+    if ($sample -match '(?im)^\s*at\s+\S+\(') { $hits += 2 }
+    if ($sample -match '(?im)^File ".+", line \d+') { $hits += 2 }
+    if ($sample -match '(?im)^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}') { $hits += 1 }
+    if ($sample -match '(?i)\b(npm ERR!|FAILED|Build failed|AssertionError)\b') { $hits += 2 }
+    # Many short timestamped lines → log-ish
+    $lines = ($sample -split "`n").Count
+    if ($lines -gt 40 -and $sample -match '(?im)^\s*\[?(DEBUG|INFO|WARN|ERROR)\]?') { $hits += 1 }
+    return ($hits -ge 3)
+}
+
+function Invoke-PromptParleErrorBriefLocal {
+    <#
+    .SYNOPSIS
+      High-fidelity log/error shrink: keep exceptions, stack frames, FAIL lines;
+      drop DEBUG spam and duplicate noise. Preserves order of first unique errors.
+    #>
+    param(
+        [string]$Text,
+        [int]$MaxChars = 12000,
+        [int]$Dial = 3,
+        [string]$Prompt = ''
+    )
+    if (-not $Text) {
+        return [pscustomobject]@{ text = ''; notes = @('error_brief: empty'); chars_in = 0; chars_out = 0 }
+    }
+    $charsIn = $Text.Length
+    $tokens = @(Get-PromptParlePromptTokens -Text $Prompt)
+    $lines = $Text -split "`r?`n", -1
+    $keep = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    $dropped = 0
+    $keptErr = 0
+    $contextWindow = 0  # keep N following lines after a hot error
+    $maxDup = if ($Dial -ge 4) { 1 } else { 2 }
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $raw = $lines[$i]
+        $t = $raw.TrimEnd()
+        $trim = $t.Trim()
+        if (-not $trim) {
+            if ($contextWindow -gt 0) { $keep.Add(''); $contextWindow-- }
+            continue
+        }
+
+        $isErr = $false
+        if ($trim -match '(?i)\b(ERROR|FATAL|CRITICAL|EXCEPTION|Traceback|FAILED|FAILURE|PANIC|Assert|npm ERR!|Build failed)\b') { $isErr = $true }
+        elseif ($trim -match '(?i)^\s*(at\s+\S+\(|File\s+".+",\s*line\s+\d+|Caused by:|--- End of|#+ Error)') { $isErr = $true }
+        elseif ($trim -match '(?i)\b(NullReference|TypeError|ReferenceError|SyntaxError|ENOENT|EACCES|segfault)\b') { $isErr = $true }
+        elseif (Test-PromptParleLineMatchesTokens -Line $trim -Tokens $tokens) { $isErr = $true }
+
+        $isWarn = $trim -match '(?i)\bWARN(ING)?\b'
+        $isNoise = $trim -match '(?i)^\s*(\[?(DEBUG|TRACE|VERBOSE)\]?|console\.(log|debug)|Write-Host)\b'
+
+        if ($isErr) {
+            $key = $trim
+            if ($key.Length -gt 120) { $key = $key.Substring(0, 120) }
+            if ($seen.ContainsKey($key) -and $seen[$key] -ge $maxDup) {
+                $dropped++; continue
+            }
+            if (-not $seen.ContainsKey($key)) { $seen[$key] = 0 }
+            $seen[$key]++
+            $keep.Add($t)
+            $keptErr++
+            $contextWindow = if ($Dial -le 2) { 4 } else { 2 }
+            continue
+        }
+
+        if ($contextWindow -gt 0) {
+            # Keep stack-ish followers even if not matching ERROR keyword
+            if ($trim -match '(?i)^\s*(at\s+|File\s+"|Caused by:|\.\.\. \d+ more|---|\s+\^)') {
+                $keep.Add($t)
+                $contextWindow = [Math]::Max($contextWindow, 2)
+                continue
+            }
+            if (-not $isNoise) {
+                $keep.Add($t)
+                $contextWindow--
+                continue
+            }
+            $dropped++
+            $contextWindow--
+            continue
+        }
+
+        if ($isNoise) { $dropped++; continue }
+
+        # Keep a thin sample of WARN and INFO only at low dial / first occurrences
+        if ($isWarn) {
+            $wk = 'W:' + $(if ($trim.Length -gt 80) { $trim.Substring(0, 80) } else { $trim })
+            if (-not $seen.ContainsKey($wk)) {
+                $seen[$wk] = 1
+                $keep.Add($t)
+            } else { $dropped++ }
+            continue
+        }
+
+        # Drop bulk INFO unless dial 1 (max fidelity) — keep every 20th for shape
+        if ($trim -match '(?i)^\s*\[?INFO\]?\b') {
+            if ($Dial -eq 1 -and ($i % 8 -eq 0)) { $keep.Add($t) } else { $dropped++ }
+            continue
+        }
+
+        # Non-log free text mixed in: keep if short or hot tokens
+        if ($Dial -le 2 -and $trim.Length -lt 160 -and $i -lt 30) {
+            $keep.Add($t)
+        } else {
+            $dropped++
+        }
+    }
+
+    $out = ($keep -join "`n")
+    $out = [regex]::Replace($out, "(`n){3,}", "`n`n")
+    if (-not $out.Trim()) {
+        # Fallback: don't destroy fidelity if classifier was wrong
+        $fb = Invoke-PromptParleCodeBriefLocal -Text $Text -MaxChars $MaxChars -Dial $Dial -Prompt $Prompt
+        return [pscustomobject]@{
+            text = $fb.text
+            notes = @('error_brief→code_brief fallback') + @($fb.notes)
+            chars_in = $charsIn
+            chars_out = $fb.chars_out
+        }
+    }
+    $header = "[ERR] kept $keptErr error/stack signals; dropped ~$dropped noise lines"
+    $out = $header + "`n" + $out
+    if ($out.Length -gt $MaxChars) {
+        $out = Get-PromptParleFidelityTrim -Text $out -MaxChars $MaxChars -Marker '…[err budget]…'
+    }
+    $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
+    return [pscustomobject]@{
+        text      = $out
+        notes     = @("error_brief −${pct}% ($charsIn→$($out.Length))", "err-signals $keptErr")
+        chars_in  = $charsIn
+        chars_out = $out.Length
+    }
+}
+
+function Invoke-PromptParleChatMemoryBrief {
+    <#
+    .SYNOPSIS
+      Compress prior chat turns into a fidelity-preserving memory brief.
+      Recent turns keep more detail; older turns become fact bullets only.
+    #>
+    param(
+        [object[]]$History,
+        [string]$HistoryText = '',
+        [int]$MaxChars = 2400,
+        [int]$Dial = 3
+    )
+    $turns = New-Object System.Collections.Generic.List[object]
+    if ($History -and $History.Count -gt 0) {
+        foreach ($h in $History) {
+            $role = [string](Get-PromptParleProp $h 'role' (Get-PromptParleProp $h 'Role' 'user'))
+            $text = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' (Get-PromptParleProp $h 'Content' '')))
+            if (-not $text) { continue }
+            $role = $role.ToLowerInvariant()
+            if ($role -match 'sys|system|tool') { continue }
+            if ($role -match 'bot|assistant|ai|model') { $role = 'assistant' }
+            else { $role = 'user' }
+            $turns.Add([pscustomobject]@{ role = $role; text = $text.Trim() })
+        }
+    } elseif ($HistoryText) {
+        # Parse "user: …" / "assistant: …" blocks
+        $blocks = [regex]::Split($HistoryText.Trim(), '(?m)(?=^(?:user|assistant|bot|human|ai)\s*:)')
+        foreach ($b in $blocks) {
+            if ($b -match '(?is)^(user|assistant|bot|human|ai)\s*:\s*(.+)$') {
+                $r = $Matches[1].ToLowerInvariant()
+                if ($r -match 'bot|ai|assistant') { $r = 'assistant' } else { $r = 'user' }
+                $turns.Add([pscustomobject]@{ role = $r; text = $Matches[2].Trim() })
+            }
+        }
+    }
+    if ($turns.Count -eq 0) {
+        return [pscustomobject]@{ text = ''; notes = @('memory: none'); chars_in = 0; chars_out = 0 }
+    }
+
+    $charsIn = 0
+    foreach ($t in $turns) { $charsIn += $t.text.Length }
+
+    # Keep last 2 turns richer; older → extractive bullets
+    $recentN = if ($Dial -le 2) { 3 } else { 2 }
+    $startRecent = [Math]::Max(0, $turns.Count - $recentN)
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('[MEM] prior turns (local brief — high-signal only)')
+
+    if ($startRecent -gt 0) {
+        $lines.Add('Earlier:')
+        for ($i = 0; $i -lt $startRecent; $i++) {
+            $t = $turns[$i]
+            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen 180
+            if ($extract) {
+                $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
+                $lines.Add("· $tag: $extract")
+            }
+        }
+    }
+
+    $lines.Add('Recent:')
+    for ($i = $startRecent; $i -lt $turns.Count; $i++) {
+        $t = $turns[$i]
+        $tag = if ($t.role -eq 'assistant') { 'assistant' } else { 'user' }
+        $body = $t.text
+        # Drop pure acknowledgements (no signal)
+        if ($body -match '(?is)^(thanks|thank you|ok|okay|sure|got it)[.!\s]*$' -and $body.Length -lt 24) {
+            continue
+        }
+        $cap = if ($Dial -le 2) { 900 } elseif ($Dial -eq 3) { 600 } else { 360 }
+        if ($body.Length -gt $cap) {
+            $body = Get-PromptParleFidelityTrim -Text $body -MaxChars $cap -Marker '…'
+        }
+        $body = $body.Trim()
+        if ($body) { $lines.Add("${tag}: $body") }
+    }
+
+    $out = ($lines -join "`n")
+    if ($out.Length -gt $MaxChars) {
+        $out = Get-PromptParleFidelityTrim -Text $out -MaxChars $MaxChars -Marker '…[mem budget]…'
+    }
+    $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
+    return [pscustomobject]@{
+        text      = $out
+        notes     = @("memory −${pct}% ($charsIn→$($out.Length))", "turns $($turns.Count)")
+        chars_in  = $charsIn
+        chars_out = $out.Length
+        turns     = $turns.Count
+    }
+}
+
+function Get-PromptParleMemoryExtract {
+    <# Pull paths, errors, decisions, names from a turn — fidelity without full prose. #>
+    param([string]$Text, [int]$MaxLen = 180)
+    if (-not $Text) { return '' }
+    $bits = New-Object System.Collections.Generic.List[string]
+    # Paths / files
+    foreach ($m in [regex]::Matches($Text, '(?i)(?:[A-Za-z]:\\|~/|\./|[\w.-]+/)+[\w.-]+\.[\w]+')) {
+        $bits.Add($m.Value)
+        if ($bits.Count -ge 4) { break }
+    }
+    # Error-ish sentences
+    foreach ($line in ($Text -split "`n")) {
+        $t = $line.Trim()
+        if ($t -match '(?i)\b(error|failed|fixed|decided|use|because|must|cannot|bug|CVE)\b' -and $t.Length -gt 12) {
+            $s = if ($t.Length -gt 100) { $t.Substring(0, 97) + '…' } else { $t }
+            $bits.Add($s)
+            if ($bits.Count -ge 5) { break }
+        }
+    }
+    if ($bits.Count -eq 0) {
+        $s = $Text.Trim()
+        if ($s.Length -gt $MaxLen) { $s = $s.Substring(0, $MaxLen - 1) + '…' }
+        return $s
+    }
+    $joined = ($bits | Select-Object -Unique | Select-Object -First 5) -join ' · '
+    if ($joined.Length -gt $MaxLen) { $joined = $joined.Substring(0, $MaxLen - 1) + '…' }
+    return $joined
+}
+
+function Get-PromptParleRelevantSlice {
+    <#
+    .SYNOPSIS
+      Rank workspace files by prompt tokens; return high-fidelity slices around hits.
+      Selection > destruction: full local context windows, not summaries of code.
+    #>
+    param(
+        [string]$Prompt = '',
+        [int]$MaxFiles = 4,
+        [int]$MaxChars = 14000,
+        [int]$ContextLines = 12,
+        [int]$MaxScanFiles = 400
+    )
+    $ws = Get-PromptParleWorkspace
+    if (-not $ws.exists) { throw 'No workspace attached. /workspace <path> first.' }
+    $tokens = @(Get-PromptParlePromptTokens -Text $Prompt)
+    if ($tokens.Count -eq 0) {
+        return [pscustomobject]@{ text = ''; notes = @('slice: no query tokens'); files = 0 }
+    }
+    $root = [string]$ws.path
+    $codeExt = @{
+        '.ps1'=1;'.psm1'=1;'.psd1'=1;'.ts'=1;'.tsx'=1;'.js'=1;'.jsx'=1;'.mjs'=1;'.py'=1;'.go'=1;
+        '.rs'=1;'.java'=1;'.php'=1;'.rb'=1;'.cs'=1;'.c'=1;'.h'=1;'.cpp'=1;'.hpp'=1;'.sql'=1;
+        '.json'=1;'.yml'=1;'.yaml'=1;'.md'=1;'.sh'=1;'.vue'=1;'.svelte'=1;'.kt'=1;'.swift'=1
+    }
+    $scored = New-Object System.Collections.Generic.List[object]
+    $scanned = 0
+    Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+            $skip = $false
+            foreach ($d in $script:PromptParleSkipDirNames) {
+                if ($rel -match [regex]::Escape([IO.Path]::DirectorySeparatorChar + $d + [IO.Path]::DirectorySeparatorChar) -or
+                    $rel.StartsWith($d + [IO.Path]::DirectorySeparatorChar) -or
+                    $rel.StartsWith($d + '/') -or $rel.StartsWith($d + '\')) {
+                    $skip = $true; break
+                }
+            }
+            if ($skip) { return $false }
+            $ext = if ($_.Extension) { $_.Extension.ToLowerInvariant() } else { '' }
+            if (-not $codeExt.ContainsKey($ext)) { return $false }
+            if ($_.Length -gt 800000) { return $false }
+            return $true
+        } |
+        Select-Object -First $MaxScanFiles |
+        ForEach-Object {
+            $scanned++
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+            $relLow = $rel.ToLowerInvariant()
+            $nameLow = $_.BaseName.ToLowerInvariant()
+            $score = 0
+            foreach ($t in $tokens) {
+                if ($nameLow -eq $t -or $nameLow.Contains($t)) { $score += 8 }
+                if ($relLow.Contains($t)) { $score += 3 }
+            }
+            # Quick content probe (first 32KB + sample)
+            $raw = ''
+            try {
+                $fs = [IO.File]::Open(
+                    $_.FullName,
+                    [IO.FileMode]::Open,
+                    [IO.FileAccess]::Read,
+                    [IO.FileShare]::ReadWrite
+                )
+                try {
+                    $len = [Math]::Min(32768, [int]$fs.Length)
+                    $buf = New-Object byte[] $len
+                    [void]$fs.Read($buf, 0, $len)
+                    $raw = [Text.Encoding]::UTF8.GetString($buf)
+                } finally { $fs.Close() }
+            } catch {
+                try { $raw = Get-Content -LiteralPath $_.FullName -TotalCount 400 -ErrorAction Stop | Out-String } catch { $raw = '' }
+            }
+            if (-not $raw) { return }
+            $rawLow = $raw.ToLowerInvariant()
+            $hitLines = New-Object System.Collections.Generic.List[int]
+            $lineArr = $raw -split "`r?`n", -1
+            for ($li = 0; $li -lt $lineArr.Count; $li++) {
+                $ll = $lineArr[$li].ToLowerInvariant()
+                foreach ($t in $tokens) {
+                    if ($ll.Contains($t)) {
+                        $score += 2
+                        if ($hitLines.Count -lt 12) { $hitLines.Add($li) }
+                        break
+                    }
+                }
+            }
+            # Symbol bonus
+            foreach ($t in $tokens) {
+                if ($rawLow -match ("(?i)\b(function|class|def|const|interface|type)\s+$([regex]::Escape($t))\b")) {
+                    $score += 10
+                }
+            }
+            if ($score -gt 0) {
+                $scored.Add([pscustomobject]@{
+                    path = $_.FullName
+                    rel = $rel
+                    score = $score
+                    hits = @($hitLines)
+                    lines = $lineArr
+                })
+            }
+        }
+
+    if ($scored.Count -eq 0) {
+        return [pscustomobject]@{ text = ''; notes = @("slice: 0 hits in $scanned files"); files = 0 }
+    }
+
+    $top = $scored | Sort-Object score -Descending | Select-Object -First $MaxFiles
+    $chunks = New-Object System.Collections.Generic.List[string]
+    $chunks.Add("[SLICE] prompt-ranked code (fidelity windows · top $($top.Count) of $($scored.Count) hits · scanned $scanned)")
+    $used = 0
+    $fileN = 0
+    foreach ($f in $top) {
+        $fileN++
+        $lineArr = @($f.lines)
+        $ranges = New-Object System.Collections.Generic.List[object]
+        $hits = @($f.hits)
+        if ($hits.Count -eq 0) {
+            # Path-name match only: keep head of file (imports + start)
+            $end = [Math]::Min($lineArr.Count - 1, 80)
+            $ranges.Add([pscustomobject]@{ a = 0; b = $end })
+        } else {
+            foreach ($h in $hits) {
+                $a = [Math]::Max(0, $h - $ContextLines)
+                $b = [Math]::Min($lineArr.Count - 1, $h + $ContextLines)
+                $ranges.Add([pscustomobject]@{ a = $a; b = $b })
+            }
+            # Merge overlapping ranges
+            $merged = New-Object System.Collections.Generic.List[object]
+            foreach ($r in ($ranges | Sort-Object a)) {
+                if ($merged.Count -eq 0) { $merged.Add($r); continue }
+                $last = $merged[$merged.Count - 1]
+                if ($r.a -le ($last.b + 2)) {
+                    $nb = [Math]::Max($last.b, $r.b)
+                    $merged[$merged.Count - 1] = [pscustomobject]@{ a = $last.a; b = $nb }
+                } else { $merged.Add($r) }
+            }
+            $ranges = $merged
+        }
+
+        $body = New-Object System.Collections.Generic.List[string]
+        $body.Add("===== SLICE: $($f.rel) (score $($f.score)) =====")
+        foreach ($r in $ranges) {
+            if ($r.a -gt 0) { $body.Add("… L$($r.a + 1)–$($r.b + 1)") }
+            for ($i = $r.a; $i -le $r.b; $i++) {
+                $body.Add(("{0,5}| {1}" -f ($i + 1), $lineArr[$i]))
+            }
+        }
+        $piece = ($body -join "`n")
+        if (($used + $piece.Length) -gt $MaxChars -and $used -gt 0) { break }
+        if ($piece.Length -gt ($MaxChars - $used)) {
+            $piece = Get-PromptParleFidelityTrim -Text $piece -MaxChars ($MaxChars - $used) -Marker '…[slice]…'
+        }
+        $chunks.Add($piece)
+        $used += $piece.Length
+        if ($used -ge $MaxChars) { break }
+    }
+
+    $text = ($chunks -join "`n`n")
+    if ($text.Length -gt $MaxChars) {
+        $text = Get-PromptParleFidelityTrim -Text $text -MaxChars $MaxChars -Marker '…[slice budget]…'
+    }
+    return [pscustomobject]@{
+        text  = $text
+        notes = @("slice: $fileN files · score-top · $used chars")
+        files = $fileN
+    }
+}
+
+function Invoke-PromptParleFidelityContextLocal {
+    <#
+    .SYNOPSIS
+      Split multi-file context (===== FILE: … =====) and shrink each part with the
+      right high-fidelity tool: error_brief for logs, code_brief for code.
+    #>
+    param(
+        [string]$Text,
+        [string]$Prompt = '',
+        [int]$MaxChars = 32000,
+        [int]$Dial = 3
+    )
+    if (-not $Text) {
+        return [pscustomobject]@{ text = ''; notes = @(); chars_in = 0; chars_out = 0 }
+    }
+    $charsIn = $Text.Length
+    $notes = New-Object System.Collections.Generic.List[string]
+    # Split on FILE markers; keep leading non-file prefix
+    $parts = New-Object System.Collections.Generic.List[object]
+    $rx = [regex]'(?m)^===== FILE:\s*(.+?)\s*=====\s*$'
+    $matches = $rx.Matches($Text)
+    if ($matches.Count -eq 0) {
+        if (Test-PromptParleLooksLikeErrorLog -Text $Text) {
+            $r = Invoke-PromptParleErrorBriefLocal -Text $Text -MaxChars $MaxChars -Dial $Dial -Prompt $Prompt
+            foreach ($n in @($r.notes)) { if ($n) { $notes.Add([string]$n) } }
+            return [pscustomobject]@{ text = $r.text; notes = @($notes); chars_in = $charsIn; chars_out = $r.text.Length }
+        }
+        $r2 = Invoke-PromptParleCodeBriefLocal -Text $Text -MaxChars $MaxChars -Dial $Dial -Prompt $Prompt
+        foreach ($n in @($r2.notes)) { if ($n) { $notes.Add([string]$n) } }
+        return [pscustomobject]@{ text = $r2.text; notes = @($notes); chars_in = $charsIn; chars_out = $r2.text.Length }
+    }
+
+    $prefix = ''
+    if ($matches[0].Index -gt 0) {
+        $prefix = $Text.Substring(0, $matches[0].Index).Trim()
+    }
+    for ($i = 0; $i -lt $matches.Count; $i++) {
+        $name = $matches[$i].Groups[1].Value.Trim()
+        $start = $matches[$i].Index + $matches[$i].Length
+        $end = if ($i + 1 -lt $matches.Count) { $matches[$i + 1].Index } else { $Text.Length }
+        $body = $Text.Substring($start, $end - $start).Trim()
+        $parts.Add([pscustomobject]@{ name = $name; text = $body })
+    }
+
+    # Per-part budget: favor files matching prompt tokens
+    $tokens = @(Get-PromptParlePromptTokens -Text $Prompt)
+    $weights = @()
+    $wSum = 0.0
+    foreach ($p in $parts) {
+        $w = 1.0
+        $nl = $p.name.ToLowerInvariant()
+        foreach ($t in $tokens) {
+            if ($nl.Contains($t)) { $w += 3.0 }
+        }
+        if (Test-PromptParleLooksLikeErrorLog -Text $p.text) { $w += 1.5 }
+        $weights += $w
+        $wSum += $w
+    }
+    if ($wSum -le 0) { $wSum = 1.0 }
+
+    $outChunks = New-Object System.Collections.Generic.List[string]
+    if ($prefix) {
+        $prefBudget = [Math]::Min(800, [int]($MaxChars * 0.08))
+        if ($prefix.Length -gt $prefBudget) {
+            $prefix = Get-PromptParleFidelityTrim -Text $prefix -MaxChars $prefBudget
+        }
+        $outChunks.Add($prefix)
+    }
+    $remain = $MaxChars
+    foreach ($c in $outChunks) { $remain -= $c.Length }
+
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        $p = $parts[$i]
+        $share = [int][Math]::Max(1200, [Math]::Floor($MaxChars * ($weights[$i] / $wSum)))
+        if ($share -gt $remain -and $i -lt ($parts.Count - 1)) {
+            $share = [Math]::Max(800, [int]($remain * 0.5))
+        } elseif ($share -gt $remain) {
+            $share = $remain
+        }
+        if ($share -lt 400) { continue }
+
+        $body = $p.text
+        $strat = 'brief'
+        if (Test-PromptParleLooksLikeErrorLog -Text $body) {
+            $er = Invoke-PromptParleErrorBriefLocal -Text $body -MaxChars $share -Dial $Dial -Prompt $Prompt
+            $body = $er.text
+            $strat = 'error_brief'
+            foreach ($n in @($er.notes)) { if ($n) { $notes.Add("$($p.name): $n") } }
+        } else {
+            $br = Invoke-PromptParleCodeBriefLocal -Text $body -MaxChars $share -Dial $Dial -Prompt $Prompt
+            $body = $br.text
+            $strat = 'code_brief'
+            foreach ($n in @($br.notes)) { if ($n) { $notes.Add("$($p.name): $n") } }
+        }
+        $outChunks.Add("===== FILE: $($p.name) · $strat =====`n$body")
+        $remain = $MaxChars
+        foreach ($c in $outChunks) { $remain -= $c.Length }
+        if ($remain -lt 400) { break }
+    }
+
+    $out = ($outChunks -join "`n`n")
+    if ($out.Length -gt $MaxChars) {
+        $out = Get-PromptParleFidelityTrim -Text $out -MaxChars $MaxChars
+    }
+    $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
+    $notes.Insert(0, "fidelity fleet −${pct}% ($charsIn→$($out.Length)) · $($parts.Count) files")
+    return [pscustomobject]@{
+        text      = $out
+        notes     = @($notes)
+        chars_in  = $charsIn
+        chars_out = $out.Length
+    }
+}
+
 function Get-PromptParleLocalContextBudget {
-    <# Dial → hard local context budget (chars) before gateway. Brief by design. #>
+    <# Dial → hard local context budget (chars) before gateway. Fidelity-aware caps. #>
     param([int]$Dial = 3)
     switch ($Dial) {
         1 { return 72000 }
@@ -1689,6 +2327,30 @@ function Invoke-PromptParleLocalTool {
             $q = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
             return Invoke-PromptParleWebSearchLocal -Query $q
         }
+        'error_brief' {
+            $r = Invoke-PromptParleErrorBriefLocal -Text $Text -Prompt $Arg
+            return [pscustomobject]@{
+                ok = $true; tool = $id; local = $true
+                text = $r.text; notes = @($r.notes)
+                chars_in = $r.chars_in; chars_out = $r.chars_out
+            }
+        }
+        { $_ -in @('relevant_slice', 'slice') } {
+            $q = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
+            $r = Get-PromptParleRelevantSlice -Prompt $q
+            return [pscustomobject]@{
+                ok = $true; tool = $id; local = $true
+                text = $r.text; notes = @($r.notes); files = $r.files
+            }
+        }
+        { $_ -in @('chat_memory', 'memory') } {
+            $r = Invoke-PromptParleChatMemoryBrief -HistoryText $Text
+            return [pscustomobject]@{
+                ok = $true; tool = $id; local = $true
+                text = $r.text; notes = @($r.notes)
+                chars_in = $r.chars_in; chars_out = $r.chars_out
+            }
+        }
         default {
             throw "Unknown local tool: $ToolId"
         }
@@ -1698,10 +2360,10 @@ function Invoke-PromptParleLocalTool {
 function Invoke-PromptParleAgentLocalPrep {
     <#
     .SYNOPSIS
-      Brief-first local shrink before AI tokens (proprietary).
-      Doctrine: (0) connections map (1) mask (2) thin (3) optional web brief
-      (4) hard budget (5) at most one small structure pack if empty.
-      Never pile tree+index+deps+diff — that grows tokens.
+      Fidelity-first local shrink before AI tokens (proprietary).
+      Doctrine: (0) connections (1) chat memory (2) mask (3) fidelity fleet
+      (4) optional web (5) one structure/slice pack if thin (6) head+tail budget.
+      Select signal over destroy: error stacks, prompt-hot lines, recent turns stay.
     #>
     [CmdletBinding()]
     param(
@@ -1710,7 +2372,9 @@ function Invoke-PromptParleAgentLocalPrep {
         [string]$AgentId,
         [bool]$ToolsEnabled = $true,
         [int]$Dial = 3,
-        [string]$Profile = ''
+        [string]$Profile = '',
+        [object[]]$History = @(),
+        [string]$HistoryText = ''
     )
     if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
     $agent = Get-PromptParleAgent -Name $AgentId
@@ -1718,10 +2382,16 @@ function Invoke-PromptParleAgentLocalPrep {
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
     $charsIn = $ctx.Length + $pr.Length
+    if ($HistoryText) { $charsIn += $HistoryText.Length }
+    elseif ($History) {
+        foreach ($h in $History) {
+            $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
+            $charsIn += $ht.Length
+        }
+    }
     $tools = New-Object System.Collections.Generic.List[string]
 
     # 0) Always inject Project Connections brief (tiny; model knows PC/Git/SSH)
-    #    Even when tools are off — awareness is not a heavy tool.
     try {
         $connMax = 520
         if ($Dial -ge 4) { $connMax = 360 }
@@ -1737,6 +2407,33 @@ function Invoke-PromptParleAgentLocalPrep {
         }
     } catch {
         $notes.Add('conn-skip')
+    }
+
+    # 0b) Chat memory from prior turns (even tools-off: multi-turn fidelity without full dump)
+    try {
+        $memMax = 2400
+        if ($Dial -le 2) { $memMax = 3600 }
+        if ($Dial -ge 4) { $memMax = 1600 }
+        $mem = $null
+        if ($History -and $History.Count -gt 0) {
+            $mem = Invoke-PromptParleChatMemoryBrief -History $History -MaxChars $memMax -Dial $Dial
+        } elseif ($HistoryText -and $HistoryText.Trim().Length -gt 20) {
+            $mem = Invoke-PromptParleChatMemoryBrief -HistoryText $HistoryText -MaxChars $memMax -Dial $Dial
+        }
+        if ($mem -and $mem.text) {
+            if ($ctx -notmatch '(?m)^\[MEM\]') {
+                # Place memory after CONN, before bulky attaches
+                if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+                    $ctx = $Matches[1] + "`n`n" + $mem.text + "`n`n" + $Matches[2]
+                } else {
+                    $ctx = $mem.text + "`n`n" + $ctx
+                }
+            }
+            foreach ($n in @($mem.notes)) { if ($n) { $notes.Add([string]$n) } }
+            $tools.Add('chat_memory')
+        }
+    } catch {
+        $notes.Add('mem-skip')
     }
 
     if (-not $ToolsEnabled) {
@@ -1764,20 +2461,26 @@ function Invoke-PromptParleAgentLocalPrep {
     $ctx = $r2.text
     if (($r1.masked + $r2.masked) -gt 0) { $notes.Add("mask $($r1.masked + $r2.masked)") }
 
-    # 2) Brief shrink — any non-trivial context (protect [CONN] header)
+    # 2) Fidelity fleet — protect [CONN]/[MEM]; shrink rest with prompt-aware tools
     if ($ctx.Length -gt 200) {
-        $connPrefix = ''
+        $headKeep = ''
         $restCtx = $ctx
-        if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
-            $connPrefix = $Matches[1]
+        # Peel protected headers (CONN + MEM)
+        while ($restCtx -match '(?s)^(\[(?:CONN|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+            if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
+            else { $headKeep = $Matches[1] }
             $restCtx = $Matches[2]
         }
         if ($restCtx.Length -gt 200) {
-            $br = Invoke-PromptParleCodeBriefLocal -Text $restCtx -MaxChars ([Math]::Max(800, $budget - $connPrefix.Length - 40)) -Dial $Dial
-            $restCtx = $br.text
-            foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n) } }
+            $room = [Math]::Max(800, $budget - $headKeep.Length - 80)
+            $fleet = Invoke-PromptParleFidelityContextLocal -Text $restCtx -Prompt $pr -MaxChars $room -Dial $Dial
+            $restCtx = $fleet.text
+            foreach ($n in @($fleet.notes)) { if ($n) { $notes.Add([string]$n) } }
+            foreach ($fn in @($fleet.notes)) {
+                if ($fn -match 'error_brief') { $tools.Add('error_brief'); break }
+            }
         }
-        if ($connPrefix) { $ctx = $connPrefix + "`n`n" + $restCtx } else { $ctx = $restCtx }
+        if ($headKeep) { $ctx = $headKeep + "`n`n" + $restCtx } else { $ctx = $restCtx }
     }
 
     # 3) Optional web search brief (intent-only; char-capped; cached)
@@ -1801,20 +2504,21 @@ function Invoke-PromptParleAgentLocalPrep {
         }
     }
 
-    # 4) At most ONE brief structure pack when context is empty/thin (not when already fat)
+    # 4) At most ONE structure/slice pack when context is empty/thin
     $ws = $null
     try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
     $extra = $null
-    # Measure non-CONN body size for "thin" decision
     $bodyLen = $ctx.Length
     if ($ctx -match '(?s)^\[CONN\]') {
-        $bodyLen = [Math]::Max(0, $ctx.Length - 200)
+        $bodyLen = [Math]::Max(0, $ctx.Length - 400)
     }
 
-    if ($ws -and $ws.exists -and $bodyLen -lt [Math]::Min(1200, [int]($budget * 0.15))) {
-        $wantDiff = $blob -match 'diff|change|pr\b|pull request|commit|patch|what changed'
-        $wantDeps = $blob -match 'dependenc|package\.json|npm|pip|upgrade|version'
-        $wantMap  = $blob -match 'structure|codebase|where is|file index|layout|tree'
+    $wantSlice = $blob -match 'where is|find function|find class|how does|implement|refactor|in the (code|repo|project|workspace)|look at|show me'
+    $wantDiff = $blob -match 'diff|change|pr\b|pull request|commit|patch|what changed'
+    $wantDeps = $blob -match 'dependenc|package\.json|npm|pip|upgrade|version'
+    $wantMap  = $blob -match 'structure|codebase|file index|layout|tree\b'
+
+    if ($ws -and $ws.exists -and $bodyLen -lt [Math]::Min(1400, [int]($budget * 0.18))) {
         try {
             if ($wantDiff -and $ws.is_git) {
                 $extra = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(18000, [int]($budget * 0.55)))
@@ -1822,8 +2526,20 @@ function Invoke-PromptParleAgentLocalPrep {
             } elseif ($wantDeps) {
                 $extra = Get-PromptParleWorkspaceDepsMap -MaxChars 2800
                 if ($extra) { $notes.Add('deps'); $tools.Add('deps') }
+            } elseif ($wantSlice -or ($bodyLen -lt 80 -and -not $wantMap)) {
+                # Prefer high-fidelity relevant slices over bare index when we have query tokens
+                $sliceBudget = [Math]::Min(14000, [int]($budget * 0.45))
+                if ($Dial -le 2) { $sliceBudget = [Math]::Min(20000, [int]($budget * 0.55)) }
+                $sl = Get-PromptParleRelevantSlice -Prompt $pr -MaxFiles $(if ($Dial -le 2) { 5 } else { 4 }) -MaxChars $sliceBudget
+                if ($sl.text) {
+                    $extra = $sl.text
+                    foreach ($n in @($sl.notes)) { if ($n) { $notes.Add([string]$n) } }
+                    $tools.Add('relevant_slice')
+                } elseif ($wantMap -or $bodyLen -lt 40) {
+                    $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
+                    if ($extra) { $notes.Add('idx'); $tools.Add('file_index') }
+                }
             } elseif ($wantMap -or $bodyLen -lt 40) {
-                # Prefer ultra-brief index over deep tree
                 $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
                 if ($extra) { $notes.Add('idx'); $tools.Add('file_index') }
             }
@@ -1831,13 +2547,30 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($extra) {
             if ($ctx) { $ctx = $ctx + "`n`n" + $extra } else { $ctx = $extra }
         }
-    } elseif ($ws -and $ws.exists -and $ws.is_git -and ($blob -match 'diff|pr\b|pull request|review changes|what changed')) {
-        # Review intent with existing attach: prefer diff over whole files if attach is huge
+    } elseif ($ws -and $ws.exists -and $wantSlice -and $bodyLen -gt ($budget * 0.65)) {
+        # Fat attach + code question: try to replace bulk with ranked slices if smaller & denser
+        try {
+            $sliceBudget = [Math]::Min(16000, [int]($budget * 0.5))
+            $sl = Get-PromptParleRelevantSlice -Prompt $pr -MaxFiles 4 -MaxChars $sliceBudget
+            if ($sl.text -and $sl.text.Length -lt [int]($bodyLen * 0.7)) {
+                $headKeep = ''
+                $rest = $ctx
+                while ($rest -match '(?s)^(\[(?:CONN|MEM|WEB)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+                    if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
+                    else { $headKeep = $Matches[1] }
+                    $rest = $Matches[2]
+                }
+                $ctx = if ($headKeep) { $headKeep + "`n`n" + $sl.text } else { $sl.text }
+                foreach ($n in @($sl.notes)) { if ($n) { $notes.Add([string]$n) } }
+                $notes.Add('slice>bulk')
+                $tools.Add('relevant_slice')
+            }
+        } catch { }
+    } elseif ($ws -and $ws.exists -and $ws.is_git -and $wantDiff) {
         if ($ctx.Length -gt ($budget * 0.7)) {
             try {
                 $gd = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(20000, $budget))
                 if ($gd -and $gd.Length -lt $ctx.Length) {
-                    # Keep CONN header if present
                     $connKeep = ''
                     if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)') { $connKeep = $Matches[1] }
                     $ctx = if ($connKeep) { $connKeep + "`n`n" + $gd } else { $gd }
@@ -1848,20 +2581,21 @@ function Invoke-PromptParleAgentLocalPrep {
         }
     }
 
-    # 5) Hard local budget (brief) — never drop [CONN] if possible
+    # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM headers
     if ($ctx.Length -gt $budget) {
-        $connKeep = ''
+        $headKeep = ''
         $rest = $ctx
-        if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
-            $connKeep = $Matches[1]
+        while ($rest -match '(?s)^(\[(?:CONN|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+            if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
+            else { $headKeep = $Matches[1] }
             $rest = $Matches[2]
         }
-        $room = $budget - $connKeep.Length - 20
+        $room = $budget - $headKeep.Length - 20
         if ($room -lt 200) { $room = 200 }
         if ($rest.Length -gt $room) {
-            $rest = $rest.Substring(0, $room) + "`n…[budget d$Dial]"
+            $rest = Get-PromptParleFidelityTrim -Text $rest -MaxChars $room -Marker "…[budget d$Dial]…"
         }
-        $ctx = if ($connKeep) { $connKeep + "`n`n" + $rest } else { $rest }
+        $ctx = if ($headKeep) { $headKeep + "`n`n" + $rest } else { $rest }
         $notes.Add("cap $budget")
     }
 
@@ -1871,7 +2605,7 @@ function Invoke-PromptParleAgentLocalPrep {
         $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * $saved / $charsIn) } else { 0 }
         $notes.Add("local −${pct}%")
     } elseif ($notes.Count -eq 0) {
-        $notes.Add('brief ok')
+        $notes.Add('fidelity ok')
     }
 
     return [pscustomobject]@{
@@ -2014,7 +2748,7 @@ function Optimize-PromptParleAgent {
         tools       = @($suggested)
         tool_details = $toolDetails
         reasons     = @($reasons)
-        tip         = 'Local tools run on this PC first (connections map, code brief, secret scan, git diff, web search brief) so fewer tokens hit the model.'
+        tip         = 'Local tools run on this PC first (connections, memory, error_brief, relevant_slice, code brief) so fewer tokens hit the model without losing signal.'
     }
 }
 
@@ -3168,9 +3902,11 @@ Commands (type in chat instead of a normal message):
   /quit                 Stop (CLI)
 
 Local-first tools (enabled per agent — run before AI tokens):
-  connections  secret_scan  code_brief  file_index  deps  git_diff  tree_pack  web_search
+  connections  chat_memory  secret_scan  code_brief  error_brief  relevant_slice
+  file_index  deps  git_diff  tree_pack  web_search
   + workspace / git / ssh / files
-  Every chat gets a [CONN] Project connections brief (PC folder + SSH + Git).
+  Fidelity-first: keep errors/stacks, prompt-hot code, recent turns; drop noise.
+  Every chat gets [CONN] + optional [MEM] from prior turns.
   Web search auto-runs on search intent; or use /search <query>.
   UI: Agent → Manage to create agents and pick tools
 
@@ -3464,7 +4200,7 @@ Or use Agent → Manage → Optimize in the UI, then Save.
                     $auto = if ($t.auto) { 'auto' } else { 'manual' }
                     $lines += ("  {0,-12} [{1}] {2}" -f $t.id, $auto, $t.description)
                 }
-                $lines += 'Manual run: /tool file_index · /tool web_search <q> · /search <q> · /tool connections'
+                $lines += 'Manual run: /tool relevant_slice <q> · /tool error_brief · /tool web_search <q> · /tool connections'
                 $message = $lines -join "`n"
             }
         }
@@ -3496,7 +4232,7 @@ Or use Agent → Manage → Optimize in the UI, then Save.
                     $run = Invoke-PromptParleLocalTool -ToolId $tid -Text '' -Arg $targ
                     $note = if ($run.notes) { ($run.notes -join '; ') } else { '' }
                     $message = "Tool $($run.tool) (local)`n$note`n`n$($run.text)"
-                    if ($run.text -and $tid -match '^(file_index|deps|git_diff|tree_pack|git|workspace|connections|web_search|web|search)$') {
+                    if ($run.text -and $tid -match '^(file_index|deps|git_diff|tree_pack|git|workspace|connections|web_search|web|search|error_brief|relevant_slice|slice|chat_memory|memory)$') {
                         # Surface as attachable context via files array when supported
                         $files = @(@{ name = "$tid.txt"; content = [string]$run.text })
                     }
@@ -5727,6 +6463,21 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
 
                         $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
 
+                        # Optional prior-turn history for [MEM] brief (UI multi-turn fidelity)
+                        $histArr = @()
+                        $histRaw = Get-PromptParleProp $body 'history' $null
+                        if ($null -eq $histRaw) { $histRaw = Get-PromptParleProp $body 'History' $null }
+                        if ($null -ne $histRaw) {
+                            foreach ($h in @($histRaw)) {
+                                if ($null -eq $h) { continue }
+                                $hr = [string](Get-PromptParleProp $h 'role' (Get-PromptParleProp $h 'Role' 'user'))
+                                $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' (Get-PromptParleProp $h 'Content' '')))
+                                if (-not $ht) { continue }
+                                $histArr += [pscustomobject]@{ role = $hr; text = $ht }
+                            }
+                        }
+                        $histText = [string](Get-PromptParleProp $body 'history_text' (Get-PromptParleProp $body 'historyText' ''))
+
                         # Session Tools (default ON) + dial: local prep before AI tokens
                         $localNotes = @()
                         $toolsEnChat = $true
@@ -5751,11 +6502,16 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                         $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
                         if ($skipAgent -ne $true) {
                             try {
-                                $prep = Invoke-PromptParleAgentLocalPrep -Prompt $prompt `
-                                    -Context $(if ($context) { $context } else { '' }) `
-                                    -ToolsEnabled $toolsEnChat `
-                                    -Dial $dial `
-                                    -Profile $profile
+                                $prepParams = @{
+                                    Prompt       = $prompt
+                                    Context      = $(if ($context) { $context } else { '' })
+                                    ToolsEnabled = $toolsEnChat
+                                    Dial         = $dial
+                                    Profile      = $profile
+                                }
+                                if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
+                                elseif ($histText) { $prepParams.HistoryText = $histText }
+                                $prep = Invoke-PromptParleAgentLocalPrep @prepParams
                                 $prompt = [string]$prep.prompt
                                 if ($null -ne $prep.context) { $context = [string]$prep.context }
                                 if ($prep.notes) { $localNotes = @($prep.notes) }

@@ -2316,6 +2316,36 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return { media_type: a.mediaType, data_base64: a.dataBase64, name: a.name };
       });
     }
+    /**
+     * Prior turns for local [MEM] brief — fidelity without dumping full history.
+     * Excludes the welcome line, sys messages, and the user turn about to send.
+     */
+    function buildHistoryPayload() {
+      const out = [];
+      const msgs = currentMessages || [];
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        if (!m || !m.text) continue;
+        if (m.isError) continue;
+        const role = (m.role || '').toLowerCase();
+        if (role === 'sys' || role === 'system') continue;
+        if (m.text === WELCOME_MSG) continue;
+        // Skip pure slash-command user lines (already handled locally)
+        if (role === 'user' && /^\//.test(String(m.text).trim())) continue;
+        let r = 'user';
+        if (role === 'bot' || role === 'assistant' || role === 'ai') r = 'assistant';
+        else if (role === 'user') r = 'user';
+        else continue;
+        let t = String(m.text);
+        // Drop attachment footer noise from history labels
+        t = t.replace(/\n\n\[\d+ attachment\(s\)\]\s*$/, '');
+        if (t.length > 4000) t = t.slice(0, 4000) + '…';
+        out.push({ role: r, text: t });
+      }
+      // Cap to last 12 turns (local memory brief compresses further)
+      if (out.length > 12) return out.slice(out.length - 12);
+      return out;
+    }
 
     initChatHistory();
 
@@ -4472,6 +4502,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         addMsg('sys', 'Tip: attach a document to see compression savings. Short prompts alone are often already compact.');
       }
 
+      // Capture prior turns BEFORE adding this user message (for [MEM] brief)
+      const hist = buildHistoryPayload();
+
       const thumbUrls = images.map(function (img) {
         return 'data:' + img.media_type + ';base64,' + img.data_base64;
       });
@@ -4490,7 +4523,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       wait.textContent = optimizeOnlyEl.checked
         ? 'Optimizing (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · ' + (agentSelect.value || 'default') + ')…'
         : 'Sending (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · ' + (agentSelect.value || 'default') + ')' +
-          (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') + '…';
+          (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') +
+          (hist.length ? ' · mem ' + hist.length : '') + '…';
       chat.appendChild(wait);
       scrollChatToBottom();
 
@@ -4505,8 +4539,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           prompt: prompt,
           context: context || undefined,
           optimize_only: !!optimizeOnlyEl.checked,
-            tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
+          tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         };
+        if (hist.length) {
+          payload.history = hist;
+        }
         if (images.length && !optimizeOnlyEl.checked) {
           payload.images = images;
         }
