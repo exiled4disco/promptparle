@@ -3,6 +3,10 @@ import { z } from "zod";
 import { requireApiKey, V1AuthError } from "@/lib/v1-auth";
 import { optimizePrompt } from "@/lib/optimizer";
 import { normalizeCompressionLevel } from "@/lib/compression-level";
+import {
+  coercePromptBody,
+  formatZodDetails,
+} from "@/lib/coerce-prompt-body";
 
 const schema = z.object({
   prompt: z.string().min(1).max(500_000),
@@ -19,10 +23,14 @@ const schema = z.object({
 export async function POST(req: NextRequest) {
   try {
     await requireApiKey(req);
-    const body = await req.json();
+    const body = coercePromptBody(await req.json());
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      const why = formatZodDetails(parsed.error);
+      return NextResponse.json(
+        { error: `Invalid request: ${why}`, details: parsed.error.flatten() },
+        { status: 400 }
+      );
     }
 
     const profile =

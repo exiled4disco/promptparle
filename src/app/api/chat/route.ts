@@ -4,6 +4,10 @@ import { AuthError, requireUser } from "@/lib/auth";
 import { runOptimizedPrompt } from "@/lib/run-prompt";
 import { listProviderCredentials } from "@/lib/providers";
 import { PROVIDERS } from "@/lib/constants";
+import {
+  coercePromptBody,
+  formatZodDetails,
+} from "@/lib/coerce-prompt-body";
 
 const imageSchema = z.object({
   mediaType: z.string().optional(),
@@ -15,7 +19,7 @@ const imageSchema = z.object({
 });
 
 const schema = z.object({
-  provider: z.string(),
+  provider: z.string().min(1),
   model: z.string().optional(),
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
@@ -24,6 +28,7 @@ const schema = z.object({
   compressionLevel: z.number().int().min(1).max(5).optional(),
   compression_level: z.number().int().min(1).max(5).optional(),
   optimizeOnly: z.boolean().optional(),
+  optimize_only: z.boolean().optional(),
   images: z.array(imageSchema).max(8).optional(),
 });
 
@@ -38,11 +43,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const body = await req.json();
+    const body = coercePromptBody(await req.json());
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
+      const why = formatZodDetails(parsed.error);
       return NextResponse.json(
-        { error: "Invalid request", details: parsed.error.flatten() },
+        {
+          error: `Invalid request: ${why}`,
+          details: parsed.error.flatten(),
+        },
         { status: 400 }
       );
     }
@@ -65,7 +74,8 @@ export async function POST(req: NextRequest) {
       profile: parsed.data.profile,
       compressionLevel:
         parsed.data.compressionLevel ?? parsed.data.compression_level,
-      optimizeOnly: parsed.data.optimizeOnly,
+      optimizeOnly:
+        parsed.data.optimizeOnly ?? parsed.data.optimize_only,
       images,
     });
 

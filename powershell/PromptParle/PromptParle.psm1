@@ -310,6 +310,23 @@ function Invoke-PromptParleApi {
             try {
                 $errObj = $_.ErrorDetails.Message | ConvertFrom-Json
                 if ($errObj.error) { $detail = [string]$errObj.error }
+                # Surface Zod field errors when present (was silent "Invalid request")
+                $det = Get-PromptParleProp $errObj 'details' $null
+                if ($det -and -not ($detail -match ':')) {
+                    try {
+                        $fe = Get-PromptParleProp $det 'fieldErrors' $null
+                        if ($fe) {
+                            $bits = New-Object System.Collections.Generic.List[string]
+                            foreach ($p in @($fe.PSObject.Properties)) {
+                                $msgs = @($p.Value) | Where-Object { $_ } | ForEach-Object { "$_" }
+                                if ($msgs.Count) { $bits.Add("$($p.Name)=$($msgs -join ';')") }
+                            }
+                            if ($bits.Count) {
+                                $detail = "$(if ($detail) { $detail } else { 'Invalid request' }): $($bits -join ' · ')"
+                            }
+                        }
+                    } catch { }
+                }
             } catch {
                 $detail = $_.ErrorDetails.Message
             }
@@ -5304,15 +5321,20 @@ function Invoke-PromptParle {
             $contextText = ($contextChunks -join "`n")
         }
 
+        # Always plain CLR types — avoid char[] / PSObject surprises that 400 Zod
+        $promptText = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
+        if ([string]::IsNullOrWhiteSpace($promptText)) {
+            throw 'Prompt is empty after local prep.'
+        }
         $body = [ordered]@{
-            provider              = $Provider
-            prompt                = $Prompt
-            optimization_profile  = $Profile
+            provider              = [string]$Provider
+            prompt                = $promptText
+            optimization_profile  = [string]$Profile
             compression_level     = [int]$CompressionLevel
             return_metadata       = $true
         }
-        if ($Model) { $body.model = $Model }
-        if ($contextText) { $body.context = $contextText }
+        if ($Model) { $body.model = [string]$Model }
+        if ($contextText) { $body.context = [string]$contextText }
         if ($OptimizeOnly) { $body.optimize_only = $true }
 
         $imageList = @(ConvertTo-PromptParleImageList -Images $Images)

@@ -16,6 +16,10 @@ import {
 } from "@/lib/adapters/types";
 import { recordPromptRequest } from "@/lib/prompt-request";
 import type { ProviderId } from "@/lib/constants";
+import {
+  coercePromptBody,
+  formatZodDetails,
+} from "@/lib/coerce-prompt-body";
 
 const imageSchema = z.object({
   media_type: z.string().optional(),
@@ -28,13 +32,13 @@ const imageSchema = z.object({
 });
 
 const schema = z.object({
-  provider: z.string(),
+  provider: z.string().min(1),
   model: z.string().optional(),
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
   optimization_profile: z.string().optional(),
   optimizationProfile: z.string().optional(),
-  /** 1 max fidelity … 5 max savings */
+  /** 1 max fidelity … 5 max savings — coerced from string by coercePromptBody */
   compression_level: z.number().int().min(1).max(5).optional(),
   compressionLevel: z.number().int().min(1).max(5).optional(),
   return_metadata: z.boolean().optional(),
@@ -87,11 +91,15 @@ export async function POST(req: NextRequest) {
     retentionPolicy = auth.user.retentionPolicy;
     storePrompts = auth.user.storePrompts;
 
-    const body = await req.json();
+    const body = coercePromptBody(await req.json());
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
+      const why = formatZodDetails(parsed.error);
       return NextResponse.json(
-        { error: "Invalid request", details: parsed.error.flatten() },
+        {
+          error: `Invalid request: ${why}`,
+          details: parsed.error.flatten(),
+        },
         { status: 400 }
       );
     }
