@@ -67,6 +67,20 @@
       border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1);
       margin-top: .25rem;
     }
+    .badge.warn {
+      color: var(--warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.35);
+    }
+    .update-btn {
+      width: 100%; margin-top: .55rem;
+      background: linear-gradient(135deg, #34d399, #059669) !important;
+      color: #042f1a !important; font-weight: 700;
+    }
+    .update-btn.secondary-look {
+      background: #0a0e16 !important; color: var(--text) !important;
+      border: 1px solid var(--border) !important; font-weight: 500;
+    }
+    .update-btn:disabled { opacity: .55; }
+    .ver-line { font-size: .78rem; color: var(--muted); margin-top: .35rem; line-height: 1.35; }
     .side-toggle {
       display: none;
       background: #0a0e16; border: 1px solid var(--border); color: var(--text);
@@ -203,12 +217,19 @@
       <div class="side-head">
         <div>
           <h1>PromptParle</h1>
-          <span class="badge">local · tools</span>
+          <span class="badge" id="versionBadge">local · …</span>
         </div>
         <button type="button" class="side-toggle" id="sideToggle" aria-label="Toggle tools">Tools</button>
       </div>
 
       <div class="side-body" id="sideBody">
+        <div class="side-section">
+          <h2>Client</h2>
+          <div class="ver-line" id="versionLine">Checking version…</div>
+          <button type="button" class="update-btn secondary-look" id="updateBtn" disabled>Update</button>
+          <p class="hint" style="margin:.45rem 0 0">Pulls the latest module from GitHub, then restarts local chat. API key stays on this PC.</p>
+        </div>
+
         <div class="side-section">
           <h2>AI</h2>
           <label for="provider">Provider</label>
@@ -307,6 +328,9 @@
     const attachBtn = document.getElementById('attachBtn');
     const sidebar = document.getElementById('sidebar');
     const sideToggle = document.getElementById('sideToggle');
+    const versionBadge = document.getElementById('versionBadge');
+    const versionLine = document.getElementById('versionLine');
+    const updateBtn = document.getElementById('updateBtn');
 
     const DIAL_META = {
       1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
@@ -635,7 +659,94 @@
       });
     }
 
-    addMsg('sys', 'Local PromptParle ready. Tools on the left (provider, profile, compression dial). Attach files at the bottom.');
+    addMsg('sys', 'Local PromptParle ready. Tools on the left (provider, profile, compression dial, update). Attach files at the bottom.');
+
+    async function checkVersion() {
+      try {
+        const res = await fetch('/api/version');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'version check failed');
+        const local = data.local_version || '?';
+        const remote = data.remote_version || null;
+        versionBadge.textContent = 'v' + local;
+        if (data.update_available && remote) {
+          versionBadge.classList.add('warn');
+          versionLine.textContent = 'Update available: v' + local + ' → v' + remote;
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Update to v' + remote;
+          updateBtn.classList.remove('secondary-look');
+          addMsg('sys', 'Client update available (v' + local + ' → v' + remote + '). Use Update in the left tools rail.');
+        } else if (remote) {
+          versionBadge.classList.remove('warn');
+          versionLine.textContent = 'Up to date (v' + local + '). Latest: v' + remote;
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Reinstall latest';
+          updateBtn.classList.add('secondary-look');
+        } else {
+          versionLine.textContent = 'Local v' + local + (data.check_error ? ' · could not reach GitHub' : '');
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Update from GitHub';
+          updateBtn.classList.add('secondary-look');
+        }
+      } catch (e) {
+        versionBadge.textContent = 'local';
+        versionLine.textContent = 'Version check failed: ' + (e.message || e);
+        updateBtn.disabled = false;
+        updateBtn.textContent = 'Update from GitHub';
+      }
+    }
+
+    async function waitForServer(url, attempts) {
+      for (let i = 0; i < (attempts || 30); i++) {
+        try {
+          const res = await fetch(url + 'api/version', { cache: 'no-store' });
+          if (res.ok) return true;
+        } catch (e) { /* restarting */ }
+        await new Promise(function (r) { setTimeout(r, 700); });
+      }
+      return false;
+    }
+
+    updateBtn.addEventListener('click', async function () {
+      if (!confirm('Download the latest PromptParle client and restart local chat? Your API key stays on this PC.')) return;
+      updateBtn.disabled = true;
+      updateBtn.textContent = 'Updating…';
+      addMsg('sys', 'Updating client from GitHub…');
+      try {
+        const res = await fetch('/api/update', { method: 'POST' });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (!res.ok) throw new Error(data.error || ('Update failed HTTP ' + res.status));
+        const ver = data.version || data.remote_version || 'latest';
+        addMsg('sys', (data.message || ('Updated to v' + ver)) + ' — restarting local server…');
+        updateBtn.textContent = 'Restarting…';
+        const url = data.url || (window.location.origin + '/');
+        const up = await waitForServer(url.endsWith('/') ? url : url + '/', 40);
+        if (up) {
+          addMsg('sys', 'New server is up — reloading UI…');
+          setTimeout(function () { window.location.href = url; }, 500);
+        } else {
+          addMsg('sys', 'Update installed. If the page does not reload, close this tab and run: pp', null, true);
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Reload page';
+          updateBtn.onclick = function () { window.location.reload(); };
+        }
+      } catch (e) {
+        // Server may have died mid-response while restarting — try reload loop
+        addMsg('sys', 'Update sent. Waiting for restart… (' + (e.message || e) + ')');
+        const url = window.location.origin + '/';
+        const up = await waitForServer(url, 40);
+        if (up) {
+          window.location.reload();
+        } else {
+          addMsg('sys', 'Could not confirm restart. Run  pp  in PowerShell to start the new client.', null, true);
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Retry update';
+        }
+      }
+    });
+
+    checkVersion();
 
     async function loadProviders() {
       const res = await fetch('/api/providers');

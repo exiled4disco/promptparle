@@ -769,6 +769,281 @@ function Get-PromptParleModuleRoot {
     return $null
 }
 
+function Get-PromptParleUserModulesDir {
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Modules'
+    } else {
+        $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'
+    }
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    if (-not $docs -or -not (Test-Path -LiteralPath $docs)) {
+        $dir = Join-Path $HOME '.local/share/powershell/Modules'
+    }
+    return $dir
+}
+
+function Read-PromptParleVersionFromManifest {
+    param([string]$ManifestPath)
+    if (-not $ManifestPath -or -not (Test-Path -LiteralPath $ManifestPath)) {
+        return $null
+    }
+    try {
+        if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue) {
+            $m = Import-PowerShellDataFile -Path $ManifestPath
+            if ($m.ModuleVersion) { return [string]$m.ModuleVersion }
+        }
+    } catch { }
+    try {
+        $raw = Get-Content -LiteralPath $ManifestPath -Raw -ErrorAction Stop
+        if ($raw -match "ModuleVersion\s*=\s*'([^']+)'") { return $Matches[1] }
+    } catch { }
+    return $null
+}
+
+function Get-PromptParleClientVersion {
+    <#
+    .SYNOPSIS
+      Installed / loaded PromptParle client version.
+    #>
+    [CmdletBinding()]
+    param()
+    $loaded = Get-Module PromptParle -ErrorAction SilentlyContinue
+    if ($loaded -and $loaded.Version) {
+        return [string]$loaded.Version
+    }
+    $root = Get-PromptParleModuleRoot
+    if ($root) {
+        $v = Read-PromptParleVersionFromManifest -ManifestPath (Join-Path $root 'PromptParle.psd1')
+        if ($v) { return $v }
+    }
+    $dest = Join-Path (Get-PromptParleUserModulesDir) 'PromptParle\PromptParle.psd1'
+    $v2 = Read-PromptParleVersionFromManifest -ManifestPath $dest
+    if ($v2) { return $v2 }
+    return '0.0.0'
+}
+
+function Get-PromptParleRemoteClientVersion {
+    <#
+    .SYNOPSIS
+      Latest client version published on GitHub main.
+    #>
+    [CmdletBinding()]
+    param()
+    $urls = @(
+        'https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1',
+        'https://promptparle.com/PromptParle.psd1'
+    )
+    foreach ($url in $urls) {
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+            $raw = [string]$resp.Content
+            if ($raw -match "ModuleVersion\s*=\s*'([^']+)'") {
+                return $Matches[1]
+            }
+        } catch {
+            continue
+        }
+    }
+    return $null
+}
+
+function Compare-PromptParleVersion {
+    param([string]$A, [string]$B)
+    try {
+        $va = [version](($A -replace '[^0-9.]', '') -replace '^\.', '0.')
+        $vb = [version](($B -replace '[^0-9.]', '') -replace '^\.', '0.')
+        return $va.CompareTo($vb)
+    } catch {
+        if ($A -eq $B) { return 0 }
+        return -1
+    }
+}
+
+function Get-PromptParleUpdateStatus {
+    <#
+    .SYNOPSIS
+      Local vs remote client version for the local UI / CLI.
+    #>
+    [CmdletBinding()]
+    param()
+    $local = Get-PromptParleClientVersion
+    $remote = $null
+    $err = $null
+    try {
+        $remote = Get-PromptParleRemoteClientVersion
+    } catch {
+        $err = "$_"
+    }
+    $updateAvailable = $false
+    if ($remote) {
+        $updateAvailable = (Compare-PromptParleVersion -A $local -B $remote) -lt 0
+    }
+    return [pscustomobject]@{
+        local_version    = $local
+        remote_version   = $remote
+        update_available = $updateAvailable
+        check_error      = $err
+        module_root      = Get-PromptParleModuleRoot
+    }
+}
+
+function Update-PromptParleClient {
+    <#
+    .SYNOPSIS
+      Download latest PromptParle module from GitHub and install into the user Modules folder.
+
+    .DESCRIPTION
+      Used by the local chat "Update" button and can be run from PowerShell:
+        Update-PromptParleClient
+      Does not touch your API key. After update, restart local chat (pp) to load new code.
+    #>
+    [CmdletBinding()]
+    param(
+        # Skip version check and always reinstall from main
+        [switch]$Force,
+        # After install, start local chat on this port (used by UI self-update)
+        [int]$RestartPort = 0
+    )
+
+    $before = Get-PromptParleClientVersion
+    $remote = $null
+    try { $remote = Get-PromptParleRemoteClientVersion } catch { }
+
+    if (-not $Force -and $remote -and (Compare-PromptParleVersion -A $before -B $remote) -ge 0) {
+        return [pscustomobject]@{
+            ok               = $true
+            updated          = $false
+            previous_version = $before
+            version          = $before
+            remote_version   = $remote
+            message          = "Already up to date ($before)."
+            restart_required = $false
+        }
+    }
+
+    $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('pp-update-' + [guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    $zipPath = Join-Path $temp 'promptparle-main.zip'
+    $extract = Join-Path $temp 'extract'
+
+    try {
+        Write-Host 'Downloading latest PromptParle client...' -ForegroundColor Cyan
+        $zipUrl = 'https://github.com/exiled4disco/promptparle/archive/refs/heads/main.zip'
+        # Prefer site tarball if present (faster); fall back to GitHub zip
+        $tgzUrl = 'https://promptparle.com/PromptParle-PowerShell.tgz'
+        $used = $null
+        try {
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+            $used = 'github-zip'
+        } catch {
+            throw "Download failed: $_"
+        }
+
+        Write-Host 'Extracting...' -ForegroundColor DarkGray
+        New-Item -ItemType Directory -Path $extract -Force | Out-Null
+        if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
+            Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
+        } else {
+            throw 'Expand-Archive not available. Update PowerShell or install manually.'
+        }
+
+        $source = $null
+        $candidates = @(
+            (Join-Path $extract 'promptparle-main\powershell\PromptParle'),
+            (Join-Path $extract 'promptparle-main/powershell/PromptParle')
+        )
+        # Also scan one level deep
+        Get-ChildItem -LiteralPath $extract -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $candidates += (Join-Path $_.FullName 'powershell\PromptParle')
+            $candidates += (Join-Path $_.FullName 'powershell/PromptParle')
+        }
+        foreach ($c in $candidates) {
+            if ($c -and (Test-Path -LiteralPath (Join-Path $c 'PromptParle.psd1'))) {
+                $source = $c
+                break
+            }
+        }
+        if (-not $source) {
+            throw 'Downloaded archive did not contain powershell/PromptParle'
+        }
+
+        $newVer = Read-PromptParleVersionFromManifest -ManifestPath (Join-Path $source 'PromptParle.psd1')
+        if (-not $newVer) { $newVer = $remote }
+        if (-not $newVer) { $newVer = 'unknown' }
+
+        $userModules = Get-PromptParleUserModulesDir
+        $dest = Join-Path $userModules 'PromptParle'
+        New-Item -ItemType Directory -Path $userModules -Force | Out-Null
+
+        Write-Host ("Installing PromptParle {0} -> {1}" -f $newVer, $dest) -ForegroundColor Cyan
+
+        # Copy into place (replace files; keep folder if locked bits fail partially)
+        if (Test-Path -LiteralPath $dest) {
+            Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+                $target = Join-Path $dest $_.Name
+                if ($_.PSIsContainer) {
+                    if (Test-Path -LiteralPath $target) {
+                        Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+                    } else {
+                        Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force
+                    }
+                } else {
+                    Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+                }
+            }
+        } else {
+            Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
+        }
+
+        Get-ChildItem -LiteralPath $dest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch { }
+        }
+
+        # Best-effort: refresh in-memory module for CLI (local server still needs restart)
+        try {
+            Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
+            Import-Module $dest -Force -ErrorAction SilentlyContinue
+        } catch { }
+
+        $after = Get-PromptParleClientVersion
+        if ($after -eq '0.0.0' -or -not $after) { $after = $newVer }
+
+        $msg = "Updated $before → $after"
+        Write-Host $msg -ForegroundColor Green
+        if ($used) { Write-Host ("  source: {0}" -f $used) -ForegroundColor DarkGray }
+
+        if ($RestartPort -gt 0) {
+            $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+                (Get-Command pwsh).Source
+            } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
+                (Get-Command powershell).Source
+            } else {
+                'powershell'
+            }
+            $cmd = @"
+Start-Sleep -Seconds 2
+Import-Module '$($dest -replace "'","''")' -Force
+try { Start-PromptParleLocalServer -Port $RestartPort } catch { Start-PromptParle }
+"@
+            Write-Host ("Restarting local chat on port {0}..." -f $RestartPort) -ForegroundColor Cyan
+            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) | Out-Null
+        }
+
+        return [pscustomobject]@{
+            ok               = $true
+            updated          = $true
+            previous_version = $before
+            version          = $after
+            remote_version   = $remote
+            message          = $msg
+            restart_required = $true
+            module_path      = $dest
+        }
+    } finally {
+        try { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
 function Open-PromptParleUrl {
     param([Parameter(Mandatory)][string]$Url)
     try {
@@ -1161,6 +1436,57 @@ function Start-PromptParleLocalServer {
 
                 if ($req.HttpMethod -eq 'GET' -and ($path -eq '/' -or $path -eq '/index.html')) {
                     Write-PromptParleHttpResponse -Context $ctx -ContentType 'text/html; charset=utf-8' -Body $html
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/version') {
+                    try {
+                        $st = Get-PromptParleUpdateStatus
+                        $payload = @{
+                            ok               = $true
+                            local_version    = $st.local_version
+                            remote_version   = $st.remote_version
+                            update_available = [bool]$st.update_available
+                            check_error      = $st.check_error
+                            module_root      = $st.module_root
+                            port             = $Port
+                        } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/update') {
+                    try {
+                        Write-Host '  update: downloading latest client...' -ForegroundColor Cyan
+                        $result = Update-PromptParleClient -Force -RestartPort $Port
+                        $payload = @{
+                            ok               = [bool]$result.ok
+                            updated          = [bool]$result.updated
+                            previous_version = $result.previous_version
+                            version          = $result.version
+                            remote_version   = $result.remote_version
+                            message          = $result.message
+                            restart_required = $true
+                            restart_port     = $Port
+                            url              = "http://127.0.0.1:$Port/"
+                        } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                        Write-Host ("  update: {0} — restarting server..." -f $result.message) -ForegroundColor Green
+                        # Let the response flush, then stop this process (new one already spawned)
+                        Start-Sleep -Milliseconds 400
+                        $script:PromptParleShouldStop = $true
+                        $script:PromptParleStopAnnounced = $true
+                        try { $listener.Stop() } catch { }
+                        break
+                    } catch {
+                        Write-Host ("  update: error - {0}" -f $_) -ForegroundColor Red
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
                     continue
                 }
 
