@@ -1,21 +1,52 @@
+import Image from "next/image";
 import Link from "next/link";
 
-export function Logo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
-  const text =
-    size === "lg" ? "text-2xl" : size === "sm" ? "text-base" : "text-lg";
-  const mark =
-    size === "lg" ? "h-9 w-9 text-sm" : size === "sm" ? "h-7 w-7 text-[10px]" : "h-8 w-8 text-xs";
+const SIZES = {
+  sm: { box: 28, text: "text-base", gap: "gap-2" },
+  md: { box: 34, text: "text-lg", gap: "gap-2.5" },
+  lg: { box: 44, text: "text-2xl", gap: "gap-3" },
+} as const;
 
+export function Logo({
+  size = "md",
+  href = "/",
+  showWordmark = true,
+}: {
+  size?: "sm" | "md" | "lg";
+  href?: string | null;
+  showWordmark?: boolean;
+}) {
+  const s = SIZES[size];
+  const mark = (
+    <Image
+      src="/logo.png"
+      alt=""
+      width={s.box}
+      height={s.box}
+      className="rounded-[22%] shadow-[0_6px_18px_rgba(91,140,255,0.35)]"
+      priority={size !== "sm"}
+    />
+  );
+
+  const wordmark = showWordmark ? (
+    <span className={`${s.text} font-semibold tracking-tight`}>
+      Prompt<span className="text-[#93b4ff]">Parle</span>
+    </span>
+  ) : (
+    <span className="sr-only">PromptParle</span>
+  );
+
+  const inner = (
+    <span className={`inline-flex items-center ${s.gap}`}>
+      {mark}
+      {wordmark}
+    </span>
+  );
+
+  if (href === null) return inner;
   return (
-    <Link href="/" className="inline-flex items-center gap-2.5">
-      <span
-        className={`${mark} inline-flex items-center justify-center rounded-xl bg-gradient-to-br from-[#5b8cff] to-[#34d399] font-bold text-white shadow-[0_8px_20px_rgba(91,140,255,0.35)]`}
-      >
-        PP
-      </span>
-      <span className={`${text} font-semibold tracking-tight`}>
-        Prompt<span className="text-[#93b4ff]">Parle</span>
-      </span>
+    <Link href={href} className="inline-flex items-center">
+      {inner}
     </Link>
   );
 }
