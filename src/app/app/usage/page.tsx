@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/auth";
 import { getUsageSummary } from "@/lib/usage";
-import { formatDate, formatNumber, providerLabel } from "@/lib/format";
+import { formatNumber, providerLabel } from "@/lib/format";
+import { UsageHistory } from "./UsageHistory";
 
 export const metadata = { title: "Usage" };
 
@@ -9,15 +10,15 @@ export default async function UsagePage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const usage = await getUsageSummary(user.id);
+  const usage = await getUsageSummary(user.id, { plan: user.plan });
 
   return (
     <div className="grid gap-6">
       <div>
-        <h1 className="page-title">Usage & token savings</h1>
+        <h1 className="page-title">Usage & before/after</h1>
         <p className="page-sub">
-          Metadata from optimized prompt requests. Prompt content is only
-          retained when you enable it in Settings.
+          See original prompts vs optimized context, token savings, and request
+          history. Free plans show a shorter preview; paid plans store more.
         </p>
       </div>
 
@@ -47,6 +48,21 @@ export default async function UsagePage() {
             </span>
           </div>
         </div>
+      </div>
+
+      <div className="card flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+        <div>
+          <span className="capitalize font-medium">{usage.planLimits.label}</span>
+          {" plan · "}
+          before/after up to{" "}
+          <span className="mono">
+            {formatNumber(usage.planLimits.originalChars)}
+          </span>{" "}
+          chars each side · last {usage.planLimits.historyLimit} requests
+        </div>
+        {usage.planLimits.id === "free" && (
+          <span className="badge badge-accent">Upgrade for full history</span>
+        )}
       </div>
 
       {usage.byProvider.length > 0 && (
@@ -82,72 +98,24 @@ export default async function UsagePage() {
       <section className="card overflow-hidden">
         <div className="border-b border-[var(--border)] px-6 py-4">
           <h2 className="text-lg font-semibold">Request history</h2>
-        </div>
-        {usage.recent.length === 0 ? (
-          <p className="p-6 text-sm text-[var(--text-muted)]">
-            No usage yet. Rows appear when desktop clients call{" "}
-            <span className="mono">POST /v1/prompt</span>.
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Expand a row to compare original input vs optimized prompt sent to
+            the model.
           </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Provider</th>
-                  <th>Model</th>
-                  <th>Profile</th>
-                  <th>Original</th>
-                  <th>Optimized</th>
-                  <th>Reduction</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usage.recent.map((row) => {
-                  const saved = Math.max(
-                    0,
-                    row.originalTokens - row.optimizedTokens
-                  );
-                  const pct =
-                    row.originalTokens > 0
-                      ? Math.round((saved / row.originalTokens) * 100)
-                      : 0;
-                  return (
-                    <tr key={row.id}>
-                      <td className="whitespace-nowrap text-[var(--text-muted)]">
-                        {formatDate(row.createdAt)}
-                      </td>
-                      <td>{providerLabel(row.provider)}</td>
-                      <td className="mono text-sm text-[var(--text-muted)]">
-                        {row.model || "—"}
-                      </td>
-                      <td>
-                        <span className="badge">{row.optimizationProfile}</span>
-                      </td>
-                      <td className="mono">{formatNumber(row.originalTokens)}</td>
-                      <td className="mono">{formatNumber(row.optimizedTokens)}</td>
-                      <td>
-                        <span className="badge badge-success">{pct}%</span>
-                      </td>
-                      <td>
-                        <span
-                          className={`badge ${
-                            row.status === "completed"
-                              ? "badge-success"
-                              : "badge-warn"
-                          }`}
-                        >
-                          {row.status}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        </div>
+        <UsageHistory
+          rows={usage.recent.map((r) => ({
+            ...r,
+            createdAt:
+              r.createdAt instanceof Date
+                ? r.createdAt.toISOString()
+                : String(r.createdAt),
+          }))}
+          planLabel={usage.planLimits.label}
+          upgradeHint={usage.upgradeHint}
+          storePrompts={usage.storePrompts}
+          retentionPolicy={usage.retentionPolicy}
+        />
       </section>
     </div>
   );

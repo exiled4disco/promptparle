@@ -88,7 +88,7 @@ export const OPTIMIZATION_PROFILES = [
 export type OptimizationProfileId = (typeof OPTIMIZATION_PROFILES)[number]["id"];
 
 export const RETENTION_OPTIONS = [
-  { id: "none", label: "Do not store prompt content" },
+  { id: "none", label: "Do not store prompt content (tokens only)" },
   { id: "7d", label: "7 days" },
   { id: "30d", label: "30 days" },
 ] as const;

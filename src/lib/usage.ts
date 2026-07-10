@@ -1,6 +1,23 @@
 import { prisma } from "./db";
+import { getPlanLimits } from "./plans";
+import { planUpgradeHint } from "./prompt-storage";
 
-export async function getUsageSummary(userId: string) {
+export async function getUsageSummary(
+  userId: string,
+  opts?: { plan?: string }
+) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      plan: true,
+      storePrompts: true,
+      retentionPolicy: true,
+    },
+  });
+
+  const effectivePlan = user?.plan || opts?.plan || "free";
+  const limits = getPlanLimits(effectivePlan);
+
   const [totals, recent, byProvider] = await Promise.all([
     prisma.promptRequest.aggregate({
       where: { userId, status: "completed" },
@@ -13,7 +30,7 @@ export async function getUsageSummary(userId: string) {
     prisma.promptRequest.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
-      take: 20,
+      take: limits.historyLimit,
       select: {
         id: true,
         provider: true,
@@ -23,6 +40,12 @@ export async function getUsageSummary(userId: string) {
         optimizedTokens: true,
         status: true,
         createdAt: true,
+        promptPreview: true,
+        originalText: true,
+        optimizedText: true,
+        originalTruncated: true,
+        optimizedTruncated: true,
+        errorMessage: true,
       },
     }),
     prisma.promptRequest.groupBy({
@@ -48,7 +71,31 @@ export async function getUsageSummary(userId: string) {
     optimizedTokens: optimized,
     tokensSaved: saved,
     reductionPercent,
-    recent,
+    plan: effectivePlan,
+    planLimits: {
+      id: limits.id,
+      label: limits.label,
+      originalChars: limits.originalChars,
+      optimizedChars: limits.optimizedChars,
+      historyLimit: limits.historyLimit,
+    },
+    storePrompts: user?.storePrompts ?? true,
+    retentionPolicy: user?.retentionPolicy ?? "7d",
+    upgradeHint: planUpgradeHint(limits),
+    recent: recent.map((row) => {
+      const rowSaved = Math.max(0, row.originalTokens - row.optimizedTokens);
+      const pct =
+        row.originalTokens > 0
+          ? Math.round((rowSaved / row.originalTokens) * 100)
+          : 0;
+      const hasCompare = Boolean(row.originalText || row.optimizedText);
+      return {
+        ...row,
+        reductionPercent: pct,
+        tokensSaved: rowSaved,
+        hasCompare,
+      };
+    }),
     byProvider: byProvider.map((row) => ({
       provider: row.provider,
       count: row._count,

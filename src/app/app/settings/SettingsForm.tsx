@@ -95,11 +95,12 @@ export function SettingsForm({ user }: { user: SessionUser }) {
             onChange={(e) => setStorePrompts(e.target.checked)}
           />
           <span>
-            <span className="font-medium">Store prompt previews</span>
+            <span className="font-medium">Store before/after prompt text</span>
             <span className="mt-1 block text-sm text-[var(--text-muted)]">
-              Off by default. When enabled, a short non-sensitive preview may
-              be kept according to retention. Full secrets are never stored in
-              clear text.
+              When enabled, the portal Usage page shows original vs optimized
+              text so you can verify savings. Length is capped by plan (Free:
+              2,000 chars/side; Pro: 50,000). Secrets detected by the optimizer
+              are masked before storage. Turn off for metadata-only history.
             </span>
           </span>
         </label>

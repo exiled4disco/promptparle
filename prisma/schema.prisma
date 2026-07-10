@@ -20,7 +20,8 @@ model User {
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
   retentionPolicy String  @default("7d") @map("retention_policy")
-  storePrompts    Boolean @default(false) @map("store_prompts")
+  // Default on so portal can show before/after; user can opt out in Settings
+  storePrompts    Boolean @default(true) @map("store_prompts")
 
   providerCredentials  ProviderCredential[]
   apiKeys              ApiKey[]
@@ -106,7 +107,14 @@ model PromptRequest {
   originalTokens      Int      @default(0) @map("original_tokens")
   optimizedTokens     Int      @default(0) @map("optimized_tokens")
   status              String   @default("completed")
+  /** Short list snippet */
   promptPreview       String?  @map("prompt_preview")
+  /** Full (plan-capped) original input for portal before view */
+  originalText        String?  @map("original_text") @db.Text
+  /** Full (plan-capped) optimized prompt for portal after view */
+  optimizedText       String?  @map("optimized_text") @db.Text
+  originalTruncated   Boolean  @default(false) @map("original_truncated")
+  optimizedTruncated  Boolean  @default(false) @map("optimized_truncated")
   errorMessage        String?  @map("error_message")
   createdAt           DateTime @default(now()) @map("created_at")
 

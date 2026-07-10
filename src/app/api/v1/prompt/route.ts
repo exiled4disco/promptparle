@@ -10,7 +10,7 @@ import {
   touchProviderCredential,
 } from "@/lib/providers";
 import { getAdapter } from "@/lib/adapters";
-import { prisma } from "@/lib/db";
+import { recordPromptRequest } from "@/lib/prompt-request";
 import type { ProviderId } from "@/lib/constants";
 
 const schema = z.object({
@@ -36,10 +36,19 @@ export async function POST(req: NextRequest) {
   let profile = "general";
   let originalTokens = 0;
   let optimizedTokens = 0;
+  let plan = "free";
+  let retentionPolicy = "7d";
+  let storePrompts = true;
+  let promptText = "";
+  let contextText: string | undefined;
+  let optimizedPromptText = "";
 
   try {
     const auth = await requireApiKey(req);
     userId = auth.user.id;
+    plan = auth.user.plan;
+    retentionPolicy = auth.user.retentionPolicy;
+    storePrompts = auth.user.storePrompts;
 
     const body = await req.json();
     const parsed = schema.safeParse(body);
@@ -60,6 +69,8 @@ export async function POST(req: NextRequest) {
       data.return_metadata ?? data.returnMetadata ?? true;
     const optimizeOnly = data.optimize_only ?? data.optimizeOnly ?? false;
     const maxTokens = data.max_tokens ?? data.maxTokens;
+    promptText = data.prompt;
+    contextText = data.context;
 
     if (!isValidProvider(provider)) {
       return NextResponse.json({ error: "Unknown provider" }, { status: 400 });
@@ -82,22 +93,23 @@ export async function POST(req: NextRequest) {
     });
     originalTokens = optimized.originalTokens;
     optimizedTokens = optimized.optimizedTokens;
+    optimizedPromptText = optimized.optimizedPrompt;
 
     if (optimizeOnly) {
-      await prisma.promptRequest.create({
-        data: {
-          userId: auth.user.id,
-          provider: providerId,
-          model,
-          optimizationProfile: profile,
-          originalTokens,
-          optimizedTokens,
-          status: "completed",
-          promptPreview:
-            auth.user.storePrompts && auth.user.retentionPolicy !== "none"
-              ? optimized.optimizedPrompt.slice(0, 500)
-              : null,
-        },
+      await recordPromptRequest({
+        userId: auth.user.id,
+        plan,
+        retentionPolicy,
+        storePrompts,
+        provider: providerId,
+        model,
+        optimizationProfile: profile,
+        originalTokens,
+        optimizedTokens,
+        status: "completed",
+        prompt: data.prompt,
+        context: data.context,
+        optimizedPrompt: optimized.optimizedPrompt,
       });
 
       return NextResponse.json({
@@ -149,17 +161,21 @@ export async function POST(req: NextRequest) {
         providerErr instanceof Error
           ? providerErr.message
           : "Provider request failed";
-      await prisma.promptRequest.create({
-        data: {
-          userId: auth.user.id,
-          provider: providerId,
-          model,
-          optimizationProfile: profile,
-          originalTokens,
-          optimizedTokens,
-          status: "failed",
-          errorMessage: message.slice(0, 500),
-        },
+      await recordPromptRequest({
+        userId: auth.user.id,
+        plan,
+        retentionPolicy,
+        storePrompts,
+        provider: providerId,
+        model,
+        optimizationProfile: profile,
+        originalTokens,
+        optimizedTokens,
+        status: "failed",
+        prompt: data.prompt,
+        context: data.context,
+        optimizedPrompt: optimized.optimizedPrompt,
+        errorMessage: message,
       });
       return NextResponse.json(
         {
@@ -180,20 +196,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await prisma.promptRequest.create({
-      data: {
-        userId: auth.user.id,
-        provider: providerId,
-        model: usedModel,
-        optimizationProfile: profile,
-        originalTokens,
-        optimizedTokens,
-        status: "completed",
-        promptPreview:
-          auth.user.storePrompts && auth.user.retentionPolicy !== "none"
-            ? data.prompt.slice(0, 500)
-            : null,
-      },
+    await recordPromptRequest({
+      userId: auth.user.id,
+      plan,
+      retentionPolicy,
+      storePrompts,
+      provider: providerId,
+      model: usedModel,
+      optimizationProfile: profile,
+      originalTokens,
+      optimizedTokens,
+      status: "completed",
+      prompt: data.prompt,
+      context: data.context,
+      optimizedPrompt: optimized.optimizedPrompt,
     });
 
     return NextResponse.json({
@@ -219,20 +235,22 @@ export async function POST(req: NextRequest) {
     }
     console.error("v1/prompt error", err);
     if (userId) {
-      await prisma.promptRequest
-        .create({
-          data: {
-            userId,
-            provider,
-            model: model || null,
-            optimizationProfile: profile,
-            originalTokens,
-            optimizedTokens,
-            status: "failed",
-            errorMessage: "Internal error",
-          },
-        })
-        .catch(() => {});
+      await recordPromptRequest({
+        userId,
+        plan,
+        retentionPolicy,
+        storePrompts,
+        provider,
+        model: model || null,
+        optimizationProfile: profile,
+        originalTokens,
+        optimizedTokens,
+        status: "failed",
+        prompt: promptText || "(unavailable)",
+        context: contextText,
+        optimizedPrompt: optimizedPromptText || "",
+        errorMessage: "Internal error",
+      }).catch(() => {});
     }
     return NextResponse.json({ error: "Request failed" }, { status: 500 });
   }
