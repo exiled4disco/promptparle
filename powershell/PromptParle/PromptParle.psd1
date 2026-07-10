@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.14.1'
+    ModuleVersion     = '0.14.2'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.14.2: Ban user homework lists; auto SSH product-work pack so model acts on evidence instead of asking you to run 1-2-3
 0.14.1: Rename chat history labels; action-first system brief (less questionnaire, more do-the-work)
 0.14.0: Agents out — continuous chat + dial-only high-fidelity optimize (you → shrink → model)
 0.13.9: Fix StrictMode crash on restart (PromptParleExitProcessAfterStop unset)

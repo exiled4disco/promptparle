@@ -1028,11 +1028,13 @@ function Get-PromptParleChatSystemPrompt {
     return @(
         'You are a hands-on engineering partner in a continuous conversation (same energy as Cursor/Claude Code/Grok Build — not a ticket triage bot).',
         'PromptParle optimizes (shrinks) context before it reaches you — high signal, lower tokens; trust [CONN]/[SSH]/[WEB]/[MEM] and attachments as evidence.',
-        'Default: DO the work. When the user names a feature, bug, or change, implement or give exact next commands immediately. Prefer action over clarifying questions.',
-        'Ask at most one focused question only if blocked; otherwise choose a sensible default and proceed. Never open with a questionnaire when the ask is clear.',
-        'Use session continuity. Prefer concrete edits, paths, versions, and ship steps over filler or process lectures.',
+        'Default: DO the work. When the user names a feature, bug, or change, implement or ship from evidence immediately.',
+        'HARD BAN: Never assign the user numbered homework (1. run git 2. paste output 3. confirm). Never say "run these commands and paste". Never open with a questionnaire when the ask is clear.',
+        'If Tools are ON, local/SSH prep already ran this turn — use that evidence. Ask at most one focused question only if truly blocked.',
+        'If you cannot mutate remote files in this channel, still do not dump process: give the complete change (full file or unified diff) plus at most ONE short apply/ship line — or state a single concrete blocker.',
+        'Use session continuity. Prefer concrete edits, paths, versions, and ship steps over filler.',
         'Do not invent file paths, ship-blockers, or missing evidence. PowerShell ExecutionPolicy is not a security boundary (Microsoft).',
-        'Product issues (savings, update, dial, SSH, UI) are work to execute — not only empathy. When shipping desktop: bump version, tarball, portal, git push.'
+        'Product issues (savings, update, dial, SSH, UI, rename, build) are work to execute — not empathy and not user errands.'
     ) -join ' '
 }
 
@@ -1046,10 +1048,14 @@ function Format-PromptParleAgentPrompt {
         [string]$Prompt,
         [string]$AgentId,
         [string]$Doctrine = '',
-        [string]$TurnNote = ''
+        [string]$TurnNote = '',
+        [string]$RuntimeNote = ''
     )
     $sys = Get-PromptParleChatSystemPrompt
-    return ("[SYSTEM]`n{0}`n`n[USER]`n{1}" -f $sys, $Prompt)
+    $rt = if ($RuntimeNote) { $RuntimeNote.Trim() } else {
+        'Local/SSH tools may have already injected [CONN]/[SSH]/[MEM] evidence this turn. Act on it. Do not ask the user to gather status.'
+    }
+    return ("[SYSTEM]`n{0}`n`n[RUNTIME]`n{1}`n`n[USER]`n{2}" -f $sys, $rt, $Prompt)
 }
 
 #region Local-first tools (run on this PC before AI tokens are spent)
@@ -2573,6 +2579,121 @@ function Get-PromptParleSshPathCandidatesFromPrompt {
     return @($out.ToArray())
 }
 
+function Test-PromptParleProductWorkIntent {
+    <# True when the user is asking for product/engineering work (not small talk). #>
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt }
+    if (-not $p.Trim()) { return $false }
+    return [bool]($p -match '(?i)\b(implement|rename|build|ship|version|bump|update client|tarball|git push|local-ui|history label|chat history|fix|bug|feature|ui change|dial|compress|fleet|handoff|promptparle|desktop|moduleversion|release)\b')
+}
+
+function Get-PromptParleSshProductWorkPack {
+    <#
+    .SYNOPSIS
+      When SSH is up and the user asks for product work, auto-run remote status
+      and pull key files so the model does not assign the user "run git and paste".
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [int]$MaxChars = 14000
+    )
+    $empty = [pscustomobject]@{ text = ''; notes = @(); ok = $false }
+    if (-not (Test-PromptParleProductWorkIntent -Prompt $Prompt)) { return $empty }
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { return $empty }
+    $target = [string](Get-PromptParleProp $ws 'ssh_target' '')
+    if (-not $target) { return $empty }
+
+    $notes = New-Object System.Collections.Generic.List[string]
+    $parts = New-Object System.Collections.Generic.List[string]
+    $used = 0
+
+    # Canonical PromptParle tree on this host (sibling of common SSH cwd)
+    $remoteCmd = @'
+set +e
+PP=/home/ubuntu/projects/promptparle
+echo "=== PP_HOST $(hostname) ==="
+echo "=== PP_PATH $PP ==="
+if [ -d "$PP" ]; then
+  cd "$PP" || exit 0
+  echo "=== GIT_STATUS ==="
+  git status -sb 2>/dev/null | head -40
+  echo "=== GIT_LOG ==="
+  git log -5 --oneline 2>/dev/null
+  echo "=== VERSION ==="
+  grep -E "ModuleVersion" powershell/PromptParle/PromptParle.psd1 2>/dev/null | head -3
+  echo "=== KEY_FILES ==="
+  ls -la powershell/PromptParle/PromptParle.psd1 powershell/PromptParle/local-ui/index.html HANDOFF.md 2>/dev/null
+else
+  echo "PP_PATH_MISSING"
+  pwd
+  ls -la 2>/dev/null | head -20
+fi
+'@
+    try {
+        # Skip session cwd so we can hit absolute PP path regardless of ExampleCorp-Mapping cwd
+        $r = Invoke-PromptParleSsh -RemoteCommand $remoteCmd -TimeoutSec 35 -SkipSessionCwd
+        $body = [string]$r.text
+        if ($body -and $body.Trim()) {
+            $room = [Math]::Max(400, $MaxChars - $used - 80)
+            if ($body.Length -gt $room) { $body = $body.Substring(0, $room) + "`n…[ssh product pack truncated]" }
+            $parts.Add("[SSH-PRODUCT] Live remote status (auto — user was NOT asked to run this)`n$body")
+            $used += $body.Length
+            $notes.Add('ssh-product')
+        }
+    } catch {
+        $notes.Add('ssh-product-skip')
+        return [pscustomobject]@{ text = ''; notes = @($notes.ToArray()); ok = $false }
+    }
+
+    # Pull small high-value files for common desktop UI asks
+    $wantUi = $Prompt -match '(?i)rename|history|label|local-ui|ui|chat title|sidebar'
+    $files = @('HANDOFF.md')
+    if ($wantUi) {
+        # index.html is large — fetch only the history section via sed
+        $uiCmd = @'
+set +e
+PP=/home/ubuntu/projects/promptparle
+f="$PP/powershell/PromptParle/local-ui/index.html"
+if [ -f "$f" ]; then
+  echo "=== FILE local-ui/index.html (history region) ==="
+  # titles + hist list helpers
+  grep -n "hist-\|HIST_\|chatTitle\|titleFromText\|renderHistoryList\|renameChat\|function deleteChat\|function startNewChat" "$f" 2>/dev/null | head -40
+  echo "=== SNIP hist CSS+render (approx) ==="
+  sed -n '176,230p;1689,1760p;2230,2460p' "$f" 2>/dev/null | head -c 12000
+fi
+ps1="$PP/powershell/PromptParle/PromptParle.psm1"
+if [ -f "$ps1" ]; then
+  echo "=== Get-PromptParleChatSystemPrompt ==="
+  sed -n '/function Get-PromptParleChatSystemPrompt/,/^function /p' "$ps1" 2>/dev/null | head -40
+fi
+'@
+        try {
+            $ru = Invoke-PromptParleSsh -RemoteCommand $uiCmd -TimeoutSec 35 -SkipSessionCwd
+            $ub = [string]$ru.text
+            if ($ub -and $ub.Trim().Length -gt 40) {
+                $room = [Math]::Max(400, $MaxChars - $used - 80)
+                if ($ub.Length -gt $room) { $ub = $ub.Substring(0, $room) + "`n…[truncated]" }
+                $parts.Add("[SSH-PRODUCT] Code evidence (auto)`n$ub")
+                $used += $ub.Length
+                $notes.Add('ssh-product-code')
+            }
+        } catch {
+            $notes.Add('ssh-product-code-skip')
+        }
+    }
+
+    if ($parts.Count -eq 0) {
+        return [pscustomobject]@{ text = ''; notes = @($notes.ToArray()); ok = $false }
+    }
+    return [pscustomobject]@{
+        text  = ($parts -join "`n`n")
+        notes = @($notes.ToArray())
+        ok    = $true
+    }
+}
+
 function Get-PromptParleSshPromptEvidence {
     <#
     .SYNOPSIS
@@ -2868,6 +2989,23 @@ function Invoke-PromptParleAgentLocalPrep {
         }
     } catch {
         $notes.Add('ssh-fetch-skip')
+    }
+
+    # 2.6) Product-work pack — auto remote status/code so model never assigns user "run git & paste"
+    try {
+        if (Test-PromptParleProductWorkIntent -Prompt $pr) {
+            $prodMax = [Math]::Min(16000, [int]($budget * 0.42))
+            if ($Dial -le 2) { $prodMax = [Math]::Min(20000, $prodMax + 4000) }
+            $prod = Get-PromptParleSshProductWorkPack -Prompt $pr -MaxChars $prodMax
+            if ($prod -and $prod.ok -and $prod.text) {
+                if ($ctx) { $ctx = $ctx + "`n`n" + $prod.text } else { $ctx = [string]$prod.text }
+                foreach ($pn in @($prod.notes)) { if ($pn) { $notes.Add([string]$pn) } }
+                $tools.Add('ssh')
+                $tools.Add('product_work')
+            }
+        }
+    } catch {
+        $notes.Add('ssh-product-skip')
     }
 
     # 3) Optional web search brief (intent-only; char-capped; cached)
@@ -7372,7 +7510,11 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        $prompt = Format-PromptParleAgentPrompt -Prompt $prompt
+                        $rtNote = 'Tools path already ran this turn when enabled. Evidence may include [CONN]/[SSH]/[SSH-PRODUCT]/[MEM]. HARD BAN: do not assign the user numbered homework or ask them to run commands and paste. Act on evidence; deliver the complete change or one short ship line.'
+                        if ($localNotes -and $localNotes.Count -gt 0) {
+                            $rtNote = $rtNote + ' Local notes: ' + (($localNotes | Select-Object -First 12) -join ', ') + '.'
+                        }
+                        $prompt = Format-PromptParleAgentPrompt -Prompt $prompt -RuntimeNote $rtNote
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
                         Write-Host ("  chat: provider={0} profile={1} dial={2} tools={3} optimize_only={4} prompt={5}c context={6}c images={7} local_notes={8}" -f `
@@ -7710,7 +7852,8 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed
+            $cliRt = 'Tools path already ran. HARD BAN: no numbered user homework / no paste-this-output. Act on [CONN]/[SSH]/[SSH-PRODUCT] evidence.'
+            $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = $sendPrompt
                 Provider         = $sessionProvider
