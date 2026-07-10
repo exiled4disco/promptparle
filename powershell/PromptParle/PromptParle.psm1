@@ -1143,13 +1143,12 @@ function Get-PromptParleChatSystemPrompt {
         'Hands-on eng partner (Grok Build / Claude Code energy) — continuous session, not ticket bot.',
         'PromptParle already optimized this turn (dial). Trust tags as live evidence: [CONN][SSH][SSH-PRODUCT][WEB][MEM][ATTACH] + images.',
         '[MEM]=auto-compact session memory (known). Never ask user to re-paste, summarize, or compact chat.',
-        'MATCH THE ASK: question / "where is" / "is it in X" / point-at-evidence → ANSWER in plain prose first (path, fact, yes/no + cite). Do NOT reply with status theater.',
-        'Feature/bug/change explicitly named to implement → do the work from evidence and ship; keep paths/versions/open threads.',
-        'BAN empty posture: "Ready for the named addition", "Name it and I ship", "spine locked", "Handoff read." with no answer — that is not helpful.',
-        'BAN: numbered user homework / "run & paste" / questionnaire when ask is clear.',
-        'BAN: invent UI — local-ui is vanilla HTML/CSS/JS (index.html); no Tailwind/React/fake diffs not in evidence.',
-        'BAN: claim committed/pushed/shipped without evidence. If cannot mutate on an implement ask: one grounded full change or one real blocker (missing path), not fake readiness.',
-        'Tools ON ⇒ prep already ran — act on it. Handoff lists Dev path + Live web root — use them; SSH cwd may be a mirror only. No invent paths. Product issues=work.'
+        'HANDOFF is a MAP not the codebase. Who/where table: Dev path=/home/ubuntu/projects/promptparle (portal+desktop monorepo), Live web root=/var/www/promptparle/public, Live app=/var/www/promptparle. SSH cwd ExampleCorp-Mapping only holds HANDOFF mirrors.',
+        'MATCH THE ASK: question / where is / is it in X → ANSWER plain prose first (path/fact). Portal/settings/API/CIDR work → use [SSH-PRODUCT] portal pack + monorepo paths; implement there.',
+        'BAN false blocker: "handoff has no portal/settings/login/API" — wrong. Handoff points at the monorepo; code is under Dev path (src/app, prisma, api). Missing = PP_PATH_MISSING in pack, not "handoff is desktop only".',
+        'BAN empty posture: Ready/Name it and I ship/spine locked/Handoff read with no answer.',
+        'BAN: numbered user homework / invent UI (local-ui=vanilla HTML) / false shipped claims.',
+        'Feature named → implement from monorepo evidence and ship. Tools ON ⇒ prep ran — act on [SSH-PRODUCT].'
     ) -join ' '
 }
 
@@ -2809,7 +2808,15 @@ function Test-PromptParleProductWorkIntent {
     param([string]$Prompt = '')
     $p = if ($null -eq $Prompt) { '' } else { $Prompt }
     if (-not $p.Trim()) { return $false }
-    return [bool]($p -match '(?i)\b(implement|rename|build|ship|version|bump|update client|tarball|git push|local-ui|history label|chat history|fix|bug|feature|ui change|dial|compress|fleet|handoff|promptparle|desktop|moduleversion|release|activity log|sidebar|footer|logging|paste|attachment|image|screenshot|submit|clear after|why aren.?t you|did you|apply|patch|index\.html)\b')
+    return [bool]($p -match '(?i)\b(implement|rename|build|ship|version|bump|update client|tarball|git push|local-ui|history label|chat history|fix|bug|feature|ui change|dial|compress|fleet|handoff|promptparle|desktop|moduleversion|release|activity log|sidebar|footer|logging|paste|attachment|image|screenshot|submit|clear after|why aren.?t you|did you|apply|patch|index\.html|portal|web\s*root|/var/www|settings|api\s*key|cidr|allowlist|ip.?restrict|network security|login|auth|next\.js|webserver|web server)\b')
+}
+
+function Test-PromptParlePortalWorkIntent {
+    <# True when ask targets portal / Next app / settings / API security — not only desktop UI. #>
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt }
+    if (-not $p.Trim()) { return $false }
+    return [bool]($p -match '(?i)\b(portal|web\s*root|/var/www|settings\s*page|user accounts?|login|register|api\s*key|cidr|allowlist|ip.?restrict|network security|auth middleware|next\.js|src/app|webserver|web server|promptparle\.com/app)\b')
 }
 
 function Get-PromptParleSshProductWorkPack {
@@ -2874,7 +2881,7 @@ fi
 
     # Pull high-value regions for desktop UI / product asks (never invent Tailwind)
     $wantUi = $Prompt -match '(?i)rename|history|label|local-ui|ui|chat title|sidebar|activity log|footer|logging|paste|attachment|image|submit|composer|clear after|index\.html|update button|up to date'
-    $files = @('HANDOFF.md')
+    $wantPortal = Test-PromptParlePortalWorkIntent -Prompt $Prompt
     if ($wantUi) {
         # index.html is large — fetch the REAL regions that match the ask (vanilla HTML, not Tailwind)
         $uiCmd = @'
@@ -2918,6 +2925,62 @@ head -n 55 "$PP/HANDOFF.md" 2>/dev/null
             }
         } catch {
             $notes.Add('ssh-product-code-skip')
+        }
+    }
+
+    # Portal / settings / API / IP allowlist — pull REAL Next.js tree (not the Mapping handoff mirror)
+    if ($wantPortal) {
+        $portalCmd = @'
+set +e
+PP=/home/ubuntu/projects/promptparle
+LIVE=/var/www/promptparle
+echo "=== DOCTRINE: HANDOFF is a MAP not the product tree ==="
+echo "Dev path (source of truth): $PP"
+echo "Live Next app: $LIVE"
+echo "Live static/nginx public: $LIVE/public"
+echo "SSH cwd may be ExampleCorp-Mapping (handoff MIRROR only) — NEVER claim portal missing because only HANDOFF.md was fetched."
+if [ -d "$PP" ]; then
+  echo "=== PP tree (top) ==="
+  ls -la "$PP" 2>/dev/null | head -25
+  echo "=== src/app (portal routes) ==="
+  find "$PP/src/app" -maxdepth 3 -type d 2>/dev/null | head -60
+  echo "=== settings / auth / api-keys / v1 ==="
+  ls -la "$PP/src/app/app/settings" "$PP/src/app/api/settings" "$PP/src/app/api/auth" "$PP/src/app/api/api-keys" "$PP/src/app/api/v1" 2>/dev/null
+  echo "=== prisma models (users/settings) ==="
+  grep -n "model User\|model Session\|model ApiKey\|model Provider" "$PP/prisma/schema.prisma" 2>/dev/null | head -40
+  echo "=== SettingsForm / settings route heads ==="
+  head -n 80 "$PP/src/app/app/settings/page.tsx" 2>/dev/null
+  head -n 100 "$PP/src/app/app/settings/SettingsForm.tsx" 2>/dev/null
+  head -n 80 "$PP/src/app/api/settings/route.ts" 2>/dev/null
+  echo "=== v1 auth gate (API key path) ==="
+  head -n 80 "$PP/src/lib/v1-auth.ts" 2>/dev/null
+  ls -la "$PP/src/lib/v1-auth.ts" "$PP/src/lib/auth.ts" 2>/dev/null
+  echo "=== HANDOFF Who/where (paths only) ==="
+  sed -n '15,40p' "$PP/HANDOFF.md" 2>/dev/null
+else
+  echo "PP_PATH_MISSING — cannot implement portal without $PP"
+fi
+if [ -d "$LIVE" ]; then
+  echo "=== LIVE app present ==="
+  ls -la "$LIVE" 2>/dev/null | head -15
+  ls -la "$LIVE/public/version.txt" "$LIVE/public/PromptParle.psd1" 2>/dev/null
+  cat "$LIVE/public/version.txt" 2>/dev/null
+else
+  echo "LIVE_PATH_MISSING $LIVE"
+fi
+'@
+        try {
+            $rp = Invoke-PromptParleSsh -RemoteCommand $portalCmd -TimeoutSec 45 -SkipSessionCwd
+            $pb = [string]$rp.text
+            if ($pb -and $pb.Trim().Length -gt 40) {
+                $room = [Math]::Max(400, $MaxChars - $used - 80)
+                if ($pb.Length -gt $room) { $pb = $pb.Substring(0, $room) + "`n…[portal pack truncated]" }
+                $parts.Add("[SSH-PRODUCT] Portal evidence (auto — monorepo at /home/ubuntu/projects/promptparle; handoff is MAP only)`n$pb")
+                $used += $pb.Length
+                $notes.Add('ssh-product-portal')
+            }
+        } catch {
+            $notes.Add('ssh-product-portal-skip')
         }
     }
 
@@ -3128,6 +3191,10 @@ function Invoke-PromptParleAgentLocalPrep {
                     $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
                     if ($hr -match '(?i)assistant|bot|ai' -and $ht -match '(?i)do not build|ExecutionPolicy Bypass|ship.?blocker|blocked until|until that change is made') {
                         $ht = '[prior security note compressed — not a work stoppage for other topics]'
+                    }
+                    # Compress false "no portal in handoff" rants — they poison later turns
+                    if ($hr -match '(?i)assistant|bot|ai' -and $ht -match '(?i)contain no portal|no portal backend|only the PromptParle desktop|no server-side components|cannot be implemented from the current handoff') {
+                        $ht = '[prior false blocker compressed — portal monorepo is /home/ubuntu/projects/promptparle; handoff is a path map only]'
                     }
                     $filtered.Add([pscustomobject]@{ role = $hr; text = $ht })
                 }

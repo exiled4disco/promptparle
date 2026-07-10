@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.14.14'
+    ModuleVersion     = '0.14.15'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,8 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.14.15: Portal product pack + ban false "handoff has no portal"; handoff is MAP; monorepo paths in brief
+0.14.14: Fix empty ship-mode theater — answer factual/handoff questions first; ban "Ready/Name it and I ship/spine locked"
 0.14.13: Remove ops log number/indicator from upper-right ⋯ menu entirely (Activity log left only)
 0.14.12: Native role:system + provider cache; usage Before excludes product brief; local work-thinking (no tokens); no log number badges; composer ~10 rows
 0.14.11: Dense [SYS]/[RT] framing (~60% fewer tokens/turn) — same hard bans, less wasteful "You are a…" every call
