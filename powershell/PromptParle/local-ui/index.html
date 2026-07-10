@@ -1934,6 +1934,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         pct = Math.round(Math.max(0, (orig - opt) / orig * 100));
       }
       pct = Number(pct || 0);
+      const appliedFiles = metaGet(raw, 'applied_files') ?? metaGet(raw, 'appliedFiles') ?? [];
+      const appliedList = Array.isArray(appliedFiles) ? appliedFiles : [];
+      const appliedCount = Number(metaGet(raw, 'applied_count') ?? metaGet(raw, 'appliedCount') ?? appliedList.length ?? 0);
       return {
         original_tokens: orig,
         optimized_tokens: opt,
@@ -1946,7 +1949,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         image_count: metaGet(raw, 'image_count') ?? metaGet(raw, 'imageCount') ?? 0,
         notes: metaGet(raw, 'notes') || [],
         signals: metaGet(raw, 'signals') || {},
-        secrets_masked: metaGet(raw, 'secrets_masked') ?? metaGet(raw, 'secretsMasked')
+        secrets_masked: metaGet(raw, 'secrets_masked') ?? metaGet(raw, 'secretsMasked'),
+        applied_files: appliedList,
+        applied_count: appliedCount
       };
     }
 
@@ -2274,6 +2279,21 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         div.appendChild(row);
       }
       const nmeta = normalizeMeta(meta);
+      // Always-visible: what actually landed on the server (not buried in prose)
+      if (nmeta && (nmeta.applied_count > 0 || (nmeta.applied_files && nmeta.applied_files.length))) {
+        const ab = document.createElement('div');
+        ab.className = 'meta';
+        ab.style.borderColor = 'rgba(52, 211, 153, 0.45)';
+        ab.style.background = 'rgba(16, 185, 129, 0.08)';
+        const files = nmeta.applied_files || [];
+        const n = nmeta.applied_count || files.length;
+        ab.innerHTML = '<span class="ok"><strong>Landed ' + n + ' file(s) on server</strong></span>' +
+          (files.length
+            ? '<span style="display:block;margin-top:.25rem;font-size:.78rem;color:var(--muted)">' +
+              files.map(function (f) { return String(f); }).join('<br>') + '</span>'
+            : '');
+        div.appendChild(ab);
+      }
       if (nmeta && (nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy)) {
         const m = document.createElement('div');
         m.className = 'meta';
