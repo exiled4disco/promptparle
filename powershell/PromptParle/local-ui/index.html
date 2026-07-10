@@ -53,10 +53,10 @@
     .sidebar {
       border-right: 1px solid var(--border);
       background: rgba(13, 17, 26, 0.96);
-      padding: 0.75rem 0.75rem 0.9rem;
+      padding: 0.55rem 0.6rem 0.65rem;
       display: flex;
       flex-direction: column;
-      gap: 0.55rem;
+      gap: 0.4rem;
       min-height: 0;
       overflow-y: auto;
     }
@@ -74,10 +74,10 @@
       color: var(--warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.35);
     }
     .update-btn {
-      width: 100%; margin-top: .4rem;
+      width: 100%; margin-top: .3rem;
       background: linear-gradient(135deg, #34d399, #059669) !important;
       color: #042f1a !important; font-weight: 700;
-      border: 0; border-radius: 999px; padding: .5rem .75rem; cursor: pointer; font-size: .85rem;
+      border: 0; border-radius: 999px; padding: .4rem .65rem; cursor: pointer; font-size: .8rem;
     }
     .update-btn.secondary-look {
       background: #0a0e16 !important; color: var(--text) !important;
@@ -94,11 +94,11 @@
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: .6rem .7rem;
+      padding: .5rem .6rem;
       flex: 0 0 auto;
     }
     .side-section h2 {
-      margin: 0 0 .4rem; font-size: .68rem; font-weight: 700;
+      margin: 0 0 .35rem; font-size: .68rem; font-weight: 700;
       letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
     }
     label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: .25rem; }
@@ -377,55 +377,53 @@
     .fs-list .ico { color: var(--dim); width: 1.4rem; flex: 0 0 auto; font-size: .75rem; }
     .fs-list .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .fs-list .meta { color: var(--dim); font-size: .72rem; }
-    .recent-chip {
-      display: inline-block; margin: .15rem .25rem .15rem 0; font-size: .7rem;
-      padding: .15rem .45rem; border-radius: 999px; border: 1px solid var(--border);
-      background: #0a0e16; color: var(--muted); cursor: pointer; max-width: 100%;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .recent-chip:hover { border-color: var(--accent); color: var(--accent); }
-    /* Connection / project status cards — empty vs active should be obvious */
-    .status-card {
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: #0a0e16;
-      padding: .5rem .6rem;
-      margin-bottom: .4rem;
-    }
-    .status-card .sc-label {
-      font-size: .65rem; font-weight: 700; letter-spacing: .05em;
-      text-transform: uppercase; color: var(--dim); margin-bottom: .2rem;
-    }
-    .status-card .sc-value {
-      font-size: .82rem; font-weight: 600; color: var(--muted);
-      word-break: break-all; line-height: 1.35;
-    }
-    .status-card .sc-meta {
-      font-size: .72rem; color: var(--dim); margin-top: .2rem; line-height: 1.3;
-    }
-    .status-card.is-on {
-      border-color: rgba(52,211,153,.45);
-      background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.08));
-    }
-    .status-card.is-on .sc-value { color: var(--success); font-weight: 700; }
-    .status-card.is-on .sc-meta { color: var(--muted); }
-    .status-card.is-warn {
-      border-color: rgba(251,191,36,.4);
-      background: rgba(251,191,36,.08);
-    }
-    .status-card.is-warn .sc-value { color: var(--warn); }
+    /* Compact project / connection rows — no tall dark cards */
+    .conn-block { display: flex; flex-direction: column; gap: .35rem; }
     .conn-row {
-      display: flex; flex-direction: column; gap: .4rem;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: .25rem .4rem;
+      align-items: center;
+      padding: .3rem 0;
+      border-bottom: 1px solid var(--border);
     }
-    .side-actions {
-      display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem;
+    .conn-row:last-child { border-bottom: 0; padding-bottom: 0; }
+    .conn-row .conn-name {
+      font-size: .8rem; font-weight: 600; color: var(--text);
+      grid-column: 1; grid-row: 1;
     }
-    .side-actions .secondary {
-      padding: .35rem .65rem; font-size: .78rem;
+    .conn-row .conn-actions {
+      grid-column: 2; grid-row: 1;
+      display: flex; gap: .3rem; justify-content: flex-end;
     }
-    .recent-label {
-      font-size: .65rem; color: var(--dim); text-transform: uppercase;
-      letter-spacing: .04em; margin: .45rem 0 .15rem;
+    .conn-row .conn-actions .secondary,
+    .conn-row .conn-actions .mini {
+      padding: .22rem .5rem; font-size: .72rem; border-radius: 999px;
+      white-space: nowrap;
+    }
+    .conn-row .conn-path {
+      grid-column: 1 / -1; grid-row: 2;
+      font-size: .72rem; line-height: 1.3;
+      color: var(--dim);
+      word-break: break-all;
+      min-height: 1em;
+    }
+    .conn-row.is-on .conn-name { color: var(--success); }
+    .conn-row.is-on .conn-path { color: var(--text); font-weight: 500; }
+    .conn-row.is-warn .conn-path { color: var(--warn); }
+    .mini-primary {
+      background: var(--accent-soft) !important;
+      border: 1px solid rgba(91,140,255,.4) !important;
+      color: var(--accent) !important;
+      cursor: pointer; font: inherit;
+    }
+    .field-row {
+      display: flex; flex-direction: column; gap: .35rem; margin: .5rem 0 .75rem;
+    }
+    .field-row label { margin: 0; font-size: .78rem; }
+    .field-row input {
+      width: 100%; background: #0a0e16; color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; font: inherit;
     }
   </style>
 </head>
@@ -452,36 +450,34 @@
           <label for="agentSelect">Who answers</label>
           <select id="agentSelect"></select>
           <div class="profile-chip" id="agentMeta">profile · dial from agent</div>
-          <div class="ver-line" id="agentHint">Shortcuts: /audit · /summary · /review</div>
         </div>
 
         <div class="side-section">
-          <h2>Project folder</h2>
-          <div class="status-card" id="projectCard">
-            <div class="sc-label">This PC</div>
-            <div class="sc-value" id="workspaceLine">No folder attached</div>
-            <div class="sc-meta" id="projectMeta">Browse a directory on this computer</div>
-          </div>
-          <div class="side-actions">
-            <button type="button" class="secondary" id="browseFolderBtn">Browse…</button>
-            <button type="button" class="secondary" id="clearFolderBtn">Detach</button>
-          </div>
-          <div class="recent-label" id="recentLabel" hidden>Recent</div>
-          <div id="recentFolders"></div>
-        </div>
-
-        <div class="side-section">
-          <h2>Connections</h2>
-          <div class="conn-row">
-            <div class="status-card" id="gitCard">
-              <div class="sc-label">Git / GitHub</div>
-              <div class="sc-value" id="gitLine">Not linked</div>
-              <div class="sc-meta" id="gitMeta">Attach a git repo or /github clone owner/repo</div>
+          <h2>Project connections</h2>
+          <div class="conn-block">
+            <div class="conn-row" id="pcRow">
+              <span class="conn-name">This PC</span>
+              <div class="conn-actions">
+                <button type="button" class="secondary mini-primary" id="browseFolderBtn">Browse</button>
+                <button type="button" class="secondary" id="clearFolderBtn" hidden>Detach</button>
+              </div>
+              <div class="conn-path" id="workspaceLine">No folder</div>
             </div>
-            <div class="status-card" id="sshCard">
-              <div class="sc-label">SSH</div>
-              <div class="sc-value" id="sshLine">Not connected</div>
-              <div class="sc-meta" id="sshMeta">/ssh user@host — keys stay on this PC</div>
+            <div class="conn-row" id="sshRow">
+              <span class="conn-name">SSH</span>
+              <div class="conn-actions">
+                <button type="button" class="secondary mini-primary" id="sshConnectBtn">Connect</button>
+                <button type="button" class="secondary" id="sshDetachBtn" hidden>Detach</button>
+              </div>
+              <div class="conn-path" id="sshLine">Not connected</div>
+            </div>
+            <div class="conn-row" id="gitRow">
+              <span class="conn-name">Git / GitHub</span>
+              <div class="conn-actions">
+                <button type="button" class="secondary mini-primary" id="gitConnectBtn">Connect</button>
+                <button type="button" class="secondary" id="gitDetachBtn" hidden>Detach</button>
+              </div>
+              <div class="conn-path" id="gitLine">Not connected</div>
             </div>
           </div>
         </div>
@@ -515,7 +511,7 @@
           </div>
         </div>
 
-        <p class="side-foot">Project folder is on this PC. Git/SSH use your local credentials — never uploaded. Menu (⋯): Help, account, Update, Stop.</p>
+        <p class="side-foot">Connections use this PC only (keys never uploaded).</p>
       </div>
     </aside>
 
@@ -570,16 +566,12 @@
 /agents · /agent &lt;name&gt;
 /dial 1-5 · /provider · /optimize · /usage · /clear</pre>
 
-      <h3>Project folder (this PC)</h3>
-      <pre>/workspace &lt;path&gt;     attach directory
-/workspace recent|ls|cd|tree|cat|pack
-UI: Project folder → Browse…</pre>
+      <h3>Project connections (sidebar buttons)</h3>
+      <pre>This PC → Browse / Detach
+SSH → Connect / Detach
+Git/GitHub → Connect (clone) / Detach
 
-      <h3>Git / GitHub · SSH</h3>
-      <pre>/git status|diff|log|branch
-/github clone owner/repo · /github prs
-/ssh user@host · ls · cat · run
-(keys &amp; tokens stay on this PC)</pre>
+Also: /workspace · /git · /github · /ssh</pre>
 
       <h3>Agent shortcuts (examples)</h3>
       <pre>security:  /audit  /threats
@@ -603,8 +595,8 @@ code:      /review  /explain</pre>
   <!-- Local directory browser (served by local PowerShell — disk never leaves PC) -->
   <div class="modal-backdrop" id="fsModal" role="dialog" aria-modal="true" aria-labelledby="fsTitle">
     <div class="modal" style="width:min(640px,100%)">
-      <h2 id="fsTitle">Browse local folders</h2>
-      <div class="sub">This PC only. Pick a project directory to attach as workspace (git optional).</div>
+      <h2 id="fsTitle">Browse this PC</h2>
+      <div class="sub">Pick a project folder. Paths stay on this computer.</div>
       <div class="fs-path">
         <button type="button" class="secondary" id="fsUp" title="Parent folder">↑</button>
         <button type="button" class="secondary" id="fsHome" title="Quick places">Home</button>
@@ -613,8 +605,45 @@ code:      /review  /explain</pre>
       </div>
       <div class="fs-list" id="fsList"></div>
       <div class="row-actions">
-        <button type="button" class="primary" id="fsAttach" style="border-radius:999px;padding:.55rem 1rem">Attach this folder</button>
+        <button type="button" class="primary" id="fsAttach" style="border-radius:999px;padding:.55rem 1rem">Use this folder</button>
         <button type="button" class="secondary" id="fsClose">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SSH connect -->
+  <div class="modal-backdrop" id="sshModal" role="dialog" aria-modal="true" aria-labelledby="sshTitle">
+    <div class="modal" style="width:min(420px,100%)">
+      <h2 id="sshTitle">Connect SSH</h2>
+      <div class="sub">Uses OpenSSH on this PC. Private keys never leave the machine.</div>
+      <div class="field-row">
+        <label for="sshTargetInput">Host</label>
+        <input type="text" id="sshTargetInput" placeholder="user@hostname  or  user@host:2222" spellcheck="false" />
+      </div>
+      <div class="row-actions">
+        <button type="button" class="primary" id="sshModalConnect" style="border-radius:999px;padding:.55rem 1rem">Connect</button>
+        <button type="button" class="secondary" id="sshModalClose">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- GitHub / git connect -->
+  <div class="modal-backdrop" id="gitModal" role="dialog" aria-modal="true" aria-labelledby="gitTitle">
+    <div class="modal" style="width:min(440px,100%)">
+      <h2 id="gitTitle">Connect Git / GitHub</h2>
+      <div class="sub">Clone with your local git credentials, or point at a folder that already has .git.</div>
+      <div class="field-row">
+        <label for="gitRepoInput">GitHub repo or URL</label>
+        <input type="text" id="gitRepoInput" placeholder="owner/repo  or  https://github.com/owner/repo.git" spellcheck="false" />
+      </div>
+      <div class="field-row">
+        <label for="gitDestInput">Clone into (optional)</label>
+        <input type="text" id="gitDestInput" placeholder="Leave blank → ~/src/repo-name" spellcheck="false" />
+      </div>
+      <div class="row-actions">
+        <button type="button" class="primary" id="gitModalClone" style="border-radius:999px;padding:.55rem 1rem">Clone &amp; connect</button>
+        <button type="button" class="secondary" id="gitModalUseFolder" title="Use current This PC folder if it is a git repo">Use project folder</button>
+        <button type="button" class="secondary" id="gitModalClose">Cancel</button>
       </div>
     </div>
   </div>
@@ -655,27 +684,32 @@ code:      /review  /explain</pre>
     const savingsStrip = document.getElementById('savingsStrip');
     const attachHint = document.getElementById('attachHint');
     const agentSelect = document.getElementById('agentSelect');
-    const agentHint = document.getElementById('agentHint');
     const agentMeta = document.getElementById('agentMeta');
     const workspaceLine = document.getElementById('workspaceLine');
-    const projectCard = document.getElementById('projectCard');
-    const projectMeta = document.getElementById('projectMeta');
-    const gitCard = document.getElementById('gitCard');
+    const pcRow = document.getElementById('pcRow');
+    const gitRow = document.getElementById('gitRow');
     const gitLine = document.getElementById('gitLine');
-    const gitMeta = document.getElementById('gitMeta');
-    const sshCard = document.getElementById('sshCard');
+    const sshRow = document.getElementById('sshRow');
     const sshLine = document.getElementById('sshLine');
-    const sshMeta = document.getElementById('sshMeta');
-    const recentFolders = document.getElementById('recentFolders');
-    const recentLabel = document.getElementById('recentLabel');
     const browseFolderBtn = document.getElementById('browseFolderBtn');
     const clearFolderBtn = document.getElementById('clearFolderBtn');
+    const sshConnectBtn = document.getElementById('sshConnectBtn');
+    const sshDetachBtn = document.getElementById('sshDetachBtn');
+    const gitConnectBtn = document.getElementById('gitConnectBtn');
+    const gitDetachBtn = document.getElementById('gitDetachBtn');
     const fsModal = document.getElementById('fsModal');
     const fsList = document.getElementById('fsList');
     const fsPathInput = document.getElementById('fsPathInput');
+    const sshModal = document.getElementById('sshModal');
+    const gitModal = document.getElementById('gitModal');
+    const sshTargetInput = document.getElementById('sshTargetInput');
+    const gitRepoInput = document.getElementById('gitRepoInput');
+    const gitDestInput = document.getElementById('gitDestInput');
     const helpBtn = document.getElementById('helpBtn');
     let fsBrowsePath = '';
     let currentWorkspacePath = '';
+    let currentWorkspaceKind = '';
+    let currentSshTarget = '';
     const menuBtn = document.getElementById('menuBtn');
     const appMenu = document.getElementById('appMenu');
     const helpModal = document.getElementById('helpModal');
@@ -1150,21 +1184,19 @@ code:      /review  /explain</pre>
       return '…' + s.slice(-40);
     }
 
-    function setStatusCard(card, on, warn) {
-      if (!card) return;
-      card.classList.remove('is-on', 'is-warn');
-      if (warn) card.classList.add('is-warn');
-      else if (on) card.classList.add('is-on');
+    function setConnRow(row, on, warn) {
+      if (!row) return;
+      row.classList.remove('is-on', 'is-warn');
+      if (warn) row.classList.add('is-warn');
+      else if (on) row.classList.add('is-on');
     }
 
     function prettyRemote(url) {
       if (!url) return '';
       let u = String(url);
-      // git@github.com:owner/repo.git → github.com/owner/repo
       const sshM = u.match(/^git@([^:]+):(.+?)(?:\.git)?$/i);
       if (sshM) return sshM[1] + '/' + sshM[2].replace(/\.git$/i, '');
-      u = u.replace(/^https?:\/\//i, '').replace(/\.git$/i, '');
-      return u;
+      return u.replace(/^https?:\/\//i, '').replace(/\.git$/i, '');
     }
 
     function applyWorkspaceUi(s) {
@@ -1174,81 +1206,87 @@ code:      /review  /explain</pre>
       const branch = s.workspace_branch || s.workspaceBranch || '';
       const remote = s.workspace_remote || s.workspaceRemote || s.remote || '';
       currentWorkspacePath = path || '';
+      currentWorkspaceKind = kind || '';
 
-      // —— Project folder (this PC only) ——
+      // This PC
       if (!path) {
-        workspaceLine.textContent = 'No folder attached';
+        workspaceLine.textContent = 'No folder';
         workspaceLine.title = '';
-        if (projectMeta) projectMeta.textContent = 'Browse a directory on this computer';
-        setStatusCard(projectCard, false, false);
+        if (clearFolderBtn) clearFolderBtn.hidden = true;
+        if (browseFolderBtn) browseFolderBtn.textContent = 'Browse';
+        setConnRow(pcRow, false, false);
       } else {
-        const leaf = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
-        workspaceLine.textContent = leaf;
+        workspaceLine.textContent = path;
         workspaceLine.title = path;
-        const metaBits = [shortPath(path)];
-        if (kind && kind !== 'none' && kind !== 'missing') metaBits.push(kind);
-        if (projectMeta) projectMeta.textContent = metaBits.join(' · ');
-        setStatusCard(projectCard, true, kind === 'missing');
+        if (clearFolderBtn) clearFolderBtn.hidden = false;
+        if (browseFolderBtn) browseFolderBtn.textContent = 'Browse';
+        setConnRow(pcRow, true, kind === 'missing');
+        if (kind === 'missing') workspaceLine.textContent = path + ' (missing)';
       }
 
-      // —— Git / GitHub (separate from “local folder”) ——
-      if (gitLine) {
-        if (path && kind === 'git') {
-          gitLine.textContent = branch ? ('branch ' + branch) : 'Git repo';
-          if (gitMeta) {
-            gitMeta.textContent = remote
-              ? prettyRemote(remote)
-              : 'Local git · /git status · /github prs';
-          }
-          setStatusCard(gitCard, true, false);
-        } else if (path && kind === 'local') {
-          gitLine.textContent = 'Not a git repo';
-          if (gitMeta) gitMeta.textContent = 'Optional: /github clone owner/repo';
-          setStatusCard(gitCard, false, false);
-        } else if (path && kind === 'missing') {
-          gitLine.textContent = 'Folder missing';
-          if (gitMeta) gitMeta.textContent = 'Path no longer exists on disk';
-          setStatusCard(gitCard, false, true);
-        } else {
-          gitLine.textContent = 'Not linked';
-          if (gitMeta) gitMeta.textContent = 'Attach a git repo or /github clone owner/repo';
-          setStatusCard(gitCard, false, false);
-        }
-      }
-
-      // —— SSH ——
+      // SSH
+      const t = s.ssh_target || s.sshTarget || '';
+      const port = s.ssh_port || s.sshPort || 22;
+      currentSshTarget = t || '';
       if (sshLine) {
-        const t = s.ssh_target || s.sshTarget || '';
-        const port = s.ssh_port || s.sshPort || 22;
         if (t) {
-          sshLine.textContent = t + (port && Number(port) !== 22 ? ':' + port : '');
-          if (sshMeta) sshMeta.textContent = '/ssh ls · cat · run — keys on this PC only';
-          setStatusCard(sshCard, true, false);
+          const label = t + (port && Number(port) !== 22 ? ':' + port : '');
+          sshLine.textContent = label;
+          sshLine.title = label;
+          if (sshConnectBtn) sshConnectBtn.hidden = true;
+          if (sshDetachBtn) sshDetachBtn.hidden = false;
+          setConnRow(sshRow, true, false);
         } else {
           sshLine.textContent = 'Not connected';
-          if (sshMeta) sshMeta.textContent = '/ssh user@host — keys stay on this PC';
-          setStatusCard(sshCard, false, false);
+          sshLine.title = '';
+          if (sshConnectBtn) sshConnectBtn.hidden = false;
+          if (sshDetachBtn) sshDetachBtn.hidden = true;
+          setConnRow(sshRow, false, false);
         }
       }
 
-      renderRecentFolders(s.workspace_recent || s.workspaceRecent || s.recent || []);
+      // Git / GitHub
+      if (gitLine) {
+        if (path && kind === 'git') {
+          const bits = [];
+          if (remote) bits.push(prettyRemote(remote));
+          else bits.push(path);
+          if (branch) bits.push('@ ' + branch);
+          gitLine.textContent = bits.join(' ');
+          gitLine.title = (remote || path) + (branch ? ' (' + branch + ')' : '');
+          if (gitConnectBtn) gitConnectBtn.hidden = true;
+          if (gitDetachBtn) gitDetachBtn.hidden = false;
+          setConnRow(gitRow, true, false);
+        } else {
+          gitLine.textContent = 'Not connected';
+          gitLine.title = '';
+          if (gitConnectBtn) gitConnectBtn.hidden = false;
+          if (gitDetachBtn) gitDetachBtn.hidden = true;
+          setConnRow(gitRow, false, false);
+        }
+      }
     }
 
-    function renderRecentFolders(list) {
-      if (!recentFolders) return;
-      const arr = Array.isArray(list) ? list : [];
-      recentFolders.innerHTML = '';
-      if (recentLabel) recentLabel.hidden = arr.length === 0;
-      arr.slice(0, 6).forEach(function (p) {
-        if (!p) return;
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'recent-chip';
-        b.title = p;
-        b.textContent = shortPath(p);
-        b.addEventListener('click', function () { attachWorkspacePath(p); });
-        recentFolders.appendChild(b);
+    async function postCommand(line) {
+      const res = await fetch('/api/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          line: line,
+          provider: providerEl.value,
+          profile: profileEl.value,
+          dial: parseInt(dialEl.value, 10) || 3,
+          optimize_only: !!optimizeOnlyEl.checked
+        })
       });
+      let data = {};
+      try { data = await res.json(); } catch (e) { data = {}; }
+      if (!res.ok) throw new Error(data.message || data.error || data.Error || ('HTTP ' + res.status));
+      if (data.session) applySession(data.session);
+      if (data.message) addMsg('sys', data.message);
+      const fl = data.files || data.Files || [];
+      if (fl && fl.length) attachFilesFromCommand(fl);
+      return data;
     }
 
     async function attachWorkspacePath(path) {
@@ -1266,9 +1304,10 @@ code:      /review  /explain</pre>
           workspace_kind: data.kind,
           workspace_recent: data.recent,
           workspace_branch: data.branch,
-          workspace_remote: data.remote
+          workspace_remote: data.remote,
+          ssh_target: currentSshTarget
         });
-        addMsg('sys', 'Project folder: ' + data.path + ' (' + (data.kind || 'local') + ')');
+        addMsg('sys', 'This PC: ' + data.path);
         closeFsModal();
         loadSession();
       } catch (e) {
@@ -1285,9 +1324,8 @@ code:      /review  /explain</pre>
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'clear failed');
-        // loadSession refreshes project + git + ssh cards from server
         loadSession();
-        addMsg('sys', 'Project folder detached.');
+        addMsg('sys', 'This PC folder detached.');
       } catch (e) {
         addMsg('sys', 'Detach failed: ' + (e.message || e), null, true);
       }
@@ -1300,8 +1338,108 @@ code:      /review  /explain</pre>
       if (!fsModal) return;
       closeMenu();
       closeHelp();
+      closeSshModal();
+      closeGitModal();
       fsModal.classList.add('open');
       loadFsList(currentWorkspacePath || '');
+    }
+
+    function closeSshModal() {
+      if (sshModal) sshModal.classList.remove('open');
+    }
+    function openSshModal() {
+      closeMenu();
+      closeHelp();
+      closeFsModal();
+      closeGitModal();
+      if (sshTargetInput) {
+        sshTargetInput.value = currentSshTarget || '';
+        setTimeout(function () { sshTargetInput.focus(); }, 50);
+      }
+      if (sshModal) sshModal.classList.add('open');
+    }
+
+    function closeGitModal() {
+      if (gitModal) gitModal.classList.remove('open');
+    }
+    function openGitModal() {
+      closeMenu();
+      closeHelp();
+      closeFsModal();
+      closeSshModal();
+      if (gitRepoInput) {
+        gitRepoInput.value = '';
+        setTimeout(function () { gitRepoInput.focus(); }, 50);
+      }
+      if (gitDestInput) gitDestInput.value = '';
+      if (gitModal) gitModal.classList.add('open');
+    }
+
+    async function connectSsh() {
+      const target = (sshTargetInput && sshTargetInput.value || '').trim();
+      if (!target) {
+        addMsg('sys', 'Enter user@host first.', null, true);
+        return;
+      }
+      try {
+        await postCommand('/ssh ' + target);
+        closeSshModal();
+        loadSession();
+      } catch (e) {
+        addMsg('sys', 'SSH connect failed: ' + (e.message || e), null, true);
+      }
+    }
+
+    async function detachSsh() {
+      try {
+        await postCommand('/ssh disconnect');
+        loadSession();
+      } catch (e) {
+        addMsg('sys', 'SSH detach failed: ' + (e.message || e), null, true);
+      }
+    }
+
+    async function cloneGit() {
+      const repo = (gitRepoInput && gitRepoInput.value || '').trim();
+      if (!repo) {
+        addMsg('sys', 'Enter owner/repo or a git URL.', null, true);
+        return;
+      }
+      const dest = (gitDestInput && gitDestInput.value || '').trim();
+      const line = dest
+        ? ('/github clone ' + repo + ' ' + dest)
+        : ('/github clone ' + repo);
+      try {
+        await postCommand(line);
+        closeGitModal();
+        loadSession();
+      } catch (e) {
+        addMsg('sys', 'Git clone failed: ' + (e.message || e), null, true);
+      }
+    }
+
+    async function useProjectAsGit() {
+      if (!currentWorkspacePath) {
+        addMsg('sys', 'Browse a folder on This PC first, then connect Git.', null, true);
+        openFsModal();
+        return;
+      }
+      if (currentWorkspaceKind === 'git') {
+        addMsg('sys', 'Project folder is already a git repo.');
+        closeGitModal();
+        loadSession();
+        return;
+      }
+      addMsg('sys', 'This folder is not a git repo. Clone with owner/repo, or pick a folder that contains .git.', null, true);
+    }
+
+    async function detachGit() {
+      // Detach means clear project workspace when it is the git root
+      try {
+        await clearWorkspace();
+      } catch (e) {
+        addMsg('sys', 'Git detach failed: ' + (e.message || e), null, true);
+      }
     }
 
     async function loadFsList(path) {
@@ -1366,12 +1504,51 @@ code:      /review  /explain</pre>
 
     if (browseFolderBtn) browseFolderBtn.addEventListener('click', openFsModal);
     if (clearFolderBtn) clearFolderBtn.addEventListener('click', clearWorkspace);
+    if (sshConnectBtn) sshConnectBtn.addEventListener('click', openSshModal);
+    if (sshDetachBtn) sshDetachBtn.addEventListener('click', detachSsh);
+    if (gitConnectBtn) gitConnectBtn.addEventListener('click', openGitModal);
+    if (gitDetachBtn) gitDetachBtn.addEventListener('click', detachGit);
     if (document.getElementById('fsClose')) {
       document.getElementById('fsClose').addEventListener('click', closeFsModal);
     }
     if (fsModal) {
       fsModal.addEventListener('click', function (e) {
         if (e.target === fsModal) closeFsModal();
+      });
+    }
+    if (sshModal) {
+      sshModal.addEventListener('click', function (e) {
+        if (e.target === sshModal) closeSshModal();
+      });
+    }
+    if (gitModal) {
+      gitModal.addEventListener('click', function (e) {
+        if (e.target === gitModal) closeGitModal();
+      });
+    }
+    if (document.getElementById('sshModalClose')) {
+      document.getElementById('sshModalClose').addEventListener('click', closeSshModal);
+    }
+    if (document.getElementById('sshModalConnect')) {
+      document.getElementById('sshModalConnect').addEventListener('click', connectSsh);
+    }
+    if (sshTargetInput) {
+      sshTargetInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); connectSsh(); }
+      });
+    }
+    if (document.getElementById('gitModalClose')) {
+      document.getElementById('gitModalClose').addEventListener('click', closeGitModal);
+    }
+    if (document.getElementById('gitModalClone')) {
+      document.getElementById('gitModalClone').addEventListener('click', cloneGit);
+    }
+    if (document.getElementById('gitModalUseFolder')) {
+      document.getElementById('gitModalUseFolder').addEventListener('click', useProjectAsGit);
+    }
+    if (gitRepoInput) {
+      gitRepoInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); cloneGit(); }
       });
     }
     if (document.getElementById('fsUp')) {
@@ -1462,9 +1639,6 @@ code:      /review  /explain</pre>
           agentSelect.dataset.pendingAgent = s.active_agent;
         }
       }
-      const cmds = s.agent_commands || [];
-      const name = s.agent_name || s.active_agent || 'default';
-      agentHint.textContent = name + (cmds.length ? ' · /' + cmds.join(' /') : ' · /agents');
       updateAgentMeta(s);
       applyWorkspaceUi(s);
     }
@@ -1785,6 +1959,8 @@ code:      /review  /explain</pre>
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         closeFsModal();
+        closeSshModal();
+        closeGitModal();
         closeInfo();
         closeHelp();
         closeMenu();

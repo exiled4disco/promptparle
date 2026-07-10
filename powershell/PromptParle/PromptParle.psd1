@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.10.3'
+    ModuleVersion     = '0.10.4'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -48,6 +48,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.10.4: Compact Project connections rows + Browse/Connect/Detach buttons (no slash required)
 0.10.3: Sidebar: Project folder vs Connections (Git/GitHub + SSH) with clear status cards
 0.10.2: Fix attach local folder "Argument types do not match" (path string coercion on Windows PS 5.1)
 0.10.1: Local directory browser UI + recent folders; /workspace ls|cd|recent
