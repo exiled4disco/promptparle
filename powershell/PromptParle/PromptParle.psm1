@@ -2879,15 +2879,23 @@ function Write-PromptParleHttpResponse {
         [Parameter(Mandatory)]$Context,
         [int]$StatusCode = 200,
         [string]$ContentType = 'text/plain; charset=utf-8',
-        [string]$Body = ''
+        [string]$Body = '',
+        # Optional raw bytes (logo / static assets). When set, Body is ignored.
+        [byte[]]$Bytes = $null
     )
 
-    $buffer = [System.Text.Encoding]::UTF8.GetBytes($Body)
+    if ($null -ne $Bytes) {
+        $buffer = $Bytes
+    } else {
+        $buffer = [System.Text.Encoding]::UTF8.GetBytes($Body)
+    }
     $Context.Response.StatusCode = $StatusCode
     $Context.Response.ContentType = $ContentType
     $Context.Response.ContentLength64 = $buffer.Length
     $Context.Response.Headers.Add('Cache-Control', 'no-store')
-    $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
+    if ($buffer.Length -gt 0) {
+        $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
+    }
     $Context.Response.OutputStream.Close()
 }
 
@@ -3223,6 +3231,21 @@ function Start-PromptParleLocalServer {
 
                 if ($req.HttpMethod -eq 'GET' -and ($path -eq '/' -or $path -eq '/index.html')) {
                     Write-PromptParleHttpResponse -Context $ctx -ContentType 'text/html; charset=utf-8' -Body $html
+                    continue
+                }
+
+                # Static assets next to index.html (logo, etc.)
+                if ($req.HttpMethod -eq 'GET' -and ($path -eq '/logo.png' -or $path -eq '/local-ui/logo.png')) {
+                    $logoPath = Join-Path $root 'local-ui\logo.png'
+                    if (-not (Test-Path -LiteralPath $logoPath)) {
+                        $logoPath = Join-Path $root 'local-ui/logo.png'
+                    }
+                    if (Test-Path -LiteralPath $logoPath) {
+                        $bytes = [System.IO.File]::ReadAllBytes($logoPath)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'image/png' -Bytes $bytes
+                    } else {
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 404 -ContentType 'text/plain; charset=utf-8' -Body 'logo not found'
+                    }
                     continue
                 }
 

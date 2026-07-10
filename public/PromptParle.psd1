@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.10.7'
+    ModuleVersion     = '0.10.8'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -48,6 +48,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.10.8: Align left menu top with chat; larger brand + logo; history no longer stretches mid-gap
 0.10.7: Version/Update pinned top-right next to Help; red Update when available; Chat history first in left menu
 0.10.6: Version/Update next to Help; local chat history (new/switch/delete)
 0.10.5: Sidebar fully compacted — Chat + Project connections only (no stacked cards)
