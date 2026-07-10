@@ -1771,6 +1771,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const MAX_IMAGES = 4;
     const MAX_TEXT_CHARS = 400000;
     const MAX_IMAGE_EDGE = 1600;
+    const MAX_IMAGE_EDGE_MULTI = 1280;
+    /** ~1.8MB binary each after base64 — keeps multi-image under PS/API body limits */
+    const MAX_IMAGE_B64_CHARS = 2400000;
 
     /** Read metadata fields from snake_case or PascalCase (PowerShell JSON). */
     function metaGet(meta, key) {
@@ -2838,7 +2841,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         r.readAsText(file);
       });
     }
-    function compressImage(file) {
+    function compressImage(file, opts) {
+      opts = opts || {};
+      const edgeCap = opts.maxEdge || MAX_IMAGE_EDGE;
+      const quality = typeof opts.quality === 'number' ? opts.quality : 0.82;
       return new Promise(function (resolve, reject) {
         const url = URL.createObjectURL(file);
         const img = new Image();
@@ -2846,18 +2852,36 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           try {
             let w = img.naturalWidth || img.width;
             let h = img.naturalHeight || img.height;
-            const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(w, h, 1));
+            const scale = Math.min(1, edgeCap / Math.max(w, h, 1));
             w = Math.max(1, Math.round(w * scale));
             h = Math.max(1, Math.round(h * scale));
             const canvas = document.createElement('canvas');
             canvas.width = w; canvas.height = h;
             canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-            const preferPng = (file.type === 'image/png' || file.type === 'image/gif') && scale === 1 && file.size < 900000;
+            // Always JPEG for multi / large — PNG pastes explode JSON size
+            const forceJpeg = !!opts.forceJpeg || (countImages() >= 1) || file.size > 400000;
+            const preferPng = !forceJpeg && (file.type === 'image/png' || file.type === 'image/gif') && scale === 1 && file.size < 500000;
             const mime = preferPng ? 'image/png' : 'image/jpeg';
-            const dataUrl = canvas.toDataURL(mime, 0.85);
+            let q = mime === 'image/jpeg' ? quality : undefined;
+            let dataUrl = mime === 'image/jpeg' ? canvas.toDataURL(mime, q) : canvas.toDataURL(mime);
+            let m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+            // Re-encode smaller if still huge (two pastes must stay under PS body limits)
+            if (m && m[2].length > MAX_IMAGE_B64_CHARS && mime === 'image/jpeg') {
+              q = 0.68;
+              const edge2 = Math.min(edgeCap, 1024);
+              const s2 = Math.min(1, edge2 / Math.max(w, h, 1));
+              const w2 = Math.max(1, Math.round(w * s2));
+              const h2 = Math.max(1, Math.round(h * s2));
+              canvas.width = w2; canvas.height = h2;
+              canvas.getContext('2d').drawImage(img, 0, 0, w2, h2);
+              dataUrl = canvas.toDataURL('image/jpeg', q);
+              m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+            }
             URL.revokeObjectURL(url);
-            const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
             if (!m) return reject(new Error('Image encode failed'));
+            if (m[2].length > MAX_IMAGE_B64_CHARS * 1.25) {
+              return reject(new Error('Image still too large after compress — try a smaller screenshot'));
+            }
             resolve({ mediaType: m[1], dataBase64: m[2], previewUrl: dataUrl, name: file.name || 'paste.png' });
           } catch (e) {
             URL.revokeObjectURL(url);
@@ -2886,7 +2910,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
               addMsg('sys', 'Max ' + MAX_IMAGES + ' images per message.', null, true);
               continue;
             }
-            const img = await compressImage(file);
+            // 2nd+ image: tighter edge so multi-paste stays under API/JSON limits
+            const multi = countImages() >= 1;
+            const img = await compressImage(file, {
+              maxEdge: multi ? MAX_IMAGE_EDGE_MULTI : MAX_IMAGE_EDGE,
+              quality: multi ? 0.75 : 0.82,
+              forceJpeg: multi || true
+            });
             attachments.push({
               id: 'a' + (idSeq++), kind: 'image', name: img.name,
               mediaType: img.mediaType, dataBase64: img.dataBase64, previewUrl: img.previewUrl

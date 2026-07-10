@@ -84,6 +84,73 @@ function ConvertFrom-PromptParleJson {
     return ConvertTo-PromptParlePsObject $raw
 }
 
+function ConvertTo-PromptParleNetObject {
+    <#
+    .SYNOPSIS
+      PSObject/hashtable/array → plain .NET types for JavaScriptSerializer.
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string] -or $Value -is [bool] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) {
+        return $Value
+    }
+    if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [uint32] -or $Value -is [uint64]) {
+        return [int]$Value
+    }
+    # PSCustomObject / hashtable / ordered
+    if ($Value -is [System.Collections.IDictionary]) {
+        $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+        foreach ($key in $Value.Keys) {
+            $d[[string]$key] = ConvertTo-PromptParleNetObject $Value[$key]
+        }
+        return $d
+    }
+    if ($Value -is [System.Management.Automation.PSObject] -and $Value.PSObject -and $Value.PSObject.Properties) {
+        $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+        foreach ($p in $Value.PSObject.Properties) {
+            if ($null -eq $p.Name) { continue }
+            # skip ETS noise
+            if ($p.Name -match '^(PS|Base)Object$') { continue }
+            $d[[string]$p.Name] = ConvertTo-PromptParleNetObject $p.Value
+        }
+        return $d
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($item in $Value) {
+            [void]$list.Add((ConvertTo-PromptParleNetObject $item))
+        }
+        return ,$list.ToArray()
+    }
+    return [string]$Value
+}
+
+function ConvertTo-PromptParleJson {
+    <#
+    .SYNOPSIS
+      JSON serialize with large MaxJsonLength (vision base64).
+      PS 5.1 ConvertTo-Json defaults ~2MB and breaks multi-image chat.
+    #>
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [int]$Depth = 20
+    )
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return ($InputObject | ConvertTo-Json -Depth $Depth -Compress)
+    }
+    try {
+        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $ser.MaxJsonLength = 64 * 1024 * 1024
+        $ser.RecursionLimit = [Math]::Max(100, $Depth * 5)
+        $net = ConvertTo-PromptParleNetObject $InputObject
+        return $ser.Serialize($net)
+    } catch {
+        # last resort — may still fail on multi-image
+        return ($InputObject | ConvertTo-Json -Depth $Depth -Compress)
+    }
+}
+
 function ConvertTo-PromptParlePsObject {
     param($Value)
     if ($null -eq $Value) { return $null }
@@ -293,7 +360,8 @@ function Invoke-PromptParleApi {
     }
 
     if ($PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
-        $params.Body = ($Body | ConvertTo-Json -Depth 10 -Compress)
+        # Large image payloads: never use default ConvertTo-Json (2MB cap on PS 5.1)
+        $params.Body = ConvertTo-PromptParleJson -InputObject $Body -Depth 12
     }
 
     try {

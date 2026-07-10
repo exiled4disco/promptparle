@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.14.3'
+    ModuleVersion     = '0.14.4'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.14.4: Fix multi-image paste — large JSON serialize (PS 5.1 2MB cap) + tighter compress + nginx 32M
 0.14.3: Fix Invalid request — coerce API body types; clearer validation errors
 0.14.2: Ban user homework lists; auto SSH product-work pack so model acts on evidence instead of asking you to run 1-2-3
 0.14.1: Rename chat history labels; action-first system brief (less questionnaire, more do-the-work)
