@@ -12,12 +12,14 @@ export default async function SettingsPage() {
   const active = await listActiveDesktopClients(user.id);
 
   return (
-    <div className="grid gap-6">
-      <div>
-        <h1 className="page-title">Settings</h1>
-        <p className="page-sub">
-          Account profile, desktop project connections, and client seats.
-        </p>
+    <div className="grid gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h1 className="page-title !mb-0.5">Settings</h1>
+          <p className="page-sub !mt-0 text-sm">
+            Profile, desktop features, and client seats — one screen.
+          </p>
+        </div>
       </div>
       <SettingsForm
         user={user}

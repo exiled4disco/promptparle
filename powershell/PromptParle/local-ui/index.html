@@ -755,6 +755,101 @@
       margin-left: .35rem;
     }
     .client-limit-banner[hidden] { display: none !important; }
+
+    /* Terminal panel under chat (local workspace or SSH) */
+    .term-panel {
+      flex: 0 0 auto;
+      display: none;
+      flex-direction: column;
+      min-height: 0;
+      max-height: min(34vh, 280px);
+      background: #070b12;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .term-panel.open { display: flex; }
+    .term-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .35rem .55rem;
+      border-bottom: 1px solid var(--border);
+      background: #0a0e16;
+      font-size: .72rem;
+      color: var(--muted);
+    }
+    .term-head strong { color: var(--text); font-weight: 600; }
+    .term-head .term-cwd {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--dim);
+    }
+    .term-head button {
+      flex: 0 0 auto;
+      font-size: .68rem !important;
+      padding: .12rem .4rem !important;
+      height: auto !important;
+      min-height: 0 !important;
+      border-radius: 6px !important;
+    }
+    .term-out {
+      flex: 1 1 auto;
+      min-height: 7rem;
+      overflow: auto;
+      padding: .45rem .6rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .75rem;
+      line-height: 1.4;
+      color: #c8d4e8;
+      white-space: pre-wrap;
+      word-break: break-word;
+      scrollbar-width: thin;
+      scrollbar-color: #2a3a55 #070b12;
+    }
+    .term-out .term-cmd { color: #7dd3fc; }
+    .term-out .term-err { color: #fecaca; }
+    .term-out .term-meta { color: var(--dim); font-size: .68rem; }
+    .term-in-row {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: .35rem;
+      padding: .35rem .5rem;
+      border-top: 1px solid var(--border);
+      background: #0a0e16;
+    }
+    .term-prompt {
+      flex: 0 0 auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .75rem;
+      color: #34d399;
+      font-weight: 600;
+    }
+    .term-in-row input {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: transparent;
+      border: 0;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .78rem;
+      outline: none;
+      padding: .2rem 0;
+    }
+    .term-in-row button {
+      flex: 0 0 auto;
+      font-size: .7rem !important;
+      padding: .2rem .55rem !important;
+      height: auto !important;
+      min-height: 0 !important;
+    }
+    .conn-actions { flex-wrap: wrap; justify-content: flex-end; }
     .mini-primary {
       background: var(--accent-soft) !important;
       border: 1px solid rgba(91,140,255,.4) !important;
@@ -843,6 +938,7 @@
               <span class="conn-name">This PC</span>
               <div class="conn-actions">
                 <button type="button" class="secondary mini-primary" id="browseFolderBtn">Browse</button>
+                <button type="button" class="secondary" id="pcTermBtn" hidden title="Open terminal in this folder">Term</button>
                 <button type="button" class="secondary" id="clearFolderBtn" hidden>Detach</button>
               </div>
               <div class="conn-path" id="workspaceLine">No folder</div>
@@ -851,6 +947,8 @@
               <span class="conn-name">SSH</span>
               <div class="conn-actions">
                 <button type="button" class="secondary mini-primary" id="sshConnectBtn">Connect</button>
+                <button type="button" class="secondary" id="sshCwdBtn" hidden title="Edit remote working directory">Dir</button>
+                <button type="button" class="secondary" id="sshTermBtn" hidden title="Open SSH terminal">Term</button>
                 <button type="button" class="secondary" id="sshDetachBtn" hidden>Detach</button>
               </div>
               <div class="conn-path" id="sshLine">Not connected</div>
@@ -899,6 +997,21 @@
       <div class="savings-strip" id="savingsStrip" aria-live="polite"></div>
 
       <div id="chat" class="chat" role="log" aria-relevant="additions"></div>
+
+      <div class="term-panel" id="termPanel" hidden>
+        <div class="term-head">
+          <strong id="termTitle">Terminal</strong>
+          <span class="term-cwd" id="termCwd" title=""></span>
+          <button type="button" class="secondary" id="termClearBtn" title="Clear output">Clear</button>
+          <button type="button" class="secondary" id="termCloseBtn" title="Close terminal">Close</button>
+        </div>
+        <div class="term-out" id="termOut" aria-live="polite"></div>
+        <div class="term-in-row">
+          <span class="term-prompt" id="termPrompt">$</span>
+          <input type="text" id="termInput" placeholder="command — Enter to run" spellcheck="false" autocomplete="off" />
+          <button type="button" class="secondary" id="termRunBtn">Run</button>
+        </div>
+      </div>
 
       <form class="composer" id="form">
         <div class="attach-bar">
@@ -1066,18 +1179,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     </div>
   </div>
 
-  <!-- SSH connect -->
+  <!-- SSH connect / edit working directory -->
   <div class="modal-backdrop" id="sshModal" role="dialog" aria-modal="true" aria-labelledby="sshTitle">
     <div class="modal" style="width:min(420px,100%)">
       <h2 id="sshTitle">Connect SSH</h2>
-      <div class="sub">Uses OpenSSH on this PC. Private keys never leave the machine. Remote commands run in the working directory when set.</div>
-      <div class="field-row">
+      <div class="sub" id="sshModalSub">Uses OpenSSH on this PC. Private keys never leave the machine. Remote commands run in the working directory when set.</div>
+      <div class="field-row" id="sshHostRow">
         <label for="sshTargetInput">Host</label>
         <input type="text" id="sshTargetInput" placeholder="user@hostname  or  user@host:2222" spellcheck="false" />
       </div>
       <div class="field-row">
         <label for="sshCwdInput">Working directory (optional)</label>
-        <input type="text" id="sshCwdInput" placeholder="/var/www/app  or  ~/project" spellcheck="false" />
+        <input type="text" id="sshCwdInput" placeholder="/var/www/app  or  ~/project — leave blank for login home" spellcheck="false" />
       </div>
       <div class="row-actions">
         <button type="button" class="primary" id="sshModalConnect" style="border-radius:999px;padding:.55rem 1rem">Connect</button>
@@ -1155,7 +1268,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const sshLine = document.getElementById('sshLine');
     const browseFolderBtn = document.getElementById('browseFolderBtn');
     const clearFolderBtn = document.getElementById('clearFolderBtn');
+    const pcTermBtn = document.getElementById('pcTermBtn');
     const sshConnectBtn = document.getElementById('sshConnectBtn');
+    const sshCwdBtn = document.getElementById('sshCwdBtn');
+    const sshTermBtn = document.getElementById('sshTermBtn');
     const sshDetachBtn = document.getElementById('sshDetachBtn');
     const gitConnectBtn = document.getElementById('gitConnectBtn');
     const gitDetachBtn = document.getElementById('gitDetachBtn');
@@ -1166,14 +1282,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const gitModal = document.getElementById('gitModal');
     const sshTargetInput = document.getElementById('sshTargetInput');
     const sshCwdInput = document.getElementById('sshCwdInput');
+    const sshHostRow = document.getElementById('sshHostRow');
+    const sshModalSub = document.getElementById('sshModalSub');
+    const sshModalConnect = document.getElementById('sshModalConnect');
+    const sshTitleEl = document.getElementById('sshTitle');
     const gitRepoInput = document.getElementById('gitRepoInput');
     const gitDestInput = document.getElementById('gitDestInput');
     const helpBtn = document.getElementById('helpBtn');
+    const termPanel = document.getElementById('termPanel');
+    const termOut = document.getElementById('termOut');
+    const termInput = document.getElementById('termInput');
+    const termCwd = document.getElementById('termCwd');
+    const termTitle = document.getElementById('termTitle');
+    const termPrompt = document.getElementById('termPrompt');
     let fsBrowsePath = '';
     let currentWorkspacePath = '';
     let currentWorkspaceKind = '';
     let currentSshTarget = '';
     let currentSshCwd = '';
+    let sshModalMode = 'connect'; // 'connect' | 'cwd'
+    /** @type {'local'|'ssh'|null} */
+    let termTarget = null;
+    let termBusy = false;
+    const termHistory = [];
+    let termHistIdx = -1;
     /** @type {{ project_pc?: boolean, project_ssh?: boolean, project_git?: boolean, max_desktop_clients?: number, plan?: string, allowed?: boolean, message?: string }|null} */
     let entitlements = null;
     const menuBtn = document.getElementById('menuBtn');
@@ -2055,15 +2187,19 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         workspaceLine.textContent = 'No folder';
         workspaceLine.title = '';
         if (clearFolderBtn) clearFolderBtn.hidden = true;
+        if (pcTermBtn) pcTermBtn.hidden = true;
         if (browseFolderBtn) browseFolderBtn.textContent = 'Browse';
         setConnRow(pcRow, false, false);
+        if (termTarget === 'local') closeTerminal();
       } else {
         workspaceLine.textContent = path;
         workspaceLine.title = path;
         if (clearFolderBtn) clearFolderBtn.hidden = false;
+        if (pcTermBtn) pcTermBtn.hidden = false;
         if (browseFolderBtn) browseFolderBtn.textContent = 'Browse';
         setConnRow(pcRow, true, kind === 'missing');
         if (kind === 'missing') workspaceLine.textContent = path + ' (missing)';
+        if (termTarget === 'local') refreshTermHeader();
       }
 
       // SSH
@@ -2079,14 +2215,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           sshLine.textContent = label;
           sshLine.title = cwd ? (t + ' cwd ' + cwd) : label;
           if (sshConnectBtn) sshConnectBtn.hidden = true;
+          if (sshCwdBtn) sshCwdBtn.hidden = false;
+          if (sshTermBtn) sshTermBtn.hidden = false;
           if (sshDetachBtn) sshDetachBtn.hidden = false;
           setConnRow(sshRow, true, false);
+          if (termTarget === 'ssh') refreshTermHeader();
         } else {
           sshLine.textContent = 'Not connected';
           sshLine.title = '';
           if (sshConnectBtn) sshConnectBtn.hidden = false;
+          if (sshCwdBtn) sshCwdBtn.hidden = true;
+          if (sshTermBtn) sshTermBtn.hidden = true;
           if (sshDetachBtn) sshDetachBtn.hidden = true;
           setConnRow(sshRow, false, false);
+          if (termTarget === 'ssh') closeTerminal();
         }
       }
 
@@ -2249,21 +2391,178 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function closeSshModal() {
       if (sshModal) sshModal.classList.remove('open');
     }
-    function openSshModal() {
+    function openSshModal(mode) {
       if (entitlements && entitlements.project_ssh === false) {
         addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
         return;
+      }
+      sshModalMode = mode === 'cwd' ? 'cwd' : 'connect';
+      if (sshModalMode === 'cwd' && !currentSshTarget) {
+        sshModalMode = 'connect';
       }
       closeMenu();
       closeHelp();
       closeFsModal();
       closeGitModal();
+      if (sshTitleEl) {
+        sshTitleEl.textContent = sshModalMode === 'cwd' ? 'SSH working directory' : 'Connect SSH';
+      }
+      if (sshModalSub) {
+        sshModalSub.textContent = sshModalMode === 'cwd'
+          ? ('Host: ' + currentSshTarget + ' — set remote working directory for ls/run/terminal.')
+          : 'Uses OpenSSH on this PC. Private keys never leave the machine. Remote commands run in the working directory when set.';
+      }
+      if (sshHostRow) sshHostRow.style.display = sshModalMode === 'cwd' ? 'none' : '';
+      if (sshModalConnect) {
+        sshModalConnect.textContent = sshModalMode === 'cwd' ? 'Save directory' : 'Connect';
+      }
       if (sshTargetInput) {
         sshTargetInput.value = currentSshTarget || '';
-        setTimeout(function () { sshTargetInput.focus(); }, 50);
+        if (sshModalMode === 'connect') {
+          setTimeout(function () { sshTargetInput.focus(); }, 50);
+        }
       }
-      if (sshCwdInput) sshCwdInput.value = currentSshCwd || '';
+      if (sshCwdInput) {
+        sshCwdInput.value = currentSshCwd || '';
+        if (sshModalMode === 'cwd') {
+          setTimeout(function () { sshCwdInput.focus(); sshCwdInput.select(); }, 50);
+        }
+      }
       if (sshModal) sshModal.classList.add('open');
+    }
+
+    function openSshCwdModal() {
+      if (!currentSshTarget) {
+        openSshModal('connect');
+        return;
+      }
+      openSshModal('cwd');
+    }
+
+    function refreshTermHeader() {
+      if (!termPanel || !termTarget) return;
+      if (termTarget === 'local') {
+        if (termTitle) termTitle.textContent = 'Local terminal';
+        if (termCwd) {
+          termCwd.textContent = currentWorkspacePath || '(no folder)';
+          termCwd.title = currentWorkspacePath || '';
+        }
+        if (termPrompt) termPrompt.textContent = '>';
+      } else {
+        if (termTitle) termTitle.textContent = 'SSH · ' + (currentSshTarget || '?');
+        const cwd = currentSshCwd || '~';
+        if (termCwd) {
+          termCwd.textContent = cwd;
+          termCwd.title = (currentSshTarget || '') + ' · ' + cwd;
+        }
+        if (termPrompt) termPrompt.textContent = '$';
+      }
+    }
+
+    function openTerminal(target) {
+      if (target === 'local') {
+        if (entitlements && entitlements.project_pc === false) {
+          addMsg('sys', 'This PC is disabled for your account in portal Settings.', null, true);
+          return;
+        }
+        if (!currentWorkspacePath) {
+          addMsg('sys', 'Attach a This PC folder first, then open Term.', null, true);
+          openFsModal();
+          return;
+        }
+      } else if (target === 'ssh') {
+        if (entitlements && entitlements.project_ssh === false) {
+          addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
+          return;
+        }
+        if (!currentSshTarget) {
+          addMsg('sys', 'Connect SSH first, then open Term.', null, true);
+          openSshModal('connect');
+          return;
+        }
+      } else {
+        return;
+      }
+      termTarget = target;
+      if (termPanel) {
+        termPanel.hidden = false;
+        termPanel.classList.add('open');
+      }
+      refreshTermHeader();
+      if (termOut && !termOut.dataset.booted) {
+        termOut.dataset.booted = '1';
+        termAppendMeta('Terminal ready — ' + (target === 'ssh' ? 'remote shell via SSH' : 'local shell in project folder') + '.');
+      }
+      if (termInput) setTimeout(function () { termInput.focus(); }, 40);
+    }
+
+    function closeTerminal() {
+      termTarget = null;
+      if (termPanel) {
+        termPanel.classList.remove('open');
+        termPanel.hidden = true;
+      }
+    }
+
+    function termAppend(html) {
+      if (!termOut) return;
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      termOut.appendChild(div);
+      termOut.scrollTop = termOut.scrollHeight;
+    }
+    function termAppendMeta(text) {
+      termAppend('<span class="term-meta">' + esc(text) + '</span>');
+    }
+
+    async function runTerminalCommand(cmd) {
+      if (termBusy) return;
+      const line = (cmd || '').trim();
+      if (!line) return;
+      if (!termTarget) {
+        addMsg('sys', 'Open Term from This PC or SSH first.', null, true);
+        return;
+      }
+      if (line === 'clear' || line === 'cls') {
+        if (termOut) termOut.innerHTML = '';
+        return;
+      }
+      if (line === 'exit' || line === 'quit') {
+        closeTerminal();
+        return;
+      }
+      termBusy = true;
+      termHistory.push(line);
+      termHistIdx = termHistory.length;
+      termAppend('<span class="term-cmd">' + esc((termPrompt ? termPrompt.textContent : '$') + ' ' + line) + '</span>');
+      if (termInput) termInput.value = '';
+      try {
+        const res = await fetch('/api/terminal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: line, target: termTarget })
+        });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        const text = data.text != null ? String(data.text) : (data.error || data.Error || '');
+        const code = data.exit_code != null ? data.exit_code : (res.ok ? 0 : 1);
+        if (text) {
+          termAppend('<span class="' + (code === 0 ? '' : 'term-err') + '">' + esc(text) + '</span>');
+        }
+        if (code !== 0) {
+          termAppendMeta('exit ' + code);
+        }
+        if (data.cwd && termTarget === 'ssh' && data.cwd !== currentSshCwd) {
+          // keep header in sync if server reports cwd
+          currentSshCwd = data.cwd;
+          refreshTermHeader();
+        }
+      } catch (e) {
+        termAppend('<span class="term-err">' + esc(e.message || e) + '</span>');
+      } finally {
+        termBusy = false;
+        if (termInput) termInput.focus();
+      }
     }
 
     function closeGitModal() {
@@ -2296,19 +2595,28 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
         return;
       }
-      const target = (sshTargetInput && sshTargetInput.value || '').trim();
-      if (!target) {
-        addMsg('sys', 'Enter user@host first.', null, true);
-        return;
-      }
       const cwd = (sshCwdInput && sshCwdInput.value || '').trim();
-      const line = cwd ? ('/ssh ' + target + ' ' + cwd) : ('/ssh ' + target);
       try {
+        if (sshModalMode === 'cwd') {
+          // Edit working directory only (host already connected)
+          const line = cwd ? ('/ssh cwd ' + cwd) : '/ssh cwd clear';
+          await postCommand(line);
+          closeSshModal();
+          loadSession();
+          if (termTarget === 'ssh') refreshTermHeader();
+          return;
+        }
+        const target = (sshTargetInput && sshTargetInput.value || '').trim();
+        if (!target) {
+          addMsg('sys', 'Enter user@host first.', null, true);
+          return;
+        }
+        const line = cwd ? ('/ssh ' + target + ' ' + cwd) : ('/ssh ' + target);
         await postCommand(line);
         closeSshModal();
         loadSession();
       } catch (e) {
-        addMsg('sys', 'SSH connect failed: ' + (e.message || e), null, true);
+        addMsg('sys', (sshModalMode === 'cwd' ? 'SSH directory failed: ' : 'SSH connect failed: ') + (e.message || e), null, true);
       }
     }
 
@@ -2451,8 +2759,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     if (document.getElementById('sshModalClose')) {
       document.getElementById('sshModalClose').addEventListener('click', closeSshModal);
     }
-    if (document.getElementById('sshModalConnect')) {
-      document.getElementById('sshModalConnect').addEventListener('click', connectSsh);
+    if (sshModalConnect) {
+      sshModalConnect.addEventListener('click', connectSsh);
     }
     if (sshTargetInput) {
       sshTargetInput.addEventListener('keydown', function (e) {
@@ -2462,6 +2770,45 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     if (sshCwdInput) {
       sshCwdInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); connectSsh(); }
+      });
+    }
+    if (sshCwdBtn) {
+      sshCwdBtn.addEventListener('click', function () { openSshCwdModal(); });
+    }
+    if (sshTermBtn) {
+      sshTermBtn.addEventListener('click', function () { openTerminal('ssh'); });
+    }
+    if (pcTermBtn) {
+      pcTermBtn.addEventListener('click', function () { openTerminal('local'); });
+    }
+    if (document.getElementById('termCloseBtn')) {
+      document.getElementById('termCloseBtn').addEventListener('click', closeTerminal);
+    }
+    if (document.getElementById('termClearBtn')) {
+      document.getElementById('termClearBtn').addEventListener('click', function () {
+        if (termOut) termOut.innerHTML = '';
+      });
+    }
+    if (document.getElementById('termRunBtn')) {
+      document.getElementById('termRunBtn').addEventListener('click', function () {
+        runTerminalCommand(termInput ? termInput.value : '');
+      });
+    }
+    if (termInput) {
+      termInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          runTerminalCommand(termInput.value);
+        } else if (e.key === 'ArrowUp') {
+          if (!termHistory.length) return;
+          e.preventDefault();
+          termHistIdx = Math.max(0, termHistIdx - 1);
+          termInput.value = termHistory[termHistIdx] || '';
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          termHistIdx = Math.min(termHistory.length, termHistIdx + 1);
+          termInput.value = termHistIdx >= termHistory.length ? '' : (termHistory[termHistIdx] || '');
+        }
       });
     }
     if (document.getElementById('gitModalClose')) {

@@ -2399,6 +2399,98 @@ function Test-PromptParleSsh {
     return $r
 }
 
+function Invoke-PromptParleTerminal {
+    <#
+    .SYNOPSIS
+      Run a shell command in the local workspace or on the SSH target (desktop terminal panel).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [ValidateSet('local', 'ssh')][string]$Target = 'local',
+        [int]$TimeoutSec = 60
+    )
+    $cmd = if ($null -eq $Command) { '' } else { $Command.Trim() }
+    if (-not $cmd) { throw 'Empty command' }
+    if ($cmd.Length -gt 8000) { throw 'Command too long' }
+
+    $maxOut = 120000
+    if ($Target -eq 'ssh') {
+        $ws = Get-PromptParleWorkspace
+        if (-not $ws.ssh_target) { throw 'No SSH target. Connect SSH first.' }
+        $r = Invoke-PromptParleSsh -RemoteCommand $cmd -TimeoutSec $TimeoutSec
+        $text = [string]$r.text
+        if ($text.Length -gt $maxOut) { $text = $text.Substring(0, $maxOut) + "`n…[truncated]" }
+        $cwd = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
+        return [pscustomobject]@{
+            ok        = ($r.exit_code -eq 0)
+            target    = 'ssh'
+            host      = [string]$r.target
+            cwd       = $cwd
+            command   = $cmd
+            exit_code = [int]$r.exit_code
+            text      = $text
+        }
+    }
+
+    $ws = Get-PromptParleWorkspace
+    $cwd = [string]$ws.path
+    if (-not $cwd) { throw 'No local folder. Browse / attach This PC first.' }
+    if (-not (Test-Path -LiteralPath $cwd -PathType Container)) {
+        throw "Local folder missing: $cwd"
+    }
+
+    $code = 0
+    $text = ''
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($script:PromptParleIsWindows) {
+            # Run via cmd so PATH tools work; WorkingDirectory = project folder
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = 'cmd.exe'
+            $psi.Arguments = '/d /c ' + $cmd
+            $psi.WorkingDirectory = $cwd
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $p = New-Object System.Diagnostics.Process
+            $p.StartInfo = $psi
+            [void]$p.Start()
+            $stdout = $p.StandardOutput.ReadToEnd()
+            $stderr = $p.StandardError.ReadToEnd()
+            if (-not $p.WaitForExit([Math]::Max(1000, $TimeoutSec * 1000))) {
+                try { $p.Kill() } catch { }
+                throw "Command timed out after ${TimeoutSec}s"
+            }
+            $code = $p.ExitCode
+            $text = (($stdout, $stderr) | Where-Object { $_ }) -join "`n"
+        } else {
+            $safeCwd = ($cwd -replace "'", "'\''")
+            $safeCmd = ($cmd -replace "'", "'\''")
+            $raw = & bash -lc "cd '$safeCwd' && $safeCmd" 2>&1
+            $code = $LASTEXITCODE
+            if ($null -eq $code) { $code = 0 }
+            $text = ($raw | ForEach-Object { "$_" }) -join "`n"
+        }
+    } catch {
+        $code = 1
+        $text = "$_"
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($text.Length -gt $maxOut) { $text = $text.Substring(0, $maxOut) + "`n…[truncated]" }
+    return [pscustomobject]@{
+        ok        = ($code -eq 0)
+        target    = 'local'
+        host      = 'This PC'
+        cwd       = $cwd
+        command   = $cmd
+        exit_code = [int]$code
+        text      = $text
+    }
+}
+
 function Get-PromptParleSlashHelpText {
     return @"
 Commands (type in chat instead of a normal message):
@@ -4465,6 +4557,30 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                     continue
                 }
 
+                # Desktop terminal panel (local workspace or SSH) — stays on this PC
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/terminal') {
+                    try {
+                        $encT = $req.ContentEncoding
+                        if (-not $encT) { $encT = [System.Text.Encoding]::UTF8 }
+                        $readerT = New-Object System.IO.StreamReader($req.InputStream, $encT)
+                        $rawT = $readerT.ReadToEnd()
+                        $readerT.Close()
+                        $bodyT = ConvertFrom-PromptParleJson -Json $rawT
+                        $cmdT = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyT 'command' '')
+                        $tgtT = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyT 'target' 'local')
+                        if (-not $tgtT) { $tgtT = 'local' }
+                        $tgtT = $tgtT.ToLowerInvariant()
+                        if ($tgtT -ne 'ssh') { $tgtT = 'local' }
+                        $resultT = Invoke-PromptParleTerminal -Command $cmdT -Target $tgtT
+                        $jsonT = ($resultT | ConvertTo-Json -Depth 4 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $jsonT
+                    } catch {
+                        $err = @{ ok = $false; error = "$_"; text = "$_"; exit_code = 1 } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 if (($req.HttpMethod -eq 'GET' -or $req.HttpMethod -eq 'POST') -and $path -eq '/api/workspace') {
                     try {
                         if ($req.HttpMethod -eq 'GET') {
@@ -5329,6 +5445,7 @@ Export-ModuleMember -Function @(
     'Set-PromptParleSshTarget',
     'Clear-PromptParleSshTarget',
     'Invoke-PromptParleSsh',
+    'Invoke-PromptParleTerminal',
     'Invoke-PromptParleGitClone'
 ) -Alias @(
     'pp',
