@@ -106,8 +106,8 @@ export default async function UsagePage() {
         <div className="border-b border-[var(--border)] px-4 py-3 sm:px-5">
           <h2 className="text-sm font-semibold">Request History</h2>
           <p className="mt-0.5 text-xs text-[var(--text-dim)]">
-            Every stored optimize/chat request for your account. Delete one row
-            or clear all history (token totals update after refresh).
+            Stored optimize/chat requests. Delete a row or clear all — token
+            stats above stay (history only is hidden).
           </p>
         </div>
         <UsageHistory

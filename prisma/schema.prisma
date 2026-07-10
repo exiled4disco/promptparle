@@ -148,9 +148,15 @@ model PromptRequest {
   optimizedTruncated  Boolean  @default(false) @map("optimized_truncated")
   errorMessage        String?  @map("error_message")
   createdAt           DateTime @default(now()) @map("created_at")
+  /**
+   * Soft-hide from Request History UI. Token stats (aggregates) still count this row.
+   * Deleting a session/history entry sets this; does not destroy usage totals.
+   */
+  historyHiddenAt DateTime? @map("history_hidden_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+  @@index([userId, historyHiddenAt])
   @@map("prompt_requests")
 }

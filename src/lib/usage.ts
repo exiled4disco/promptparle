@@ -41,6 +41,7 @@ export async function getUsageSummary(
     limits.historyLimit
   );
 
+  // Stats always include hidden-from-history rows (delete history ≠ wipe totals).
   const totalsPromise = prisma.promptRequest.aggregate({
     where: { userId, status: "completed" },
     _sum: {
@@ -50,9 +51,10 @@ export async function getUsageSummary(
     _count: true,
   });
 
+  // Request History UI only — soft-hidden rows stay out of the list.
   const recentPromise = includeRecent
     ? prisma.promptRequest.findMany({
-        where: { userId },
+        where: { userId, historyHiddenAt: null },
         orderBy: { createdAt: "desc" },
         take: recentTake,
         select: includePromptBodies

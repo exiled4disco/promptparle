@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
-import { prisma } from "@/lib/db";
+import { hideUsageHistoryRows } from "@/lib/usage-history";
 
 /**
- * DELETE /api/usage/[id] — remove one request-history row for the signed-in user.
+ * DELETE /api/usage/[id]
+ * Soft-hide one request from Request History.
+ * Token stats (aggregates) are preserved.
  */
 export async function DELETE(
   _req: NextRequest,
@@ -16,15 +18,18 @@ export async function DELETE(
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
     }
 
-    const result = await prisma.promptRequest.deleteMany({
-      where: { id, userId: user.id },
-    });
+    const result = await hideUsageHistoryRows({ userId: user.id, id });
 
-    if (result.count === 0) {
+    if (result.hidden === 0) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ ok: true, deleted: 1, id });
+    return NextResponse.json({
+      ok: true,
+      deleted: 1,
+      id,
+      statsPreserved: true,
+    });
   } catch (err) {
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

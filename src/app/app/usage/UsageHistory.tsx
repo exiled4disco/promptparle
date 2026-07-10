@@ -59,7 +59,11 @@ export function UsageHistory({
 
   async function deleteOne(id: string) {
     if (busyId || clearing) return;
-    if (!confirm("Delete this request from history? This cannot be undone.")) {
+    if (
+      !confirm(
+        "Remove this request from history? Token stats stay; before/after text is cleared."
+      )
+    ) {
       return;
     }
     setError(null);
@@ -87,7 +91,7 @@ export function UsageHistory({
     if (busyId || clearing || rows.length === 0) return;
     if (
       !confirm(
-        `Clear all request history (${rows.length}+ rows shown; deletes every stored request for your account)? This cannot be undone.`
+        `Clear all request history (${rows.length} listed)? Token totals and savings stats stay. Before/after text is cleared from history.`
       )
     ) {
       return;
@@ -163,7 +167,7 @@ export function UsageHistory({
           disabled={clearing || Boolean(busyId)}
           onClick={() => void clearAll()}
         >
-          {clearing ? "Clearing…" : "Clear all history"}
+          {clearing ? "Clearing…" : "Clear history (keep stats)"}
         </button>
       </div>
 
