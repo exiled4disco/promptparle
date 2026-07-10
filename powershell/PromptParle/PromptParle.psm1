@@ -1470,7 +1470,19 @@ function Update-PromptParleClient {
         [int]$RestartPort = 0
     )
 
-    $before = Get-PromptParleClientVersion
+    # Prefer manifest on disk — safer if module is mid-reload or partially loaded
+    $before = $null
+    try { $before = Get-PromptParleClientVersion } catch { $before = $null }
+    if (-not $before -or $before -eq '0.0.0') {
+        $rootGuess = $null
+        try { $rootGuess = Get-PromptParleModuleRoot } catch { }
+        if (-not $rootGuess) {
+            $rootGuess = Join-Path (Get-PromptParleUserModulesDir) 'PromptParle'
+        }
+        $before = Read-PromptParleVersionFromManifest -ManifestPath (Join-Path $rootGuess 'PromptParle.psd1')
+    }
+    if (-not $before) { $before = '0.0.0' }
+
     $remote = $null
     try { $remote = Get-PromptParleRemoteClientVersion } catch { }
 
@@ -1564,14 +1576,24 @@ function Update-PromptParleClient {
             try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch { }
         }
 
-        # Best-effort: refresh in-memory module for CLI (local server still needs restart)
-        try {
-            Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
-            Import-Module $dest -Force -ErrorAction SilentlyContinue
-        } catch { }
+        # Version from files on disk — never call module cmdlets after a possible unload.
+        # (UI self-update runs inside the loaded module; Remove-Module would kill Get-PromptParleClientVersion mid-request.)
+        $manifestPath = Join-Path $dest 'PromptParle.psd1'
+        $after = Read-PromptParleVersionFromManifest -ManifestPath $manifestPath
+        if (-not $after) { $after = $newVer }
+        if (-not $after) { $after = 'unknown' }
 
-        $after = Get-PromptParleClientVersion
-        if ($after -eq '0.0.0' -or -not $after) { $after = $newVer }
+        # Only re-import when updating from an interactive CLI (no live local-server restart).
+        # When -RestartPort is set, a NEW process loads the new module; this process must keep running
+        # until it returns the HTTP response and exits cleanly.
+        if ($RestartPort -le 0) {
+            try {
+                Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
+                Import-Module $manifestPath -Force -Global -ErrorAction Stop
+            } catch {
+                Write-Host ("  note: module reloaded from disk after restart (import: {0})" -f $_) -ForegroundColor DarkGray
+            }
+        }
 
         $msg = "Updated $before → $after"
         Write-Host $msg -ForegroundColor Green
@@ -1585,9 +1607,10 @@ function Update-PromptParleClient {
             } else {
                 'powershell'
             }
+            $destEsc = $manifestPath -replace "'", "''"
             $cmd = @"
 Start-Sleep -Seconds 2
-Import-Module '$($dest -replace "'","''")' -Force
+Import-Module '$destEsc' -Force -Global
 try { Start-PromptParleLocalServer -Port $RestartPort } catch { Start-PromptParle }
 "@
             Write-Host ("Restarting local chat on port {0}..." -f $RestartPort) -ForegroundColor Cyan
@@ -2049,6 +2072,49 @@ function Start-PromptParleLocalServer {
                         break
                     } catch {
                         Write-Host ("  update: error - {0}" -f $_) -ForegroundColor Red
+                        # If files were written but post-install threw (old bug: Remove-Module mid-server),
+                        # still spawn a fresh process from the on-disk module so the user is not stuck.
+                        $recovered = $false
+                        try {
+                            $modDir = Join-Path (Get-PromptParleUserModulesDir) 'PromptParle'
+                            $psd1 = Join-Path $modDir 'PromptParle.psd1'
+                            if (Test-Path -LiteralPath $psd1) {
+                                $verOnDisk = Read-PromptParleVersionFromManifest -ManifestPath $psd1
+                                $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+                                    (Get-Command pwsh).Source
+                                } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
+                                    (Get-Command powershell).Source
+                                } else { 'powershell' }
+                                $destEsc = $psd1 -replace "'", "''"
+                                $cmd = @"
+Start-Sleep -Seconds 2
+Import-Module '$destEsc' -Force -Global
+try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
+"@
+                                Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) | Out-Null
+                                $payload = @{
+                                    ok               = $true
+                                    updated          = $true
+                                    version          = $verOnDisk
+                                    message          = "Updated to $verOnDisk (recovered after reload glitch). Restarting…"
+                                    restart_required = $true
+                                    restart_port     = $Port
+                                    url              = "http://127.0.0.1:$Port/"
+                                    recovered        = $true
+                                    prior_error      = "$_"
+                                } | ConvertTo-Json -Compress
+                                Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                                Write-Host ("  update: recovered — restarting with on-disk v{0}" -f $verOnDisk) -ForegroundColor Yellow
+                                Start-Sleep -Milliseconds 400
+                                $script:PromptParleShouldStop = $true
+                                $script:PromptParleStopAnnounced = $true
+                                try { $listener.Stop() } catch { }
+                                $recovered = $true
+                            }
+                        } catch {
+                            Write-Host ("  update: recovery failed - {0}" -f $_) -ForegroundColor Red
+                        }
+                        if ($recovered) { break }
                         $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
