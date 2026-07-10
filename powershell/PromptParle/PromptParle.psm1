@@ -51,6 +51,86 @@ function Get-PromptParleProp {
     return $prop.Value
 }
 
+function ConvertFrom-PromptParleJson {
+    <#
+    .SYNOPSIS
+      JSON parse that allows large payloads (images) on Windows PowerShell 5.1.
+    #>
+    param([Parameter(Mandatory)][string]$Json)
+
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return ($Json | ConvertFrom-Json -Depth 30)
+    }
+
+    # PS 5.1 ConvertFrom-Json caps ~2MB. Raise via JavaScriptSerializer.
+    try {
+        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+    } catch {
+        return ($Json | ConvertFrom-Json)
+    }
+
+    $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $ser.MaxJsonLength = 64 * 1024 * 1024
+    $ser.RecursionLimit = 100
+    $raw = $ser.DeserializeObject($Json)
+    return ConvertTo-PromptParlePsObject $raw
+}
+
+function ConvertTo-PromptParlePsObject {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+
+    # Dictionary from JavaScriptSerializer
+    if ($Value -is [System.Collections.IDictionary]) {
+        $o = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $o[[string]$key] = ConvertTo-PromptParlePsObject $Value[$key]
+        }
+        return [pscustomobject]$o
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $list = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) {
+            [void]$list.Add((ConvertTo-PromptParlePsObject $item))
+        }
+        return ,$list.ToArray()
+    }
+
+    return $Value
+}
+
+function ConvertTo-PromptParleImageList {
+    <#
+    .SYNOPSIS
+      Normalize UI/API image objects into API-shaped hashtables.
+    #>
+    param($Images)
+
+    $out = New-Object System.Collections.Generic.List[hashtable]
+    if ($null -eq $Images) { return @() }
+
+    $items = @($Images)
+    foreach ($img in $items) {
+        if ($null -eq $img) { continue }
+        $mediaType = Get-PromptParleProp $img 'media_type' $null
+        if (-not $mediaType) { $mediaType = Get-PromptParleProp $img 'mediaType' 'image/png' }
+        $data = Get-PromptParleProp $img 'data_base64' $null
+        if (-not $data) { $data = Get-PromptParleProp $img 'dataBase64' $null }
+        if (-not $data) { $data = Get-PromptParleProp $img 'data' $null }
+        if (-not $data) { continue }
+        $name = Get-PromptParleProp $img 'name' $null
+        $entry = @{
+            media_type  = [string]$mediaType
+            data_base64 = [string]$data
+        }
+        if ($name) { $entry.name = [string]$name }
+        [void]$out.Add($entry)
+        if ($out.Count -ge 6) { break }
+    }
+    return ,$out.ToArray()
+}
+
 function Get-PromptParleConfigInternal {
     [CmdletBinding()]
     param()
@@ -142,7 +222,8 @@ function Invoke-PromptParleApi {
         Headers     = $headers
         ContentType = 'application/json; charset=utf-8'
         # Avoid silent hangs in local UI when the cloud API is slow/unreachable
-        TimeoutSec  = 120
+        # (vision + large context can take longer than plain text)
+        TimeoutSec  = 180
     }
 
     if ($PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
@@ -505,6 +586,10 @@ function Invoke-PromptParle {
         [Alias('ContextFile')]
         [string]$Path,
 
+        # Vision images: array of @{ media_type='image/png'; data_base64='...' ; name='x.png' }
+        [Parameter()]
+        [object]$Images,
+
         [switch]$OptimizeOnly,
 
         [switch]$Quiet,
@@ -554,6 +639,11 @@ function Invoke-PromptParle {
         if ($Model) { $body.model = $Model }
         if ($contextText) { $body.context = $contextText }
         if ($OptimizeOnly) { $body.optimize_only = $true }
+
+        $imageList = @(ConvertTo-PromptParleImageList -Images $Images)
+        if ($imageList.Count -gt 0 -and -not $OptimizeOnly) {
+            $body.images = $imageList
+        }
 
         $result = Invoke-PromptParleApi -Method POST -Path '/api/v1/prompt' -Body $body
 
@@ -1075,7 +1165,7 @@ function Start-PromptParleLocalServer {
                     $reader.Close()
                     try {
                         if ([string]::IsNullOrWhiteSpace($rawBody)) { throw 'Empty request body' }
-                        $body = $rawBody | ConvertFrom-Json
+                        $body = ConvertFrom-PromptParleJson -Json $rawBody
                         # StrictMode: never touch $body.foo if foo may be absent
                         $prompt = [string](Get-PromptParleProp $body 'prompt' '')
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
@@ -1090,9 +1180,11 @@ function Start-PromptParleLocalServer {
                         if ($null -eq $optFlag) { $optFlag = Get-PromptParleProp $body 'optimizeOnly' $null }
                         if ($optFlag -eq $true) { $optOnly = $true }
 
+                        $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
+
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} profile={1} optimize_only={2} prompt={3}c context={4}c" -f `
-                            $provider, $profile, $optOnly, $prompt.Length, $ctxLen) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} profile={1} optimize_only={2} prompt={3}c context={4}c images={5}" -f `
+                            $provider, $profile, $optOnly, $prompt.Length, $ctxLen, $images.Count) -ForegroundColor DarkGray
 
                         $params = @{
                             Prompt   = $prompt
@@ -1104,6 +1196,7 @@ function Start-PromptParleLocalServer {
                         # Pass as single string - never as char-unrolled array
                         if ($context) { $params.Context = [string]$context }
                         if ($optOnly) { $params.OptimizeOnly = $true }
+                        if ($images.Count -gt 0) { $params.Images = $images }
 
                         $result = Invoke-PromptParle @params
                         $json = ($result | ConvertTo-Json -Depth 10 -Compress)

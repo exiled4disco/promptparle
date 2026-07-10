@@ -5,6 +5,15 @@ import { runOptimizedPrompt } from "@/lib/run-prompt";
 import { listProviderCredentials } from "@/lib/providers";
 import { PROVIDERS } from "@/lib/constants";
 
+const imageSchema = z.object({
+  mediaType: z.string().optional(),
+  media_type: z.string().optional(),
+  dataBase64: z.string().optional(),
+  data_base64: z.string().optional(),
+  data: z.string().optional(),
+  name: z.string().optional(),
+});
+
 const schema = z.object({
   provider: z.string(),
   model: z.string().optional(),
@@ -12,6 +21,7 @@ const schema = z.object({
   context: z.string().max(2_000_000).optional(),
   profile: z.string().optional(),
   optimizeOnly: z.boolean().optional(),
+  images: z.array(imageSchema).max(8).optional(),
 });
 
 /** Browser chat — session cookie auth (not desktop API key). */
@@ -34,6 +44,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const images = (parsed.data.images || []).map((img) => ({
+      mediaType: img.mediaType || img.media_type || "image/png",
+      dataBase64: img.dataBase64 || img.data_base64 || img.data || "",
+      name: img.name,
+    }));
+
     const result = await runOptimizedPrompt({
       userId: user.id,
       plan: user.plan,
@@ -45,6 +61,7 @@ export async function POST(req: NextRequest) {
       context: parsed.data.context,
       profile: parsed.data.profile,
       optimizeOnly: parsed.data.optimizeOnly,
+      images,
     });
 
     if (!result.ok) {

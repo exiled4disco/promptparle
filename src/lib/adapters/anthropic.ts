@@ -1,8 +1,35 @@
 import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
+import { normalizeAdapterImages } from "./types";
 
 export const anthropicAdapter: ProviderAdapter = {
   id: "anthropic",
   async complete(req: AdapterRequest): Promise<AdapterResponse> {
+    const images = normalizeAdapterImages(req.images);
+    const content: Array<
+      | { type: "text"; text: string }
+      | {
+          type: "image";
+          source: {
+            type: "base64";
+            media_type: string;
+            data: string;
+          };
+        }
+    > = [];
+
+    // Anthropic: images first, then text (common pattern)
+    for (const img of images) {
+      content.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: img.mediaType,
+          data: img.dataBase64,
+        },
+      });
+    }
+    content.push({ type: "text", text: req.prompt });
+
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -16,7 +43,7 @@ export const anthropicAdapter: ProviderAdapter = {
         messages: [
           {
             role: "user",
-            content: req.prompt,
+            content: images.length === 0 ? req.prompt : content,
           },
         ],
         temperature: req.temperature ?? 0.2,

@@ -1,4 +1,5 @@
 import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
+import { normalizeAdapterImages } from "./types";
 
 export const geminiAdapter: ProviderAdapter = {
   id: "gemini",
@@ -8,6 +9,21 @@ export const geminiAdapter: ProviderAdapter = {
       model
     )}:generateContent?key=${encodeURIComponent(req.apiKey)}`;
 
+    const images = normalizeAdapterImages(req.images);
+    const parts: Array<
+      | { text: string }
+      | { inline_data: { mime_type: string; data: string } }
+    > = [{ text: req.prompt }];
+
+    for (const img of images) {
+      parts.push({
+        inline_data: {
+          mime_type: img.mediaType,
+          data: img.dataBase64,
+        },
+      });
+    }
+
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -15,7 +31,7 @@ export const geminiAdapter: ProviderAdapter = {
         contents: [
           {
             role: "user",
-            parts: [{ text: req.prompt }],
+            parts,
           },
         ],
         generationConfig: {
@@ -34,8 +50,8 @@ export const geminiAdapter: ProviderAdapter = {
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
 
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const text = parts
+    const outParts = data?.candidates?.[0]?.content?.parts || [];
+    const text = outParts
       .map((p: { text?: string }) => p.text || "")
       .join("\n");
 

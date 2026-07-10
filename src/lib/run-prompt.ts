@@ -7,6 +7,8 @@ import {
   touchProviderCredential,
 } from "./providers";
 import { getAdapter } from "./adapters";
+import type { AdapterImage } from "./adapters/types";
+import { normalizeAdapterImages } from "./adapters/types";
 import { recordPromptRequest } from "./prompt-request";
 import type { ProviderId } from "./constants";
 
@@ -22,6 +24,8 @@ export type RunPromptInput = {
   profile?: string;
   optimizeOnly?: boolean;
   maxTokens?: number;
+  /** Vision images (not optimized; forwarded to the model on full AI calls) */
+  images?: AdapterImage[];
 };
 
 export type RunPromptSuccess = {
@@ -41,6 +45,7 @@ export type RunPromptSuccess = {
     secret_findings: string[];
     notes: string[];
     optimize_only: boolean;
+    image_count?: number;
     provider_request_id?: string;
   };
 };
@@ -78,6 +83,7 @@ export async function runOptimizedPrompt(
 
   const providerId = provider as ProviderId;
   const model = input.model || defaultModelFor(providerId);
+  const images = normalizeAdapterImages(input.images);
 
   const optimized = optimizePrompt({
     prompt: input.prompt,
@@ -85,6 +91,13 @@ export async function runOptimizedPrompt(
     profile,
     maxTokens: input.maxTokens,
   });
+
+  const notes = [...optimized.notes];
+  if (images.length > 0) {
+    notes.push(
+      `${images.length} image(s) attached — passed to the model (not text-optimized)`
+    );
+  }
 
   const baseMeta = {
     original_tokens: optimized.originalTokens,
@@ -100,8 +113,9 @@ export async function runOptimizedPrompt(
     optimization_profile: profile,
     secrets_masked: optimized.secretsMasked,
     secret_findings: optimized.secretFindings,
-    notes: optimized.notes,
+    notes,
     optimize_only: optimizeOnly,
+    image_count: images.length,
   };
 
   const recordBase = {
@@ -144,6 +158,7 @@ export async function runOptimizedPrompt(
       apiKey: cred.apiKey,
       model,
       prompt: optimized.optimizedPrompt,
+      images: images.length > 0 ? images : undefined,
     });
     const usedModel = result.model || model;
     await touchProviderCredential(cred.credentialId);

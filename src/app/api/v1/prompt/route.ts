@@ -10,8 +10,22 @@ import {
   touchProviderCredential,
 } from "@/lib/providers";
 import { getAdapter } from "@/lib/adapters";
+import {
+  normalizeAdapterImages,
+  type AdapterImage,
+} from "@/lib/adapters/types";
 import { recordPromptRequest } from "@/lib/prompt-request";
 import type { ProviderId } from "@/lib/constants";
+
+const imageSchema = z.object({
+  media_type: z.string().optional(),
+  mediaType: z.string().optional(),
+  data_base64: z.string().optional(),
+  dataBase64: z.string().optional(),
+  /** data URL or raw base64 */
+  data: z.string().optional(),
+  name: z.string().optional(),
+});
 
 const schema = z.object({
   provider: z.string(),
@@ -27,7 +41,27 @@ const schema = z.object({
   /** optimize only — do not call the AI provider */
   optimize_only: z.boolean().optional(),
   optimizeOnly: z.boolean().optional(),
+  /** Vision attachments (max 6 after normalize) */
+  images: z.array(imageSchema).max(8).optional(),
 });
+
+function parseImages(
+  raw: z.infer<typeof schema>["images"]
+): AdapterImage[] {
+  if (!raw?.length) return [];
+  const mapped: AdapterImage[] = raw.map((img) => {
+    const mediaType =
+      img.media_type || img.mediaType || "image/png";
+    const dataBase64 =
+      img.data_base64 || img.dataBase64 || img.data || "";
+    return {
+      mediaType,
+      dataBase64,
+      name: img.name,
+    };
+  });
+  return normalizeAdapterImages(mapped);
+}
 
 export async function POST(req: NextRequest) {
   let userId: string | null = null;
@@ -84,6 +118,7 @@ export async function POST(req: NextRequest) {
 
     const providerId = provider as ProviderId;
     model = data.model || defaultModelFor(providerId);
+    const images = parseImages(data.images);
 
     const optimized = optimizePrompt({
       prompt: data.prompt,
@@ -94,6 +129,13 @@ export async function POST(req: NextRequest) {
     originalTokens = optimized.originalTokens;
     optimizedTokens = optimized.optimizedTokens;
     optimizedPromptText = optimized.optimizedPrompt;
+
+    const notes = [...optimized.notes];
+    if (images.length > 0) {
+      notes.push(
+        `${images.length} image(s) attached — passed to the model on full AI calls (not text-optimized)`
+      );
+    }
 
     if (optimizeOnly) {
       await recordPromptRequest({
@@ -129,8 +171,9 @@ export async function POST(req: NextRequest) {
               optimization_profile: profile,
               secrets_masked: optimized.secretsMasked,
               secret_findings: optimized.secretFindings,
-              notes: optimized.notes,
+              notes,
               optimize_only: true,
+              image_count: images.length,
             }
           : undefined,
       });
@@ -156,6 +199,7 @@ export async function POST(req: NextRequest) {
         apiKey: cred.apiKey,
         model,
         prompt: optimized.optimizedPrompt,
+        images: images.length > 0 ? images : undefined,
       });
       aiText = result.text;
       usedModel = result.model || model;
@@ -234,7 +278,8 @@ export async function POST(req: NextRequest) {
             optimization_profile: profile,
             secrets_masked: optimized.secretsMasked,
             secret_findings: optimized.secretFindings,
-            notes: optimized.notes,
+            notes,
+            image_count: images.length,
             provider_request_id: providerRequestId,
           }
         : undefined,

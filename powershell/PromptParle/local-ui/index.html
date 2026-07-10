@@ -45,7 +45,7 @@
     }
     textarea { min-height: 72px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; }
     .chat {
-      flex: 1; min-height: 360px; overflow-y: auto;
+      flex: 1; min-height: 320px; overflow-y: auto;
       background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem;
       display: flex; flex-direction: column; gap: .85rem;
     }
@@ -54,12 +54,19 @@
     .msg.bot { align-self: flex-start; background: #0a0e16; border: 1px solid var(--border); }
     .msg.sys { align-self: stretch; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .88rem; }
     .msg.error { border-color: rgba(248,113,113,.45); color: #fecaca; }
+    .msg .thumbs { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+    .msg .thumbs img { max-height: 72px; max-width: 120px; border-radius: 8px; border: 1px solid var(--border); object-fit: cover; }
     .meta { margin-top: .55rem; padding-top: .45rem; border-top: 1px solid var(--border); font-size: .75rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .5rem .85rem; }
     .meta .ok { color: var(--success); }
     .meta .warn { color: var(--warn); }
     .composer {
       display: flex; flex-direction: column; gap: .55rem;
       background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .9rem;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .composer.dragover {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(91,140,255,.25);
     }
     .row { display: flex; gap: .65rem; align-items: flex-end; }
     .row textarea { min-height: 88px; flex: 1; font-family: inherit; font-size: .95rem; }
@@ -68,17 +75,37 @@
       background: linear-gradient(135deg, #5b8cff, #3d6ef5); color: white;
     }
     button:disabled { opacity: .5; cursor: not-allowed; }
-    .checks { display: flex; flex-wrap: wrap; gap: .75rem 1.1rem; font-size: .85rem; color: var(--muted); }
+    button.secondary {
+      background: #0a0e16; border: 1px solid var(--border); color: var(--text);
+      padding: .45rem .85rem; font-weight: 500; font-size: .85rem;
+    }
+    .checks { display: flex; flex-wrap: wrap; gap: .75rem 1.1rem; font-size: .85rem; color: var(--muted); align-items: center; }
     .checks label { display: flex; align-items: center; gap: .4rem; margin: 0; color: var(--muted); }
+    .attach-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+    .chips { display: flex; flex-wrap: wrap; gap: .45rem; min-height: 0; }
+    .chip {
+      display: inline-flex; align-items: center; gap: .4rem;
+      background: #0a0e16; border: 1px solid var(--border); border-radius: 999px;
+      padding: .25rem .55rem .25rem .35rem; font-size: .78rem; color: var(--muted); max-width: 100%;
+    }
+    .chip img { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; }
+    .chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+    .chip button {
+      background: transparent; color: var(--dim); padding: 0 .2rem; font-size: 1rem; line-height: 1;
+      border-radius: 4px;
+    }
+    .chip button:hover { color: var(--danger); }
+    .hint { font-size: .78rem; color: var(--dim); }
     footer { color: var(--dim); font-size: .78rem; }
     a { color: var(--accent); }
+    input[type=file] { display: none; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <h1>PromptParle <span class="badge">local · 127.0.0.1</span></h1>
-      <p>Chat UI runs on your PC. AI calls use your portal provider keys via your desktop API key (not a public website form).</p>
+      <p>Chat on this PC. Attach code/logs, paste screenshots (Ctrl+V). AI uses your portal keys via desktop API key.</p>
     </header>
 
     <div class="toolbar">
@@ -98,19 +125,26 @@
         </select>
       </div>
       <div style="grid-column: 1 / -1">
-        <label for="context">Extra context (paste noisy logs/code here for real savings)</label>
-        <textarea id="context" placeholder="Optional. Short messages alone often show 0% reduction."></textarea>
+        <label for="context">Extra context (optional free-text; files attach below)</label>
+        <textarea id="context" placeholder="Optional paste. Prefer Attach files for code. Short messages alone often show 0% reduction."></textarea>
       </div>
     </div>
 
     <div id="chat" class="chat"></div>
 
     <form class="composer" id="form">
+      <div class="attach-bar">
+        <button type="button" class="secondary" id="attachBtn">Attach files</button>
+        <input type="file" id="fileInput" multiple
+          accept=".txt,.md,.log,.json,.xml,.yml,.yaml,.csv,.ps1,.psm1,.psd1,.cs,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.bash,.conf,.cfg,.ini,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
+        <span class="hint">Drop files here · paste screenshot (Ctrl+V) · max 8 files / 4 images</span>
+      </div>
+      <div class="chips" id="chips"></div>
       <div class="checks">
-        <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend)</label>
+        <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend; images skipped until full send)</label>
       </div>
       <div class="row">
-        <textarea id="input" placeholder="Type normally… Enter to send, Shift+Enter for newline"></textarea>
+        <textarea id="input" placeholder="Ask about the attached code/screenshot… Enter to send, Shift+Enter for newline"></textarea>
         <button type="submit" id="send">Send</button>
       </div>
     </form>
@@ -135,11 +169,39 @@
     const form = document.getElementById('form');
     const sendBtn = document.getElementById('send');
     const optimizeOnlyEl = document.getElementById('optimizeOnly');
+    const fileInput = document.getElementById('fileInput');
+    const chipsEl = document.getElementById('chips');
+    const attachBtn = document.getElementById('attachBtn');
 
-    function addMsg(role, text, meta, isError) {
+    /** @type {{id:string,kind:'text'|'image',name:string,text?:string,mediaType?:string,dataBase64?:string,previewUrl?:string}[]} */
+    let attachments = [];
+    let idSeq = 1;
+
+    const TEXT_EXT = new Set([
+      'txt','md','log','json','xml','yml','yaml','csv','ps1','psm1','psd1','cs','ts','tsx','js','jsx',
+      'py','go','rs','java','php','rb','sql','html','htm','css','scss','sh','bash','conf','cfg','ini',
+      'toml','env','dockerfile','makefile','c','h','cpp','hpp','swift','kt','kts','vue','svelte','r'
+    ]);
+    const MAX_FILES = 8;
+    const MAX_IMAGES = 4;
+    const MAX_TEXT_CHARS = 400000;
+    const MAX_IMAGE_EDGE = 1600;
+
+    function addMsg(role, text, meta, isError, thumbs) {
       const div = document.createElement('div');
       div.className = 'msg ' + role + (isError ? ' error' : '');
       div.textContent = text;
+      if (thumbs && thumbs.length) {
+        const row = document.createElement('div');
+        row.className = 'thumbs';
+        thumbs.forEach(function (src) {
+          const img = document.createElement('img');
+          img.src = src;
+          img.alt = 'attachment';
+          row.appendChild(img);
+        });
+        div.appendChild(row);
+      }
       if (meta) {
         const m = document.createElement('div');
         m.className = 'meta';
@@ -150,33 +212,247 @@
         let save = expanded
           ? '<span class="warn">expanded / no savings</span>'
           : (pct > 0 ? '<span class="ok">−' + pct + '% saved</span>' : '<span>0% (compact)</span>');
+        const imgN = meta.image_count || 0;
         m.innerHTML =
           '<span>' + orig + ' → ' + opt + ' tokens</span>' + save +
+          (imgN ? '<span>' + imgN + ' image(s)</span>' : '') +
           (meta.provider ? '<span>' + meta.provider + '</span>' : '') +
           (meta.model ? '<span>' + meta.model + '</span>' : '');
         div.appendChild(m);
       }
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
+      return div;
     }
 
-    addMsg('sys', 'Local PromptParle ready. Pick a configured provider and type normally. Attach noisy context above to see token savings.');
+    function renderChips() {
+      chipsEl.innerHTML = '';
+      attachments.forEach(function (a) {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        if (a.kind === 'image' && a.previewUrl) {
+          const img = document.createElement('img');
+          img.src = a.previewUrl;
+          img.alt = a.name;
+          chip.appendChild(img);
+        }
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = a.name + (a.kind === 'text' && a.text ? ' (' + a.text.length.toLocaleString() + 'c)' : '');
+        chip.appendChild(name);
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.setAttribute('aria-label', 'Remove');
+        x.textContent = '×';
+        x.onclick = function () {
+          if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+          attachments = attachments.filter(function (x) { return x.id !== a.id; });
+          renderChips();
+        };
+        chip.appendChild(x);
+        chipsEl.appendChild(chip);
+      });
+    }
+
+    function countImages() {
+      return attachments.filter(function (a) { return a.kind === 'image'; }).length;
+    }
+
+    function canAddMore() {
+      return attachments.length < MAX_FILES;
+    }
+
+    function isTextFile(file) {
+      if (file.type && file.type.indexOf('text/') === 0) return true;
+      if (file.type === 'application/json' || file.type === 'application/xml') return true;
+      const n = (file.name || '').toLowerCase();
+      const base = n.split(/[\\/]/).pop() || n;
+      if (base === 'dockerfile' || base === 'makefile') return true;
+      const ext = base.includes('.') ? base.split('.').pop() : '';
+      return TEXT_EXT.has(ext);
+    }
+
+    function isImageFile(file) {
+      if (file.type && file.type.indexOf('image/') === 0) return true;
+      const n = (file.name || '').toLowerCase();
+      return /\.(png|jpe?g|webp|gif)$/.test(n);
+    }
+
+    function readAsText(file) {
+      return new Promise(function (resolve, reject) {
+        const r = new FileReader();
+        r.onload = function () { resolve(String(r.result || '')); };
+        r.onerror = function () { reject(new Error('Failed to read ' + file.name)); };
+        r.readAsText(file);
+      });
+    }
+
+    function compressImage(file) {
+      return new Promise(function (resolve, reject) {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = function () {
+          try {
+            let w = img.naturalWidth || img.width;
+            let h = img.naturalHeight || img.height;
+            const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(w, h, 1));
+            w = Math.max(1, Math.round(w * scale));
+            h = Math.max(1, Math.round(h * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            const preferPng = (file.type === 'image/png' || file.type === 'image/gif') && scale === 1 && file.size < 900000;
+            const mime = preferPng ? 'image/png' : 'image/jpeg';
+            const dataUrl = canvas.toDataURL(mime, 0.85);
+            URL.revokeObjectURL(url);
+            const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+            if (!m) return reject(new Error('Image encode failed'));
+            resolve({
+              mediaType: m[1],
+              dataBase64: m[2],
+              previewUrl: dataUrl,
+              name: file.name || 'paste.png'
+            });
+          } catch (e) {
+            URL.revokeObjectURL(url);
+            reject(e);
+          }
+        };
+        img.onerror = function () {
+          URL.revokeObjectURL(url);
+          reject(new Error('Could not decode image'));
+        };
+        img.src = url;
+      });
+    }
+
+    async function addFiles(fileList) {
+      const files = Array.prototype.slice.call(fileList || []);
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!canAddMore()) {
+          addMsg('sys', 'Attachment limit reached (' + MAX_FILES + '). Remove some first.', null, true);
+          break;
+        }
+        try {
+          if (isImageFile(file)) {
+            if (countImages() >= MAX_IMAGES) {
+              addMsg('sys', 'Max ' + MAX_IMAGES + ' images per message.', null, true);
+              continue;
+            }
+            const img = await compressImage(file);
+            attachments.push({
+              id: 'a' + (idSeq++),
+              kind: 'image',
+              name: img.name,
+              mediaType: img.mediaType,
+              dataBase64: img.dataBase64,
+              previewUrl: img.previewUrl
+            });
+          } else if (isTextFile(file)) {
+            let text = await readAsText(file);
+            if (text.length > MAX_TEXT_CHARS) {
+              text = text.slice(0, MAX_TEXT_CHARS) + '\n\n…[truncated local attach limit]';
+            }
+            attachments.push({
+              id: 'a' + (idSeq++),
+              kind: 'text',
+              name: file.name || 'file.txt',
+              text: text
+            });
+          } else {
+            addMsg('sys', 'Skipped binary file: ' + file.name + ' (attach text/code or images only).', null, true);
+          }
+        } catch (err) {
+          addMsg('sys', String(err.message || err), null, true);
+        }
+      }
+      renderChips();
+    }
+
+    attachBtn.addEventListener('click', function () { fileInput.click(); });
+    fileInput.addEventListener('change', function () {
+      if (fileInput.files && fileInput.files.length) addFiles(fileInput.files);
+      fileInput.value = '';
+    });
+
+    // Drag & drop on composer
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      form.addEventListener(ev, function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        form.classList.add('dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      form.addEventListener(ev, function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        form.classList.remove('dragover');
+      });
+    });
+    form.addEventListener('drop', function (e) {
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        addFiles(e.dataTransfer.files);
+      }
+    });
+
+    // Paste images (and optional plain text into input)
+    document.addEventListener('paste', function (e) {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      const files = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === 'file') {
+          const f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length) {
+        e.preventDefault();
+        addFiles(files);
+      }
+    });
+
+    function buildContextFromAttachments() {
+      const parts = [];
+      const free = contextEl.value.trim();
+      if (free) parts.push(free);
+      attachments.filter(function (a) { return a.kind === 'text'; }).forEach(function (a) {
+        parts.push('===== FILE: ' + a.name + ' =====\n' + a.text);
+      });
+      return parts.join('\n\n');
+    }
+
+    function buildImagesPayload() {
+      return attachments.filter(function (a) { return a.kind === 'image'; }).map(function (a) {
+        return {
+          media_type: a.mediaType,
+          data_base64: a.dataBase64,
+          name: a.name
+        };
+      });
+    }
+
+    addMsg('sys', 'Local PromptParle ready. Attach code files or paste a screenshot, pick Developer profile, then ask a question.');
 
     async function loadProviders() {
       const res = await fetch('/api/providers');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load providers');
       providerEl.innerHTML = '';
-      (data.providers || []).forEach(p => {
+      (data.providers || []).forEach(function (p) {
         const opt = document.createElement('option');
         opt.value = p.id;
         opt.textContent = p.name + (p.configured ? '' : ' (not configured)');
         opt.disabled = !p.configured;
         if (p.configured) providerEl.appendChild(opt);
       });
-      // if none configured, still list them disabled via second pass
       if (!providerEl.options.length) {
-        (data.providers || []).forEach(p => {
+        (data.providers || []).forEach(function (p) {
           const opt = document.createElement('option');
           opt.value = p.id;
           opt.textContent = p.name + ' (not configured)';
@@ -186,16 +462,16 @@
       }
     }
 
-    loadProviders().catch(e => addMsg('sys', String(e.message || e), null, true));
+    loadProviders().catch(function (e) { addMsg('sys', String(e.message || e), null, true); });
 
-    inputEl.addEventListener('keydown', (e) => {
+    inputEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         form.requestSubmit();
       }
     });
 
-    document.getElementById('stopBtn').addEventListener('click', async () => {
+    document.getElementById('stopBtn').addEventListener('click', async function () {
       if (!confirm('Stop local PromptParle server?')) return;
       try {
         await fetch('/api/stop', { method: 'POST' });
@@ -205,27 +481,37 @@
       }
     });
 
-    form.addEventListener('submit', async (e) => {
+    form.addEventListener('submit', async function (e) {
       e.preventDefault();
       let prompt = inputEl.value.trim();
-      const context = contextEl.value.trim();
+      const context = buildContextFromAttachments();
+      const images = buildImagesPayload();
 
-      // Common mistake: paste only in Extra context and hit Send with empty prompt
-      if (!prompt && !context) {
-        addMsg('sys', 'Type a prompt in the bottom box (or paste noisy logs in Extra context + a short goal).', null, true);
+      if (!prompt && !context && !images.length) {
+        addMsg('sys', 'Type a prompt, attach files, or paste a screenshot first.', null, true);
         inputEl.focus();
         return;
       }
-      if (!prompt && context) {
-        prompt = 'Find the highest risk items and recommend actions';
-        addMsg('sys', 'No prompt typed — using: “' + prompt + '” (with your Extra context).');
+      if (!prompt && (context || images.length)) {
+        prompt = images.length && !context
+          ? 'Describe this image and call out anything important or risky.'
+          : 'Review the attached material and give the most useful findings first.';
+        addMsg('sys', 'No prompt typed — using: “' + prompt + '”');
       }
       if (!providerEl.value) {
-        addMsg('sys', 'No AI provider selected. Configure one at https://promptparle.com/app/providers then refresh this page.', null, true);
+        addMsg('sys', 'No AI provider selected. Configure one at https://promptparle.com/app/providers then refresh.', null, true);
         return;
       }
+      if (optimizeOnlyEl.checked && images.length && !context) {
+        addMsg('sys', 'Optimize only works on text. Uncheck Optimize only to send images to the model, or attach code/logs too.', null, true);
+      }
 
-      addMsg('user', prompt);
+      const thumbUrls = images.map(function (img) {
+        return 'data:' + img.media_type + ';base64,' + img.data_base64;
+      });
+      const userLabel = prompt +
+        (attachments.length ? '\n\n[' + attachments.length + ' attachment(s)]' : '');
+      addMsg('user', userLabel, null, false, thumbUrls);
       inputEl.value = '';
       sendBtn.disabled = true;
       sendBtn.textContent = 'Working…';
@@ -234,25 +520,30 @@
       wait.className = 'msg sys';
       wait.id = 'waiting';
       wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing (no AI spend)…'
-        : 'Sending through PromptParle (optimize + ' + providerEl.value + ')…';
+        ? 'Optimizing text (images held for full AI send)…'
+        : 'Sending through PromptParle' + (images.length ? ' with ' + images.length + ' image(s)' : '') + '…';
       chat.appendChild(wait);
       chat.scrollTop = chat.scrollHeight;
 
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const timer = controller ? setTimeout(function () { controller.abort(); }, 120000) : null;
+      const timer = controller ? setTimeout(function () { controller.abort(); }, 180000) : null;
 
       try {
+        const payload = {
+          provider: providerEl.value,
+          profile: profileEl.value,
+          prompt: prompt,
+          context: context || undefined,
+          optimize_only: !!optimizeOnlyEl.checked
+        };
+        if (images.length && !optimizeOnlyEl.checked) {
+          payload.images = images;
+        }
+
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            provider: providerEl.value,
-            profile: profileEl.value,
-            prompt: prompt,
-            context: context || undefined,
-            optimize_only: !!optimizeOnlyEl.checked
-          }),
+          body: JSON.stringify(payload),
           signal: controller ? controller.signal : undefined
         });
 
@@ -272,9 +563,9 @@
       } catch (err) {
         const name = err && err.name;
         if (name === 'AbortError') {
-          addMsg('bot', 'Timed out after 120s. Check the PowerShell window for errors, or try Optimize only first.', null, true);
+          addMsg('bot', 'Timed out. Large files/images take longer — try fewer attachments or Optimize only on text first.', null, true);
         } else {
-          addMsg('bot', 'Local server error: ' + (err.message || err) + '\nIf the PowerShell window shows an error, copy it. Try: git pull + Install-PromptParle.ps1', null, true);
+          addMsg('bot', 'Local server error: ' + (err.message || err), null, true);
         }
       } finally {
         if (timer) clearTimeout(timer);

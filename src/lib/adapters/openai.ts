@@ -1,8 +1,31 @@
 import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
+import { normalizeAdapterImages } from "./types";
 
 export const openaiAdapter: ProviderAdapter = {
   id: "openai",
   async complete(req: AdapterRequest): Promise<AdapterResponse> {
+    const images = normalizeAdapterImages(req.images);
+    let content:
+      | string
+      | Array<
+          | { type: "text"; text: string }
+          | { type: "image_url"; image_url: { url: string } }
+        >;
+
+    if (images.length === 0) {
+      content = req.prompt;
+    } else {
+      content = [
+        { type: "text", text: req.prompt },
+        ...images.map((img) => ({
+          type: "image_url" as const,
+          image_url: {
+            url: `data:${img.mediaType};base64,${img.dataBase64}`,
+          },
+        })),
+      ];
+    }
+
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -14,7 +37,7 @@ export const openaiAdapter: ProviderAdapter = {
         messages: [
           {
             role: "user",
-            content: req.prompt,
+            content,
           },
         ],
         temperature: req.temperature ?? 0.2,
