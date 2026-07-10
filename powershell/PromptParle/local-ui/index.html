@@ -303,6 +303,13 @@
         </div>
 
         <div class="side-section">
+          <h2>Agent</h2>
+          <label for="agentSelect">Active agent</label>
+          <select id="agentSelect"></select>
+          <div class="ver-line" id="agentHint">/agents · /agent security · /audit</div>
+        </div>
+
+        <div class="side-section">
           <h2>AI</h2>
           <label for="provider">Provider</label>
           <select id="provider"></select>
@@ -366,7 +373,7 @@
         </div>
         <div class="chips" id="chips"></div>
         <div class="row">
-          <textarea id="input" placeholder="Message + optional paste (notes, snippets)… Attach files for large docs. Enter to send, Shift+Enter for newline"></textarea>
+          <textarea id="input" placeholder="Message, paste, or /command — e.g. /help /agents /agent security /audit · Enter to send"></textarea>
           <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
@@ -393,6 +400,8 @@
     const updateBtn = document.getElementById('updateBtn');
     const savingsStrip = document.getElementById('savingsStrip');
     const attachHint = document.getElementById('attachHint');
+    const agentSelect = document.getElementById('agentSelect');
+    const agentHint = document.getElementById('agentHint');
 
     const DIAL_META = {
       1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
@@ -774,7 +783,105 @@
       });
     }
 
-    addMsg('sys', 'One chat box: type your ask, paste notes if needed, attach files for large docs. Only this pane scrolls. Dial 3–4 for strong compression.');
+    addMsg('sys', 'One chat box. Type normally, or /help · /agents · /agent security · /audit. Attach files for savings. Only this pane scrolls.');
+
+    function applySession(s) {
+      if (!s) return;
+      if (s.provider && providerEl.querySelector('option[value="' + s.provider + '"]')) {
+        providerEl.value = s.provider;
+      }
+      if (s.profile && profileEl.querySelector('option[value="' + s.profile + '"]')) {
+        profileEl.value = s.profile;
+      }
+      if (s.dial >= 1 && s.dial <= 5) {
+        dialEl.value = String(s.dial);
+        updateDialUi();
+      }
+      if (typeof s.optimize_only === 'boolean') {
+        optimizeOnlyEl.checked = s.optimize_only;
+      }
+      if (s.active_agent && agentSelect) {
+        agentSelect.value = s.active_agent;
+      }
+      const cmds = s.agent_commands || [];
+      const name = s.agent_name || s.active_agent || 'default';
+      agentHint.textContent = name + (cmds.length ? ' · /' + cmds.join(' /') : ' · /agents');
+    }
+
+    async function loadAgents() {
+      try {
+        const res = await fetch('/api/agents');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'agents failed');
+        agentSelect.innerHTML = '';
+        (data.agents || []).forEach(function (a) {
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = a.name + (a.commands && a.commands.length ? ' (/' + a.commands.join(', /') + ')' : '');
+          agentSelect.appendChild(opt);
+        });
+        if (data.active_agent) agentSelect.value = data.active_agent;
+      } catch (e) {
+        agentSelect.innerHTML = '<option value="default">Default</option>';
+      }
+    }
+
+    async function loadSession() {
+      try {
+        const res = await fetch('/api/session');
+        const data = await res.json();
+        if (res.ok) applySession(data);
+      } catch (e) { /* ignore */ }
+    }
+
+    agentSelect.addEventListener('change', async function () {
+      const id = agentSelect.value;
+      try {
+        const res = await fetch('/api/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            line: '/agent ' + id,
+            provider: providerEl.value,
+            profile: profileEl.value,
+            dial: parseInt(dialEl.value, 10) || 3,
+            optimize_only: !!optimizeOnlyEl.checked
+          })
+        });
+        const data = await res.json();
+        if (data.session) applySession(data.session);
+        if (data.message) addMsg('sys', data.message);
+      } catch (e) {
+        addMsg('sys', 'Could not switch agent: ' + (e.message || e), null, true);
+      }
+    });
+
+    async function runSlash(line) {
+      const res = await fetch('/api/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          line: line,
+          provider: providerEl.value,
+          profile: profileEl.value,
+          dial: parseInt(dialEl.value, 10) || 3,
+          optimize_only: !!optimizeOnlyEl.checked
+        })
+      });
+      const data = await res.json();
+      if (!res.ok && data.message) {
+        addMsg('sys', data.message, null, true);
+        return null;
+      }
+      if (data.session) applySession(data.session);
+      if (data.clear) {
+        chat.innerHTML = '';
+        savingsStrip.classList.remove('show');
+        savingsStrip.innerHTML = '';
+      }
+      if (data.message) addMsg('sys', data.message);
+      return data;
+    }
 
     async function checkVersion() {
       try {
@@ -843,6 +950,7 @@
     });
 
     checkVersion();
+    loadAgents().then(loadSession);
 
     async function loadProviders() {
       const res = await fetch('/api/providers');
@@ -892,8 +1000,34 @@
       const images = buildImagesPayload();
       const dial = parseInt(dialEl.value, 10) || 3;
 
+      // Slash commands — never sent to the model unless agent shortcut expands to a prompt
+      if (prompt.startsWith('/')) {
+        inputEl.value = '';
+        addMsg('user', prompt);
+        sendBtn.disabled = true;
+        sendBtn.textContent = '…';
+        try {
+          const data = await runSlash(prompt);
+          if (data && data.send && data.prompt) {
+            prompt = data.prompt;
+            // fall through to AI send below
+          } else {
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+            inputEl.focus();
+            return;
+          }
+        } catch (err) {
+          addMsg('sys', 'Command failed: ' + (err.message || err), null, true);
+          sendBtn.disabled = false;
+          sendBtn.textContent = 'Send';
+          inputEl.focus();
+          return;
+        }
+      }
+
       if (!prompt && !context && !images.length) {
-        addMsg('sys', 'Type a prompt or attach files first.', null, true);
+        addMsg('sys', 'Type a prompt, /command, or attach files first.', null, true);
         inputEl.focus();
         return;
       }
@@ -921,12 +1055,14 @@
       sendBtn.disabled = true;
       sendBtn.textContent = 'Working…';
 
+      const dialNow = parseInt(dialEl.value, 10) || 3;
       const wait = document.createElement('div');
       wait.className = 'msg sys';
       wait.id = 'waiting';
       wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing (dial ' + dial + '/5)…'
-        : 'Sending (dial ' + dial + '/5)' + (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') + '…';
+        ? 'Optimizing (dial ' + dialNow + '/5 · agent ' + (agentSelect.value || 'default') + ')…'
+        : 'Sending (dial ' + dialNow + '/5 · ' + (agentSelect.value || 'default') + ')' +
+          (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') + '…';
       chat.appendChild(wait);
       scrollChatToBottom();
 
@@ -937,7 +1073,7 @@
         const payload = {
           provider: providerEl.value,
           profile: profileEl.value,
-          compression_level: dial,
+          compression_level: dialNow,
           prompt: prompt,
           context: context || undefined,
           optimize_only: !!optimizeOnlyEl.checked

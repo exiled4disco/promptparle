@@ -363,26 +363,591 @@ function Select-PromptParleProviderInteractive {
     }
 }
 
+#region Agents + slash commands (free desktop surface)
+# Local-first: agents live under ~/.promptparle/agents
+# Cloud later: team workspaces, shared libraries, analytics (not in this path)
+
+function Get-PromptParleAgentsDir {
+    $dir = Join-Path $script:PromptParleConfigDir 'agents'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
+function Get-PromptParleSessionStatePath {
+    return (Join-Path $script:PromptParleConfigDir 'session.json')
+}
+
+function ConvertTo-PromptParleAgentId {
+    param([string]$Name)
+    if (-not $Name) { return 'default' }
+    $id = ($Name.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
+    if (-not $id) { $id = 'agent' }
+    return $id
+}
+
+function New-PromptParleAgentObject {
+    param(
+        [string]$Id,
+        [string]$Name,
+        [string]$System = '',
+        [string]$Profile = 'general',
+        [int]$Dial = 3,
+        [hashtable]$Commands = $null,
+        [string]$Description = ''
+    )
+    if ($Dial -lt 1) { $Dial = 1 }
+    if ($Dial -gt 5) { $Dial = 5 }
+    if (-not $Commands) { $Commands = @{} }
+    return [pscustomobject]@{
+        id          = $Id
+        name        = $Name
+        description = $Description
+        system      = $System
+        profile     = $Profile
+        dial        = $Dial
+        commands    = $Commands
+        tools       = @('files')  # ssh later
+        updated_at  = (Get-Date).ToString('o')
+    }
+}
+
+function Initialize-PromptParleDefaultAgents {
+    $dir = Get-PromptParleAgentsDir
+    $defaults = @(
+        (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 -System ''),
+        (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Hostile security review' -Profile 'security-review' -Dial 3 `
+            -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. Prefer evidence from the attached material. Do not invent findings.' `
+            -Commands @{ audit = 'Find the highest risk items and recommend actions with severity.'; threats = 'Map attack surface and threat scenarios from the material.' }),
+        (New-PromptParleAgentObject -Id 'docs' -Name 'Doc analyst' -Description 'Document coverage + obligations' -Profile 'documentation' -Dial 3 `
+            -System 'You are a careful document analyst. Preserve structure and obligations. Lead with the most useful findings, then cover gaps.' `
+            -Commands @{ summary = 'Summarize with section coverage and hard requirements.'; risks = 'Extract risks, must/shall obligations, and deadlines.' }),
+        (New-PromptParleAgentObject -Id 'code' -Name 'Code reviewer' -Description 'Code-focused review' -Profile 'developer' -Dial 2 `
+            -System 'You are a senior code reviewer. Focus on bugs, security, and maintainability. Cite symbols and files when possible.' `
+            -Commands @{ review = 'Review the attached code for bugs, risks, and improvements.'; explain = 'Explain the attached code structure and control flow.' })
+    )
+    foreach ($a in $defaults) {
+        $path = Join-Path $dir ($a.id + '.json')
+        if (-not (Test-Path -LiteralPath $path)) {
+            ($a | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
+        }
+    }
+}
+
+function Read-PromptParleAgentFile {
+    param([string]$Path)
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        $obj = $raw | ConvertFrom-Json
+        $cmds = @{}
+        $cprop = Get-PromptParleProp $obj 'commands'
+        if ($null -ne $cprop) {
+            $cprop.PSObject.Properties | ForEach-Object {
+                $cmds[$_.Name] = [string]$_.Value
+            }
+        }
+        $id = [string](Get-PromptParleProp $obj 'id' ([IO.Path]::GetFileNameWithoutExtension($Path)))
+        $dial = 3
+        $d = Get-PromptParleProp $obj 'dial'
+        if ($null -ne $d) { try { $dial = [int]$d } catch { $dial = 3 } }
+        return [pscustomobject]@{
+            id          = $id
+            name        = [string](Get-PromptParleProp $obj 'name' $id)
+            description = [string](Get-PromptParleProp $obj 'description' '')
+            system      = [string](Get-PromptParleProp $obj 'system' '')
+            profile     = [string](Get-PromptParleProp $obj 'profile' 'general')
+            dial        = $dial
+            commands    = $cmds
+            tools       = @(Get-PromptParleProp $obj 'tools' @('files'))
+            path        = $Path
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Get-PromptParleAgent {
+    <#
+    .SYNOPSIS
+      Get one local agent by id or name.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    Initialize-PromptParleDefaultAgents
+    $dir = Get-PromptParleAgentsDir
+    $want = ConvertTo-PromptParleAgentId $Name
+    $byId = Join-Path $dir ($want + '.json')
+    if (Test-Path -LiteralPath $byId) {
+        return Read-PromptParleAgentFile -Path $byId
+    }
+    foreach ($f in (Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        $a = Read-PromptParleAgentFile -Path $f.FullName
+        if ($null -eq $a) { continue }
+        if ($a.id -eq $want -or $a.name -eq $Name -or $a.name.ToLowerInvariant() -eq $Name.ToLowerInvariant()) {
+            return $a
+        }
+    }
+    return $null
+}
+
+function Get-PromptParleAgentList {
+    <#
+    .SYNOPSIS
+      List local agents (free desktop). Cloud shared libraries come later.
+    #>
+    [CmdletBinding()]
+    param()
+    Initialize-PromptParleDefaultAgents
+    $dir = Get-PromptParleAgentsDir
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($f in (Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $a = Read-PromptParleAgentFile -Path $f.FullName
+        if ($a) { $list.Add($a) }
+    }
+    return @($list.ToArray())
+}
+
+function Save-PromptParleAgent {
+    <#
+    .SYNOPSIS
+      Create or update a local agent definition.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$System = '',
+        [string]$Profile = 'general',
+        [ValidateRange(1, 5)][int]$Dial = 3,
+        [hashtable]$Commands,
+        [string]$Description = '',
+        [string]$Id
+    )
+    Initialize-PromptParleDefaultAgents
+    if (-not $Id) { $Id = ConvertTo-PromptParleAgentId $Name }
+    if (-not $Commands) { $Commands = @{} }
+    $agent = New-PromptParleAgentObject -Id $Id -Name $Name -System $System -Profile $Profile -Dial $Dial -Commands $Commands -Description $Description
+    $path = Join-Path (Get-PromptParleAgentsDir) ($Id + '.json')
+    # Convert commands hashtable cleanly
+    $cmdObj = [ordered]@{}
+    foreach ($k in $Commands.Keys) { $cmdObj[[string]$k] = [string]$Commands[$k] }
+    $out = [ordered]@{
+        id          = $Id
+        name        = $Name
+        description = $Description
+        system      = $System
+        profile     = $Profile
+        dial        = $Dial
+        commands    = $cmdObj
+        tools       = @('files')
+        updated_at  = (Get-Date).ToString('o')
+    }
+    ($out | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
+    return Get-PromptParleAgent -Name $Id
+}
+
+function Remove-PromptParleAgent {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    $a = Get-PromptParleAgent -Name $Name
+    if (-not $a) { throw "Agent not found: $Name" }
+    if ($a.id -eq 'default') { throw 'Cannot remove the default agent.' }
+    Remove-Item -LiteralPath $a.path -Force
+    $active = Get-PromptParleActiveAgentId
+    if ($active -eq $a.id) { Set-PromptParleActiveAgent -Name 'default' | Out-Null }
+    return $true
+}
+
+function Get-PromptParleActiveAgentId {
+    $path = Get-PromptParleSessionStatePath
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            $id = Get-PromptParleProp $s 'active_agent'
+            if ($id) { return [string]$id }
+        } catch { }
+    }
+    return 'default'
+}
+
+function Get-PromptParleSessionState {
+    $path = Get-PromptParleSessionStatePath
+    $state = [ordered]@{
+        active_agent  = 'default'
+        provider      = 'openai'
+        profile       = 'general'
+        dial          = 3
+        model         = $null
+        optimize_only = $false
+    }
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            foreach ($k in @('active_agent', 'provider', 'profile', 'model')) {
+                $v = Get-PromptParleProp $s $k
+                if ($null -ne $v -and "$v" -ne '') { $state[$k] = [string]$v }
+            }
+            $d = Get-PromptParleProp $s 'dial'
+            if ($null -ne $d) { try { $state.dial = [int]$d } catch { } }
+            $o = Get-PromptParleProp $s 'optimize_only'
+            if ($null -ne $o) { $state.optimize_only = [bool]$o }
+        } catch { }
+    }
+    # Apply agent defaults when agent selected
+    $agent = Get-PromptParleAgent -Name $state.active_agent
+    if ($agent) {
+        $state.agent = [ordered]@{
+            id          = $agent.id
+            name        = $agent.name
+            description = $agent.description
+            system      = $agent.system
+            profile     = $agent.profile
+            dial        = $agent.dial
+            commands    = $agent.commands
+        }
+        # Only overlay profile/dial from agent if session still at defaults? Always prefer session if set after agent switch.
+    }
+    return [pscustomobject]$state
+}
+
+function Save-PromptParleSessionState {
+    param($State)
+    $path = Get-PromptParleSessionStatePath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $out = [ordered]@{
+        active_agent  = [string](Get-PromptParleProp $State 'active_agent' 'default')
+        provider      = [string](Get-PromptParleProp $State 'provider' 'openai')
+        profile       = [string](Get-PromptParleProp $State 'profile' 'general')
+        dial          = [int](Get-PromptParleProp $State 'dial' 3)
+        model         = Get-PromptParleProp $State 'model' $null
+        optimize_only = [bool](Get-PromptParleProp $State 'optimize_only' $false)
+        updated_at    = (Get-Date).ToString('o')
+    }
+    ($out | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+function Set-PromptParleActiveAgent {
+    <#
+    .SYNOPSIS
+      Activate a local agent (applies profile + dial defaults).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    $agent = Get-PromptParleAgent -Name $Name
+    if (-not $agent) { throw "Agent not found: $Name" }
+    $state = Get-PromptParleSessionState
+    $state = [pscustomobject]@{
+        active_agent  = $agent.id
+        provider      = $state.provider
+        profile       = $agent.profile
+        dial          = $agent.dial
+        model         = $state.model
+        optimize_only = $state.optimize_only
+    }
+    Save-PromptParleSessionState -State $state
+    return $agent
+}
+
+function Format-PromptParleAgentPrompt {
+    <#
+    .SYNOPSIS
+      Prepend agent system brief to the user prompt (local; free tier).
+    #>
+    param(
+        [string]$Prompt,
+        [string]$AgentId
+    )
+    if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
+    $agent = Get-PromptParleAgent -Name $AgentId
+    if (-not $agent) { return $Prompt }
+    $sys = ($agent.system | ForEach-Object { $_ }) -join ''
+    if (-not $sys -or -not $sys.Trim()) { return $Prompt }
+    $sys = $sys.Trim()
+    return ("[AGENT: {0}]`n{1}`n`n[USER]`n{2}" -f $agent.name, $sys, $Prompt)
+}
+
+function Get-PromptParleSlashHelpText {
+    return @"
+Commands (type in chat instead of a normal message):
+
+  /help                 This help
+  /status               Session: agent, provider, dial, profile
+  /agents               List local agents
+  /agent [name]         Show or switch agent
+  /agent new <name> | system text…   Create agent (system after |)
+  /agent delete <name>  Delete a custom agent
+  /dial [1-5]           Compression dial
+  /profile [name]       Optimization profile
+  /provider [id]        openai | anthropic | gemini | grok
+  /optimize             Toggle optimize-only (no AI spend)
+  /usage                Cloud token savings summary
+  /clear                Clear chat (UI) / screen (CLI)
+  /ssh                  SSH session (coming soon — keys stay on this PC)
+  /quit                 Stop (CLI)
+
+Agent shortcuts: if the active agent defines commands, type /name
+  e.g. security agent:  /audit   /threats
+  docs agent:           /summary /risks
+  code agent:           /review  /explain
+
+Product surface:
+  Free desktop: agents, / commands, PS module, local UI
+  Paid cloud: optimization gateway, team workspaces, shared libraries,
+              analytics, savings reports, enterprise, API, CI/CD
+"@
+}
+
+function Invoke-PromptParleSlashCommand {
+    <#
+    .SYNOPSIS
+      Run a /command against session state. Shared by CLI and local UI.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Line,
+        # Optional session overrides from UI (provider/profile/dial already shown in UI)
+        [string]$Provider,
+        [string]$Profile,
+        [int]$Dial = -1,
+        [string]$Model,
+        [bool]$OptimizeOnly = $false
+    )
+
+    $line = $Line.Trim()
+    if (-not $line.StartsWith('/')) {
+        return [pscustomobject]@{
+            handled = $false
+            message = $null
+            send    = $false
+            prompt  = $null
+            quit    = $false
+            clear   = $false
+            session = $null
+        }
+    }
+
+    $state = Get-PromptParleSessionState
+    if ($Provider) { $state = [pscustomobject]@{ active_agent = $state.active_agent; provider = $Provider; profile = $(if ($Profile) { $Profile } else { $state.profile }); dial = $(if ($Dial -ge 1) { $Dial } else { $state.dial }); model = $(if ($PSBoundParameters.ContainsKey('Model')) { $Model } else { $state.model }); optimize_only = $OptimizeOnly } }
+    elseif ($Profile) { $state = [pscustomobject]@{ active_agent = $state.active_agent; provider = $state.provider; profile = $Profile; dial = $(if ($Dial -ge 1) { $Dial } else { $state.dial }); model = $state.model; optimize_only = $OptimizeOnly } }
+    elseif ($Dial -ge 1) { $state = [pscustomobject]@{ active_agent = $state.active_agent; provider = $state.provider; profile = $state.profile; dial = $Dial; model = $state.model; optimize_only = $OptimizeOnly } }
+    else {
+        $state = [pscustomobject]@{
+            active_agent  = $state.active_agent
+            provider      = $state.provider
+            profile       = $state.profile
+            dial          = $state.dial
+            model         = $state.model
+            optimize_only = $OptimizeOnly
+        }
+    }
+
+    $parts = $line -split '\s+', 2
+    $cmd = $parts[0].ToLowerInvariant()
+    $arg = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+
+    $message = ''
+    $send = $false
+    $prompt = $null
+    $quit = $false
+    $clear = $false
+    $handled = $true
+
+    switch -Regex ($cmd) {
+        '^/(help|\?)$' {
+            $message = Get-PromptParleSlashHelpText
+        }
+        '^/status$' {
+            $ag = Get-PromptParleAgent -Name $state.active_agent
+            $agName = if ($ag) { $ag.name } else { $state.active_agent }
+            $cmds = @()
+            if ($ag -and $ag.commands) {
+                foreach ($k in $ag.commands.Keys) { $cmds += "/$k" }
+            }
+            $message = @"
+Session
+  Agent    : $agName ($($state.active_agent))
+  Provider : $($state.provider)
+  Profile  : $($state.profile)
+  Dial     : $($state.dial)/5
+  Model    : $(if ($state.model) { $state.model } else { '(default)' })
+  Optimize : $($state.optimize_only)
+  Commands : $(if ($cmds.Count) { $cmds -join ' ' } else { '(none)' })
+"@
+        }
+        '^/agents$' {
+            $list = @(Get-PromptParleAgentList)
+            $lines = @('Local agents (free desktop):')
+            foreach ($a in $list) {
+                $mark = if ($a.id -eq $state.active_agent) { '*' } else { ' ' }
+                $cmdKeys = @()
+                if ($a.commands) { foreach ($k in $a.commands.Keys) { $cmdKeys += "/$k" } }
+                $cmdStr = if ($cmdKeys.Count) { ' · ' + ($cmdKeys -join ' ') } else { '' }
+                $lines += ("  [{0}] {1}  ({2})  dial {3}  {4}{5}" -f $mark, $a.name, $a.id, $a.dial, $a.profile, $cmdStr)
+            }
+            $lines += 'Switch: /agent <name>   Create: /agent new <name> | system prompt…'
+            $message = $lines -join "`n"
+        }
+        '^/agent$' {
+            if (-not $arg) {
+                $ag = Get-PromptParleAgent -Name $state.active_agent
+                if ($ag) {
+                    $message = "Active agent: $($ag.name) ($($ag.id))`nProfile: $($ag.profile) · Dial: $($ag.dial)`n$($ag.description)`n$($ag.system)"
+                } else {
+                    $message = 'No active agent. Try /agents'
+                }
+            } elseif ($arg -match '^(new|create)\s+(\S+)(?:\s*\|\s*(.*))?$') {
+                $newName = $Matches[2]
+                $sys = if ($Matches[3]) { $Matches[3].Trim() } else { '' }
+                $created = Save-PromptParleAgent -Name $newName -System $sys -Profile $state.profile -Dial $state.dial -Description 'Custom agent'
+                Set-PromptParleActiveAgent -Name $created.id | Out-Null
+                $state.active_agent = $created.id
+                $state.profile = $created.profile
+                $state.dial = $created.dial
+                $message = "Created and activated agent '$($created.name)' ($($created.id)). Edit system later with /agent new again or edit ~/.promptparle/agents/$($created.id).json"
+            } elseif ($arg -match '^(delete|rm|remove)\s+(\S+)$') {
+                $delName = $Matches[2]
+                try {
+                    Remove-PromptParleAgent -Name $delName | Out-Null
+                    $state.active_agent = Get-PromptParleActiveAgentId
+                    $ag2 = Get-PromptParleAgent -Name $state.active_agent
+                    if ($ag2) {
+                        $state.profile = $ag2.profile
+                        $state.dial = $ag2.dial
+                    }
+                    $message = "Deleted agent '$delName'."
+                } catch {
+                    $message = "$_"
+                }
+            } else {
+                try {
+                    $switched = Set-PromptParleActiveAgent -Name $arg
+                    $state.active_agent = $switched.id
+                    $state.profile = $switched.profile
+                    $state.dial = $switched.dial
+                    $message = "Agent set to $($switched.name) · profile $($switched.profile) · dial $($switched.dial)/5"
+                } catch {
+                    $message = "$_  Try /agents"
+                }
+            }
+        }
+        '^/dial$' {
+            if ($arg -match '^([1-5])$') {
+                $state.dial = [int]$Matches[1]
+                $message = "Dial set to $($state.dial)/5"
+            } else {
+                $message = "Dial is $($state.dial)/5 (1 max fidelity … 5 max savings). Usage: /dial 3"
+            }
+        }
+        '^/profile$' {
+            $profiles = @('general', 'developer', 'security-review', 'log-analysis', 'documentation', 'executive-summary')
+            if ($arg -and $profiles -contains $arg) {
+                $state.profile = $arg
+                $message = "Profile set to $arg"
+            } elseif ($arg) {
+                $message = "Unknown profile '$arg'. Use: $($profiles -join ', ')"
+            } else {
+                $message = "Profile is $($state.profile). Set with /profile <name>"
+            }
+        }
+        '^/provider$' {
+            $ok = @('openai', 'anthropic', 'gemini', 'grok')
+            if ($arg -and $ok -contains $arg.ToLowerInvariant()) {
+                $state.provider = $arg.ToLowerInvariant()
+                $message = "Provider set to $($state.provider)"
+            } elseif ($arg) {
+                $message = "Unknown provider. Use: $($ok -join ', ')"
+            } else {
+                $message = "Provider is $($state.provider). Set with /provider openai"
+            }
+        }
+        '^/optimize$' {
+            $state.optimize_only = -not [bool]$state.optimize_only
+            $message = if ($state.optimize_only) { 'Optimize-only ON (no AI spend until toggled off)' } else { 'Optimize-only OFF (full AI calls)' }
+        }
+        '^/usage$' {
+            try {
+                $u = Get-PromptParleUsage
+                $message = "Usage (cloud): requests=$($u.RequestCount) · tokens saved=$($u.TokensSaved) ($($u.ReductionPercent)%)"
+            } catch {
+                $message = "Usage error: $_"
+            }
+        }
+        '^/clear$' {
+            $clear = $true
+            $message = 'Chat cleared.'
+        }
+        '^/ssh$' {
+            $message = @"
+SSH sessions are planned for the free desktop client:
+  /ssh user@host     connect (keys stay on THIS PC — never uploaded)
+  /run <command>     run on attached host, results → optimized context
+
+Not implemented yet. Next release after agents stabilize.
+Cloud will never hold your SSH private keys.
+"@
+        }
+        '^/(quit|exit|q)$' {
+            $quit = $true
+            $message = 'Bye.'
+        }
+        default {
+            # Agent-defined command: /audit etc.
+            $short = $cmd.TrimStart('/')
+            $ag = Get-PromptParleAgent -Name $state.active_agent
+            $resolved = $null
+            if ($ag -and $ag.commands -and $ag.commands.ContainsKey($short)) {
+                $resolved = [string]$ag.commands[$short]
+            }
+            if ($resolved) {
+                $send = $true
+                $prompt = if ($arg) { "$resolved`n`n$arg" } else { $resolved }
+                $message = "Running agent command /$short"
+            } else {
+                $handled = $true
+                $message = "Unknown command: $cmd  (try /help or /agents)"
+            }
+        }
+    }
+
+    Save-PromptParleSessionState -State $state
+    $agentOut = Get-PromptParleAgent -Name $state.active_agent
+    $sessionOut = [ordered]@{
+        active_agent  = $state.active_agent
+        provider      = $state.provider
+        profile       = $state.profile
+        dial          = [int]$state.dial
+        model         = $state.model
+        optimize_only = [bool]$state.optimize_only
+        agent_name    = if ($agentOut) { $agentOut.name } else { $state.active_agent }
+        agent_system  = if ($agentOut) { $agentOut.system } else { '' }
+        agent_commands = @()
+    }
+    if ($agentOut -and $agentOut.commands) {
+        foreach ($k in $agentOut.commands.Keys) {
+            $sessionOut.agent_commands += [string]$k
+        }
+    }
+
+    return [pscustomobject]@{
+        handled = $handled
+        message = $message
+        send    = $send
+        prompt  = $prompt
+        quit    = $quit
+        clear   = $clear
+        session = [pscustomobject]$sessionOut
+    }
+}
+
 function Show-PromptParleSessionHelp {
     Write-Host ''
-    Write-Host 'Commands (type these instead of a normal message):' -ForegroundColor Cyan
-    Write-Host '  /help              Show this help'
-    Write-Host '  /provider          Switch AI provider'
-    Write-Host '  /profile           Change optimization profile'
-    Write-Host '  /dial [1-5]        Compression dial (1 fidelity … 5 savings)'
-    Write-Host '  /model <name>      Set model (blank = provider default)'
-    Write-Host '  /context           Paste multi-line context (end with a line: EOF)'
-    Write-Host '  /file <path>       Load a file as context'
-    Write-Host '  /clearcontext      Clear attached context'
-    Write-Host '  /optimize          Optimize-only next message (no AI spend)'
-    Write-Host '  /usage             Show token savings'
-    Write-Host '  /status            Show session settings'
-    Write-Host '  /clear             Clear the screen'
-    Write-Host '  /quit  or  /exit   Leave PromptParle'
-    Write-Host ''
-    Write-Host 'Otherwise just type normally and press Enter.' -ForegroundColor DarkGray
+    Write-Host (Get-PromptParleSlashHelpText) -ForegroundColor Cyan
     Write-Host ''
 }
+#endregion
 
 #endregion
 
@@ -1502,6 +2067,97 @@ function Start-PromptParleLocalServer {
                     continue
                 }
 
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/session') {
+                    try {
+                        $st = Get-PromptParleSessionState
+                        $ag = Get-PromptParleAgent -Name $st.active_agent
+                        $cmdList = @()
+                        if ($ag -and $ag.commands) {
+                            foreach ($k in $ag.commands.Keys) { $cmdList += [string]$k }
+                        }
+                        $payload = @{
+                            ok             = $true
+                            active_agent   = $st.active_agent
+                            provider       = $st.provider
+                            profile        = $st.profile
+                            dial           = [int]$st.dial
+                            model          = $st.model
+                            optimize_only  = [bool]$st.optimize_only
+                            agent_name     = if ($ag) { $ag.name } else { $st.active_agent }
+                            agent_system   = if ($ag) { $ag.system } else { '' }
+                            agent_commands = $cmdList
+                        } | ConvertTo-Json -Depth 6 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/agents') {
+                    try {
+                        $list = @(Get-PromptParleAgentList)
+                        $items = @()
+                        foreach ($a in $list) {
+                            $cmdList = @()
+                            if ($a.commands) {
+                                foreach ($k in $a.commands.Keys) { $cmdList += [string]$k }
+                            }
+                            $items += @{
+                                id          = $a.id
+                                name        = $a.name
+                                description = $a.description
+                                profile     = $a.profile
+                                dial        = [int]$a.dial
+                                commands    = $cmdList
+                            }
+                        }
+                        $payload = @{
+                            ok           = $true
+                            agents       = $items
+                            active_agent = (Get-PromptParleActiveAgentId)
+                        } | ConvertTo-Json -Depth 6 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/command') {
+                    try {
+                        $encC = $req.ContentEncoding
+                        if (-not $encC) { $encC = [System.Text.Encoding]::UTF8 }
+                        $readerC = New-Object System.IO.StreamReader($req.InputStream, $encC)
+                        $rawBodyC = $readerC.ReadToEnd()
+                        $readerC.Close()
+                        $bodyC = ConvertFrom-PromptParleJson -Json $rawBodyC
+                        $lineC = [string](Get-PromptParleProp $bodyC 'line' (Get-PromptParleProp $bodyC 'command' ''))
+                        if (-not $lineC) { throw 'Missing line (e.g. /help)' }
+                        $provC = [string](Get-PromptParleProp $bodyC 'provider' '')
+                        $profC = [string](Get-PromptParleProp $bodyC 'profile' '')
+                        $dialRawC = Get-PromptParleProp $bodyC 'compression_level' (Get-PromptParleProp $bodyC 'dial' $null)
+                        $dialC = -1
+                        if ($null -ne $dialRawC) { try { $dialC = [int]$dialRawC } catch { $dialC = -1 } }
+                        $optOnlyC = $false
+                        $optFlagC = Get-PromptParleProp $bodyC 'optimize_only' (Get-PromptParleProp $bodyC 'optimizeOnly' $null)
+                        if ($optFlagC -eq $true) { $optOnlyC = $true }
+                        $cmdParams = @{ Line = $lineC; OptimizeOnly = $optOnlyC }
+                        if ($provC) { $cmdParams.Provider = $provC }
+                        if ($profC) { $cmdParams.Profile = $profC }
+                        if ($dialC -ge 1) { $cmdParams.Dial = $dialC }
+                        $resultC = Invoke-PromptParleSlashCommand @cmdParams
+                        $jsonC = ($resultC | ConvertTo-Json -Depth 8 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $jsonC
+                    } catch {
+                        $err = @{ ok = $false; handled = $true; message = "$_"; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/chat') {
                     $enc = $req.ContentEncoding
                     if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
@@ -1514,6 +2170,11 @@ function Start-PromptParleLocalServer {
                         # StrictMode: never touch $body.foo if foo may be absent
                         $prompt = [string](Get-PromptParleProp $body 'prompt' '')
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
+                        # Apply active agent system brief (local free feature)
+                        $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
+                        if ($skipAgent -ne $true) {
+                            $prompt = Format-PromptParleAgentPrompt -Prompt $prompt
+                        }
                         $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
                         if (-not $provider) { $provider = 'openai' }
                         $profile = [string](Get-PromptParleProp $body 'profile' 'general')
@@ -1730,10 +2391,17 @@ function Start-PromptParle {
     $sessionDial = 3
     $sessionContext = $null
     $optimizeOnlyNext = $false
+    # Restore last agent session if present
+    try {
+        $saved = Get-PromptParleSessionState
+        if ($saved.profile) { $sessionProfile = [string]$saved.profile }
+        if ($saved.dial) { $sessionDial = [int]$saved.dial }
+        if ($saved.provider -and -not $Provider) { $sessionProvider = [string]$saved.provider }
+    } catch { }
 
     Write-Host ''
     Write-Host ("Ready. Talking to {0}." -f $selected.Name) -ForegroundColor Green
-    Write-Host 'Type a message and press Enter.  /help for commands.  /quit to leave.' -ForegroundColor DarkGray
+    Write-Host 'Type a message, /help, /agents, /agent security, /audit …  /quit to leave.' -ForegroundColor DarkGray
     Write-Host ''
 
     while ($true) {
@@ -1752,188 +2420,77 @@ function Start-PromptParle {
             $cmd = $parts[0].ToLowerInvariant()
             $arg = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
 
-            switch ($cmd) {
-                { $_ -in @('/quit', '/exit', '/q') } {
-                    Write-Host 'Bye.' -ForegroundColor DarkGray
-                    return
+            # CLI-only context helpers
+            if ($cmd -eq '/browser') {
+                Write-Host 'Start a second window and run:  pp' -ForegroundColor Cyan
+                continue
+            }
+            if ($cmd -eq '/model') {
+                if ($arg) { $sessionModel = $arg; Write-Host ("Model set to {0}." -f $sessionModel) -ForegroundColor Green }
+                else { $sessionModel = $null; Write-Host 'Model cleared (provider default).' -ForegroundColor Green }
+                continue
+            }
+            if ($cmd -eq '/context') {
+                Write-Host 'Paste context. End with a line that is only: EOF' -ForegroundColor Cyan
+                $buf = New-Object System.Collections.Generic.List[string]
+                while ($true) {
+                    $cl = Read-PromptParleLine -PromptText '... ' -Color DarkGray
+                    if ($null -eq $cl) { break }
+                    if ($cl.Trim() -eq 'EOF') { break }
+                    $buf.Add($cl)
                 }
-                '/help' { Show-PromptParleSessionHelp; continue }
-                '/clear' { Clear-Host; continue }
-                '/browser' {
-                    Write-Host 'Start a second window and run:  pp' -ForegroundColor Cyan
-                    Write-Host 'Or cloud portal:  Open-PromptParleBrowser -Cloud' -ForegroundColor DarkGray
-                    continue
+                if ($buf.Count -gt 0) {
+                    $sessionContext = ($buf -join "`n")
+                    Write-Host ("Context attached ({0} chars)." -f $sessionContext.Length) -ForegroundColor Green
+                } else {
+                    Write-Host 'No context captured.' -ForegroundColor Yellow
                 }
-                '/status' {
-                    Write-Host ''
-                    Write-Host ("  Provider : {0}" -f $sessionProvider)
-                    Write-Host ("  Model    : {0}" -f $(if ($sessionModel) { $sessionModel } else { '(default)' }))
-                    Write-Host ("  Profile  : {0}" -f $sessionProfile)
-                    Write-Host ("  Dial     : {0}/5 (1 fidelity … 5 savings)" -f $sessionDial)
-                    Write-Host ("  Context  : {0}" -f $(if ($sessionContext) { "$($sessionContext.Length) chars" } else { '(none)' }))
-                    Write-Host ''
-                    continue
-                }
-                '/usage' {
-                    try {
-                        $u = Get-PromptParleUsage
-                        Write-Host ''
-                        Write-Host ("  Requests     : {0}" -f $u.RequestCount)
-                        Write-Host ("  Tokens saved : {0} ({1}%)" -f $u.TokensSaved, $u.ReductionPercent) -ForegroundColor Green
-                        Write-Host ''
-                    } catch {
-                        Write-Host "Usage error: $_" -ForegroundColor Red
-                    }
-                    continue
-                }
-                '/provider' {
-                    try {
-                        $allProviders = @(Get-PromptParleProvider)
-                        $picked = Select-PromptParleProviderInteractive -Providers $allProviders
-                        if ($picked) {
-                            $sessionProvider = [string]$picked.Id
-                            $sessionModel = $null
-                            Write-Host ("Switched to {0}." -f $picked.Name) -ForegroundColor Green
-                        }
-                    } catch {
-                        Write-Host "Provider error: $_" -ForegroundColor Red
-                    }
-                    continue
-                }
-                '/profile' {
-                    $profiles = @(
-                        'general', 'developer', 'security-review',
-                        'log-analysis', 'documentation', 'executive-summary'
-                    )
-                    if ($arg -and $profiles -contains $arg) {
-                        $sessionProfile = $arg
-                        Write-Host ("Profile set to {0}." -f $sessionProfile) -ForegroundColor Green
-                        continue
-                    }
-                    Write-Host ''
-                    Write-Host 'Profiles:' -ForegroundColor Cyan
-                    for ($i = 0; $i -lt $profiles.Count; $i++) {
-                        $mark = if ($profiles[$i] -eq $sessionProfile) { '*' } else { ' ' }
-                        Write-Host ("  [{0}]{1} {2}" -f ($i + 1), $mark, $profiles[$i])
-                    }
-                    $pchoice = Read-PromptParleLine -PromptText 'profile # or name> ' -Color Yellow
-                    if ($pchoice) {
-                        $pchoice = $pchoice.Trim()
-                        $n = 0
-                        if ([int]::TryParse($pchoice, [ref]$n) -and $n -ge 1 -and $n -le $profiles.Count) {
-                            $sessionProfile = $profiles[$n - 1]
-                        } elseif ($profiles -contains $pchoice) {
-                            $sessionProfile = $pchoice
-                        } else {
-                            Write-Host 'Unknown profile.' -ForegroundColor Yellow
-                            continue
-                        }
-                        Write-Host ("Profile set to {0}." -f $sessionProfile) -ForegroundColor Green
-                    }
-                    continue
-                }
-                { $_ -in @('/dial', '/compression', '/fidelity') } {
-                    $labels = @{
-                        1 = 'Max fidelity'
-                        2 = 'High fidelity'
-                        3 = 'Balanced'
-                        4 = 'High savings'
-                        5 = 'Max savings'
-                    }
-                    $n = 0
-                    if ($arg -and [int]::TryParse($arg, [ref]$n) -and $n -ge 1 -and $n -le 5) {
-                        $sessionDial = $n
-                        Write-Host ("Dial set to {0}/5 — {1}." -f $sessionDial, $labels[$sessionDial]) -ForegroundColor Green
-                        continue
-                    }
-                    Write-Host ''
-                    Write-Host 'Compression dial (1 fidelity … 5 savings):' -ForegroundColor Cyan
-                    foreach ($k in 1..5) {
-                        $mark = if ($k -eq $sessionDial) { '*' } else { ' ' }
-                        Write-Host ("  [{0}]{1} {2}" -f $k, $mark, $labels[$k])
-                    }
-                    $dchoice = Read-PromptParleLine -PromptText 'dial 1-5> ' -Color Yellow
-                    if ($dchoice -and [int]::TryParse($dchoice.Trim(), [ref]$n) -and $n -ge 1 -and $n -le 5) {
-                        $sessionDial = $n
-                        Write-Host ("Dial set to {0}/5 — {1}." -f $sessionDial, $labels[$sessionDial]) -ForegroundColor Green
-                    } else {
-                        Write-Host ("Still {0}/5." -f $sessionDial) -ForegroundColor DarkGray
-                    }
-                    continue
-                }
-                '/model' {
-                    if ($arg) {
-                        $sessionModel = $arg
-                        Write-Host ("Model set to {0}." -f $sessionModel) -ForegroundColor Green
-                    } else {
-                        $sessionModel = $null
-                        Write-Host 'Model cleared (using provider default).' -ForegroundColor Green
-                    }
-                    continue
-                }
-                '/context' {
-                    Write-Host 'Paste context. End with a line that is only: EOF' -ForegroundColor Cyan
-                    $buf = New-Object System.Collections.Generic.List[string]
-                    while ($true) {
-                        $cl = Read-PromptParleLine -PromptText '... ' -Color DarkGray
-                        if ($null -eq $cl) { break }
-                        if ($cl.Trim() -eq 'EOF') { break }
-                        $buf.Add($cl)
-                    }
-                    if ($buf.Count -gt 0) {
-                        $sessionContext = ($buf -join "`n")
-                        Write-Host ("Context attached ({0} chars)." -f $sessionContext.Length) -ForegroundColor Green
-                    } else {
-                        Write-Host 'No context captured.' -ForegroundColor Yellow
-                    }
-                    continue
-                }
-                '/file' {
-                    if (-not $arg) {
-                        Write-Host 'Usage: /file C:\path\to\file.txt' -ForegroundColor Yellow
-                        continue
-                    }
-                    if (-not (Test-Path -LiteralPath $arg)) {
-                        Write-Host "File not found: $arg" -ForegroundColor Red
-                        continue
-                    }
-                    try {
-                        $rawFile = Get-Content -LiteralPath $arg -Raw -ErrorAction Stop
-                        $leaf = Split-Path -Leaf $arg
-                        # Tag for server context fleet (code/doc/sheet specialists)
-                        $tagged = "===== FILE: $leaf =====`n$rawFile"
-                        if ($sessionContext) {
-                            $sessionContext = "$sessionContext`n`n$tagged"
-                        } else {
-                            $sessionContext = $tagged
-                        }
-                        Write-Host ("Loaded $leaf ({0} chars) — fleet will route by type." -f $rawFile.Length) -ForegroundColor Green
-                    } catch {
-                        Write-Host "Could not read file: $_" -ForegroundColor Red
-                    }
-                    continue
-                }
-                '/clearcontext' {
-                    $sessionContext = $null
-                    Write-Host 'Context cleared.' -ForegroundColor Green
-                    continue
-                }
-                '/optimize' {
-                    $optimizeOnlyNext = $true
-                    Write-Host 'Next message will optimize only (no AI call).' -ForegroundColor Yellow
-                    continue
-                }
-                default {
-                    Write-Host "Unknown command: $cmd  (try /help)" -ForegroundColor Yellow
-                    continue
-                }
+                continue
+            }
+            if ($cmd -eq '/file') {
+                if (-not $arg) { Write-Host 'Usage: /file C:\path\to\file.txt' -ForegroundColor Yellow; continue }
+                if (-not (Test-Path -LiteralPath $arg)) { Write-Host "File not found: $arg" -ForegroundColor Red; continue }
+                try {
+                    $rawFile = Get-Content -LiteralPath $arg -Raw -ErrorAction Stop
+                    $leaf = Split-Path -Leaf $arg
+                    $tagged = "===== FILE: $leaf =====`n$rawFile"
+                    if ($sessionContext) { $sessionContext = "$sessionContext`n`n$tagged" }
+                    else { $sessionContext = $tagged }
+                    Write-Host ("Loaded $leaf ({0} chars)." -f $rawFile.Length) -ForegroundColor Green
+                } catch { Write-Host "Could not read file: $_" -ForegroundColor Red }
+                continue
+            }
+            if ($cmd -eq '/clearcontext') {
+                $sessionContext = $null
+                Write-Host 'Context cleared.' -ForegroundColor Green
+                continue
+            }
+
+            # Shared slash router (agents, dial, profile, help, …)
+            $cmdLine = $trimmed
+            if ($cmd -eq '/dial' -and -not $arg) { $cmdLine = "/dial $sessionDial" }
+            $r = Invoke-PromptParleSlashCommand -Line $cmdLine -Provider $sessionProvider -Profile $sessionProfile -Dial $sessionDial -OptimizeOnly $optimizeOnlyNext
+            if ($r.session) {
+                if ($r.session.provider) { $sessionProvider = [string]$r.session.provider }
+                if ($r.session.profile) { $sessionProfile = [string]$r.session.profile }
+                if ($null -ne $r.session.dial) { $sessionDial = [int]$r.session.dial }
+                if ($null -ne $r.session.optimize_only) { $optimizeOnlyNext = [bool]$r.session.optimize_only }
+            }
+            if ($r.message) { Write-Host $r.message -ForegroundColor Cyan }
+            if ($r.quit) { return }
+            if ($r.clear) { Clear-Host; continue }
+            if ($r.send -and $r.prompt) {
+                $trimmed = [string]$r.prompt
+            } else {
+                continue
             }
         }
 
         Write-Host 'thinking...' -ForegroundColor DarkGray
         try {
+            $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed
             $params = @{
-                Prompt           = $trimmed
+                Prompt           = $sendPrompt
                 Provider         = $sessionProvider
                 Profile          = $sessionProfile
                 CompressionLevel = $sessionDial
