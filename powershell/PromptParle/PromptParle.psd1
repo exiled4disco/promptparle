@@ -1,6 +1,6 @@
 ﻿@{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.5.4'
+    ModuleVersion     = '0.5.5'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -31,6 +31,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.5.5: Fix local chat Send hang (context char-unroll); loading UI feedback
 0.5.4: Fix empty-array Get-Process crash; instant Ctrl+C feedback
 0.5.3: Fix StrictMode Count error when checking local ports
 0.5.2: Fast port clear (no multi-second timeouts on free ports)

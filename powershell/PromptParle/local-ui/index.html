@@ -207,11 +207,41 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const prompt = inputEl.value.trim();
-      if (!prompt) return;
+      let prompt = inputEl.value.trim();
+      const context = contextEl.value.trim();
+
+      // Common mistake: paste only in Extra context and hit Send with empty prompt
+      if (!prompt && !context) {
+        addMsg('sys', 'Type a prompt in the bottom box (or paste noisy logs in Extra context + a short goal).', null, true);
+        inputEl.focus();
+        return;
+      }
+      if (!prompt && context) {
+        prompt = 'Find the highest risk items and recommend actions';
+        addMsg('sys', 'No prompt typed — using: “' + prompt + '” (with your Extra context).');
+      }
+      if (!providerEl.value) {
+        addMsg('sys', 'No AI provider selected. Configure one at https://promptparle.com/app/providers then refresh this page.', null, true);
+        return;
+      }
+
       addMsg('user', prompt);
       inputEl.value = '';
       sendBtn.disabled = true;
+      sendBtn.textContent = 'Working…';
+
+      const wait = document.createElement('div');
+      wait.className = 'msg sys';
+      wait.id = 'waiting';
+      wait.textContent = optimizeOnlyEl.checked
+        ? 'Optimizing (no AI spend)…'
+        : 'Sending through PromptParle (optimize + ' + providerEl.value + ')…';
+      chat.appendChild(wait);
+      chat.scrollTop = chat.scrollHeight;
+
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(function () { controller.abort(); }, 120000) : null;
+
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
@@ -219,23 +249,39 @@
           body: JSON.stringify({
             provider: providerEl.value,
             profile: profileEl.value,
-            prompt,
-            context: contextEl.value.trim() || undefined,
-            optimize_only: optimizeOnlyEl.checked
-          })
+            prompt: prompt,
+            context: context || undefined,
+            optimize_only: !!optimizeOnlyEl.checked
+          }),
+          signal: controller ? controller.signal : undefined
         });
-        const data = await res.json();
+
+        let data = {};
+        const raw = await res.text();
+        try { data = raw ? JSON.parse(raw) : {}; } catch (parseErr) {
+          throw new Error('Bad JSON from local server: ' + raw.slice(0, 200));
+        }
+
         if (!res.ok) {
-          addMsg('bot', data.error || 'Request failed', data.metadata, true);
+          addMsg('bot', data.error || ('Request failed (HTTP ' + res.status + ')'), data.metadata, true);
         } else if (optimizeOnlyEl.checked) {
-          addMsg('bot', data.optimized_prompt || '(empty)', data.metadata);
+          addMsg('bot', data.optimized_prompt || data.OptimizedPrompt || '(empty optimized prompt)', data.metadata || data.Metadata);
         } else {
-          addMsg('bot', data.response || '(empty)', data.metadata);
+          addMsg('bot', data.response || data.Response || '(empty response)', data.metadata || data.Metadata);
         }
       } catch (err) {
-        addMsg('bot', 'Local server error: ' + (err.message || err), null, true);
+        const name = err && err.name;
+        if (name === 'AbortError') {
+          addMsg('bot', 'Timed out after 120s. Check the PowerShell window for errors, or try Optimize only first.', null, true);
+        } else {
+          addMsg('bot', 'Local server error: ' + (err.message || err) + '\nIf the PowerShell window shows an error, copy it. Try: git pull + Install-PromptParle.ps1', null, true);
+        }
       } finally {
+        if (timer) clearTimeout(timer);
+        const w = document.getElementById('waiting');
+        if (w) w.remove();
         sendBtn.disabled = false;
+        sendBtn.textContent = 'Send';
         inputEl.focus();
       }
     });

@@ -125,6 +125,8 @@ function Invoke-PromptParleApi {
         Uri         = $uri
         Headers     = $headers
         ContentType = 'application/json; charset=utf-8'
+        # Avoid silent hangs in local UI when the cloud API is slow/unreachable
+        TimeoutSec  = 120
     }
 
     if ($PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
@@ -427,7 +429,9 @@ function Invoke-PromptParle {
       documentation, executive-summary.
 
     .PARAMETER Context
-      Extra material (code, logs, configs).
+      Extra material (code, logs, configs) as ONE string.
+      Must be [string] - not object[] - because PowerShell unrolls a string
+      into char[] when bound to object[], which freezes/bloats local chat.
 
     .PARAMETER OptimizeOnly
       Only optimize; do not call the AI provider.
@@ -471,9 +475,14 @@ function Invoke-PromptParle {
         )]
         [string]$Profile = 'general',
 
-        [Parameter(ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        # Named blob - always a single string (local UI path)
+        [Parameter()]
         [AllowEmptyString()]
-        [object[]]$Context,
+        [string]$Context,
+
+        # Pipeline lines / FileInfo (Get-Content, Get-Item, etc.)
+        [Parameter(ValueFromPipeline)]
+        [object]$InputObject,
 
         [Parameter()]
         [Alias('ContextFile')]
@@ -491,19 +500,22 @@ function Invoke-PromptParle {
     }
 
     process {
-        if ($null -ne $Context) {
-            foreach ($item in $Context) {
-                if ($null -eq $item) { continue }
-                if ($item -is [System.IO.FileInfo]) {
-                    $contextChunks.Add((Get-Content -LiteralPath $item.FullName -Raw -ErrorAction Stop))
-                } else {
-                    $contextChunks.Add([string]$item)
-                }
-            }
+        if ($null -eq $InputObject) { return }
+        if ($InputObject -is [System.IO.FileInfo]) {
+            $contextChunks.Add((Get-Content -LiteralPath $InputObject.FullName -Raw -ErrorAction Stop))
+        } elseif ($InputObject -is [string]) {
+            $contextChunks.Add($InputObject)
+        } else {
+            $contextChunks.Add([string]$InputObject)
         }
     }
 
     end {
+        # Named -Context is one blob (do not treat as char array)
+        if ($PSBoundParameters.ContainsKey('Context') -and -not [string]::IsNullOrEmpty($Context)) {
+            $contextChunks.Add($Context)
+        }
+
         if ($Path) {
             if (-not (Test-Path -LiteralPath $Path)) {
                 throw "Context file not found: $Path"
@@ -582,8 +594,11 @@ function Invoke-PromptParleSecurityReview {
 
         [string]$Model,
 
+        [Parameter()]
+        [string]$Context,
+
         [Parameter(ValueFromPipeline)]
-        [object[]]$Context,
+        [object]$InputObject,
 
         [string]$Path,
 
@@ -592,20 +607,32 @@ function Invoke-PromptParleSecurityReview {
         [switch]$Raw
     )
 
+    begin {
+        $pipe = New-Object System.Collections.Generic.List[object]
+    }
+
     process {
+        if ($null -ne $InputObject) { [void]$pipe.Add($InputObject) }
+    }
+
+    end {
         $params = @{
-            Prompt         = $Prompt
-            Provider       = $Provider
-            Profile        = 'security-review'
-            OptimizeOnly   = $OptimizeOnly
-            Quiet          = $Quiet
-            Raw            = $Raw
+            Prompt       = $Prompt
+            Provider     = $Provider
+            Profile      = 'security-review'
+            OptimizeOnly = $OptimizeOnly
+            Quiet        = $Quiet
+            Raw          = $Raw
         }
         if ($Model) { $params.Model = $Model }
-        if ($Path)  { $params.Path = $Path }
-        if ($null -ne $Context) { $params.Context = $Context }
+        if ($Path) { $params.Path = $Path }
+        if (-not [string]::IsNullOrEmpty($Context)) { $params.Context = $Context }
 
-        Invoke-PromptParle @params
+        if ($pipe.Count -gt 0) {
+            $pipe | Invoke-PromptParle @params
+        } else {
+            Invoke-PromptParle @params
+        }
     }
 }
 
@@ -1024,18 +1051,25 @@ function Start-PromptParleLocalServer {
                 }
 
                 if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/chat') {
-                    $reader = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
+                    $enc = $req.ContentEncoding
+                    if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
+                    $reader = New-Object System.IO.StreamReader($req.InputStream, $enc)
                     $rawBody = $reader.ReadToEnd()
                     $reader.Close()
                     try {
+                        if ([string]::IsNullOrWhiteSpace($rawBody)) { throw 'Empty request body' }
                         $body = $rawBody | ConvertFrom-Json
                         $prompt = [string]$body.prompt
-                        if (-not $prompt) { throw 'Missing prompt' }
+                        if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
                         $provider = if ($body.provider) { [string]$body.provider } else { 'openai' }
                         $profile = if ($body.profile) { [string]$body.profile } else { 'general' }
                         $context = if ($body.context) { [string]$body.context } else { $null }
                         $optOnly = $false
                         if ($body.optimize_only -eq $true -or $body.optimizeOnly -eq $true) { $optOnly = $true }
+
+                        $ctxLen = if ($context) { $context.Length } else { 0 }
+                        Write-Host ("  chat: provider={0} profile={1} optimize_only={2} prompt={3}c context={4}c" -f `
+                            $provider, $profile, $optOnly, $prompt.Length, $ctxLen) -ForegroundColor DarkGray
 
                         $params = @{
                             Prompt   = $prompt
@@ -1044,13 +1078,16 @@ function Start-PromptParleLocalServer {
                             Quiet    = $true
                             Raw      = $true
                         }
-                        if ($context) { $params.Context = $context }
+                        # Pass as single string - never as char-unrolled array
+                        if ($context) { $params.Context = [string]$context }
                         if ($optOnly) { $params.OptimizeOnly = $true }
 
                         $result = Invoke-PromptParle @params
                         $json = ($result | ConvertTo-Json -Depth 10 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                        Write-Host '  chat: ok' -ForegroundColor DarkGreen
                     } catch {
+                        Write-Host ("  chat: error - {0}" -f $_) -ForegroundColor Red
                         $err = @{ error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
