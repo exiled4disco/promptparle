@@ -8236,7 +8236,7 @@ function Start-PromptParleLocalServer {
                         }
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
                         $turnForRt = 'chat'
-                        try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt } catch { }
+                        try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt -History $histArr } catch { }
                         $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Normal assistant: answer questions; implement when asked; use product bind roots.'
                         if ($turnForRt -eq 'implement') {
                             $rtNote = 'IMPLEMENT TURN. User already authorized work — do not ask permission or "say the word". Emit full-file ```apply path=...``` blocks for every changed file under source_root; desktop writes them over SSH. No multi-step user homework. Brief verify steps only after apply blocks.'
