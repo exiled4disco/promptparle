@@ -2591,17 +2591,28 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           return;
         }
 
-        addMsg('sys', (data.message || 'Updated') + ' — restarting…');
+        addMsg('sys', (data.message || 'Updated') + (data.restart_required === false
+          ? ' — no auto-restart; keep this window or run  pp'
+          : ' — restarting…'));
+        if (data.restart_required === false) {
+          setUpdateBusy(false, 'Update');
+          try { await checkVersion(); } catch (e2) { /* ignore */ }
+          return;
+        }
         const url = data.url || (window.location.origin + '/');
-        const up = await waitForServer(url.endsWith('/') ? url : url + '/', 40);
+        // ~60s: new process waits for port free, then imports + binds
+        const up = await waitForServer(url.endsWith('/') ? url : url + '/', 90);
         if (up) window.location.href = url;
         else {
-          addMsg('sys', 'Updated on disk. Run  pp  if the page does not reload.', null, true);
+          addMsg('sys',
+            'Updated on disk, but local chat did not come back. Open a new PowerShell and run:  pp' +
+            (data.restart_log ? ('  · log: ' + data.restart_log) : '  · log: %TEMP%\\promptparle-restart.log'),
+            null, true);
           setUpdateBusy(false, 'Update');
         }
       } catch (e) {
         // Network blip: check if local server still alive — do not force reload into a dead page
-        const up = await waitForServer(window.location.origin + '/', 8);
+        const up = await waitForServer(window.location.origin + '/', 12);
         if (up) {
           addMsg('sys',
             'Update did not complete: ' + (e.message || e) +
@@ -2610,7 +2621,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           setUpdateBusy(false, 'Retry update');
           try { await checkVersion(); } catch (e2) { /* ignore */ }
         } else {
-          addMsg('sys', 'Update/restart issue: ' + (e.message || e) + ' — run  pp  to start again.', null, true);
+          addMsg('sys',
+            'Local chat is down after update/restart. Open a new PowerShell window and run:  pp' +
+            '  · if that fails: Import-Module PromptParle -Force; pp' +
+            '  · log: %TEMP%\\promptparle-restart.log',
+            null, true);
           setUpdateBusy(false, 'Retry update');
         }
       }
@@ -4611,9 +4626,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
 
     async function waitForServer(url, attempts) {
+      const base = url.endsWith('/') ? url : (url + '/');
       for (let i = 0; i < (attempts || 30); i++) {
         try {
-          const res = await fetch(url + 'api/version', { cache: 'no-store' });
+          const res = await fetch(base + 'api/version?t=' + Date.now(), { cache: 'no-store' });
           if (res.ok) return true;
         } catch (e) { /* restarting */ }
         await new Promise(function (r) { setTimeout(r, 700); });

@@ -5328,6 +5328,197 @@ function Restore-PromptParleModuleInstall {
     Copy-Item -LiteralPath $BackupDir -Destination $DestDir -Recurse -Force -ErrorAction Stop
 }
 
+function Install-PromptParleModuleTree {
+    <#
+    .SYNOPSIS
+      Overlay-install module files without deleting the whole tree first.
+    .DESCRIPTION
+      Avoids Windows file-lock failures when the running server still has
+      PromptParle.psm1 mapped. Copies source over dest file-by-file, then
+      removes orphan files that are no longer in the package.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceDir,
+        [Parameter(Mandatory)][string]$DestDir
+    )
+    if (-not (Test-Path -LiteralPath $SourceDir)) {
+        throw "Source not found: $SourceDir"
+    }
+    if (-not (Test-Path -LiteralPath $DestDir)) {
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+    }
+
+    $sourceRoot = (Resolve-Path -LiteralPath $SourceDir).Path.TrimEnd('\', '/')
+    $destRoot = (Resolve-Path -LiteralPath $DestDir).Path.TrimEnd('\', '/')
+    $wanted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+    Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force -ErrorAction Stop | ForEach-Object {
+        $full = $_.FullName
+        $rel = $full.Substring($sourceRoot.Length).TrimStart('\', '/')
+        if (-not $rel) { return }
+        [void]$wanted.Add(($rel -replace '/', '\'))
+        $target = Join-Path $DestDir $rel
+        $parent = Split-Path -Parent $target
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        $copied = $false
+        try {
+            Copy-Item -LiteralPath $full -Destination $target -Force -ErrorAction Stop
+            $copied = $true
+        } catch {
+            # Locked file: stage beside target, swap via rename
+            $tmp = "$target.__ppnew"
+            $bak = "$target.__ppold"
+            try {
+                if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+                if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue }
+                Copy-Item -LiteralPath $full -Destination $tmp -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $target) {
+                    Rename-Item -LiteralPath $target -NewName (Split-Path -Leaf $bak) -ErrorAction Stop
+                }
+                Rename-Item -LiteralPath $tmp -NewName (Split-Path -Leaf $target) -ErrorAction Stop
+                try { Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue } catch { }
+                $copied = $true
+            } catch {
+                try {
+                    if ((Test-Path -LiteralPath $bak) -and -not (Test-Path -LiteralPath $target)) {
+                        Rename-Item -LiteralPath $bak -NewName (Split-Path -Leaf $target) -ErrorAction SilentlyContinue
+                    }
+                } catch { }
+                throw "Could not write $rel : $_"
+            } finally {
+                try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
+            }
+        }
+        if (-not $copied) { throw "Could not install file: $rel" }
+    }
+
+    # Remove orphans (files in dest not in package) — never remove __pp* temps mid-flight
+    Get-ChildItem -LiteralPath $DestDir -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $full = $_.FullName
+        if ($full -match '\.__pp(new|old)$') {
+            try { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue } catch { }
+            return
+        }
+        $rel = $full.Substring($destRoot.Length).TrimStart('\', '/')
+        $norm = ($rel -replace '/', '\')
+        if ($norm -and -not $wanted.Contains($norm)) {
+            try { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+}
+
+function Write-PromptParleRestartScript {
+    <# Write durable restart .ps1 used after self-update (never inline -Command). #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ManifestPath,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$LogPath
+    )
+    $manifestEsc = $ManifestPath -replace "'", "''"
+    $logEsc = $LogPath -replace "'", "''"
+    $content = @"
+# PromptParle post-update restart — generated; safe to delete after success
+param(
+    [int]`$Port = $Port,
+    [string]`$ManifestPath = '$manifestEsc',
+    [string]`$LogPath = '$logEsc'
+)
+`$ErrorActionPreference = 'Continue'
+function Write-PpRestartLog([string]`$Message) {
+    try {
+        `$line = ('{0}  {1}' -f (Get-Date -Format o), `$Message)
+        Add-Content -LiteralPath `$LogPath -Value `$line -Encoding UTF8 -ErrorAction SilentlyContinue
+        Write-Host `$line
+    } catch { }
+}
+try {
+    if (Test-Path -LiteralPath `$LogPath) {
+        '' | Set-Content -LiteralPath `$LogPath -Encoding UTF8
+    }
+} catch { }
+Write-PpRestartLog 'restart begin'
+try {
+    # Wait for previous local server to release the port (up to ~30s)
+    `$free = `$false
+    for (`$i = 0; `$i -lt 60; `$i++) {
+        `$busy = `$false
+        try {
+            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                `$c = @(Get-NetTCPConnection -LocalPort `$Port -State Listen -ErrorAction SilentlyContinue)
+                if (`$c.Count -gt 0) { `$busy = `$true }
+            }
+        } catch { }
+        if (-not `$busy) {
+            try {
+                `$client = New-Object System.Net.Sockets.TcpClient
+                `$iar = `$client.BeginConnect('127.0.0.1', `$Port, `$null, `$null)
+                `$ok = `$iar.AsyncWaitHandle.WaitOne(200, `$false)
+                if (`$ok -and `$client.Connected) { `$busy = `$true }
+                try { `$client.Close() } catch { }
+            } catch { }
+        }
+        if (-not `$busy) { `$free = `$true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-PpRestartLog ("port {0} free={1}" -f `$Port, `$free)
+
+    if (-not (Test-Path -LiteralPath `$ManifestPath)) {
+        throw "Module manifest missing: `$ManifestPath"
+    }
+    Import-Module `$ManifestPath -Force -Global -ErrorAction Stop
+    `$ver = '?'
+    try { `$ver = Get-PromptParleClientVersion } catch { }
+    Write-PpRestartLog ("import ok version=`$ver")
+
+    Write-Host ''
+    Write-Host 'PromptParle updated — starting local chat...' -ForegroundColor Cyan
+    Write-Host ("  http://127.0.0.1:{0}/" -f `$Port) -ForegroundColor Green
+    Write-Host ''
+
+    # Blocking when healthy. Early return (no key / bind fail) must not silent-exit.
+    `$before = Get-Date
+    try {
+        Start-PromptParleLocalServer -Port `$Port
+    } catch {
+        Write-PpRestartLog ("Start-PromptParleLocalServer threw: `$_")
+        throw
+    }
+    `$elapsed = ((Get-Date) - `$before).TotalSeconds
+    Write-PpRestartLog ("server returned after {0:N1}s" -f `$elapsed)
+    if (`$elapsed -lt 4) {
+        throw "Local server exited immediately (port busy, missing API key, or UI missing). See log: `$LogPath"
+    }
+    Write-Host 'Local server stopped.' -ForegroundColor DarkGray
+    Write-Host 'Run  pp  to start again.' -ForegroundColor Cyan
+} catch {
+    Write-PpRestartLog ("RESTART FAILED: `$_")
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Red
+    Write-Host '  PromptParle restart failed' -ForegroundColor Red
+    Write-Host '========================================' -ForegroundColor Red
+    Write-Host `$_ -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host "Log: `$LogPath" -ForegroundColor DarkGray
+    Write-Host 'Recover with:' -ForegroundColor Cyan
+    Write-Host '  Import-Module PromptParle -Force' -ForegroundColor White
+    Write-Host '  pp' -ForegroundColor White
+    Write-Host ''
+    try { Read-Host 'Press Enter to close this window' } catch { Start-Sleep -Seconds 30 }
+    exit 1
+}
+"@
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+}
+
 function Update-PromptParleClient {
     <#
     .SYNOPSIS
@@ -5534,20 +5725,13 @@ function Update-PromptParleClient {
 
         Write-Host ("Installing PromptParle {0} -> {1}" -f $newVer, $dest) -ForegroundColor Cyan
 
-        # --- INSTALL (transactional) ---
+        # --- INSTALL (transactional, overlay — never delete whole tree while loaded) ---
         try {
             if (Test-Path -LiteralPath $dest) {
-                # Replace whole tree from source for a clean install
-                $stagingDest = Join-Path $temp 'PromptParle-new'
-                if (Test-Path -LiteralPath $stagingDest) {
-                    Remove-Item -LiteralPath $stagingDest -Recurse -Force -ErrorAction SilentlyContinue
-                }
-                Copy-Item -LiteralPath $source -Destination $stagingDest -Recurse -Force -ErrorAction Stop
-                # Swap: remove old, move staging into place
-                Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction Stop
-                Copy-Item -LiteralPath $stagingDest -Destination $dest -Recurse -Force -ErrorAction Stop
+                Install-PromptParleModuleTree -SourceDir $source -DestDir $dest
             } else {
-                Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force -ErrorAction Stop
+                New-Item -ItemType Directory -Path $dest -Force | Out-Null
+                Copy-Item -LiteralPath (Join-Path $source '*') -Destination $dest -Recurse -Force -ErrorAction Stop
             }
             $installed = $true
         } catch {
@@ -5630,7 +5814,7 @@ function Update-PromptParleClient {
         Write-Host $msg -ForegroundColor Green
         if ($used) { Write-Host ("  source: {0}" -f $used) -ForegroundColor DarkGray }
 
-        # Restart ONLY after full success
+        # Restart ONLY after full success — durable .ps1 (never fragile -Command)
         if ($RestartPort -gt 0) {
             $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
                 (Get-Command pwsh).Source
@@ -5639,32 +5823,113 @@ function Update-PromptParleClient {
             } else {
                 'powershell'
             }
-            $destEsc = $manifestPath -replace "'", "''"
-            $logEsc = (Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-restart.log') -replace "'", "''"
-            $cmd = @"
-`$ErrorActionPreference = 'Continue'
-`$log = '$logEsc'
-try {
-  Start-Sleep -Seconds 2
-  "restart begin `$(Get-Date -Format o)" | Set-Content -LiteralPath `$log -Encoding UTF8
-  Import-Module '$destEsc' -Force -Global -ErrorAction Stop
-  "import ok version=`$(try { Get-PromptParleClientVersion } catch { '?' })" | Add-Content -LiteralPath `$log
-  try {
-    Start-PromptParleLocalServer -Port $RestartPort
-  } catch {
-    "local server failed: `$_" | Add-Content -LiteralPath `$log
-    Start-PromptParle
-  }
-} catch {
-  "RESTART FAILED: `$_" | Add-Content -LiteralPath `$log
-  try { [Console]::Error.WriteLine("PromptParle restart failed: `$_") } catch { }
-  exit 1
-}
-"@
+            $logPath = Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-restart.log'
+            $restartScript = Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-restart.ps1'
+            try {
+                Write-PromptParleRestartScript -Path $restartScript -ManifestPath $manifestPath -Port $RestartPort -LogPath $logPath
+            } catch {
+                Write-Host ("  warning: could not write restart script: {0}" -f $_) -ForegroundColor Yellow
+                Write-Host '  Module files updated. Close this window and run:  pp' -ForegroundColor Cyan
+                return [pscustomobject]@{
+                    ok               = $true
+                    updated          = $true
+                    previous_version = $before
+                    version          = $after
+                    remote_version   = $remote
+                    message          = "$msg — restart script missing; run  pp  manually"
+                    restart_required = $false
+                    rolled_back      = $false
+                    kept_version     = $null
+                    stage            = 'done-manual-restart'
+                    module_path      = $dest
+                    backup_path      = $backup
+                }
+            }
+
             Write-Host ("Restarting local chat on port {0}..." -f $RestartPort) -ForegroundColor Cyan
-            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) | Out-Null
+            Write-Host ("  restart script: {0}" -f $restartScript) -ForegroundColor DarkGray
+            Write-Host ("  restart log:    {0}" -f $logPath) -ForegroundColor DarkGray
+
+            $spawned = $null
+            try {
+                $argList = @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-NoExit',
+                    '-File', $restartScript,
+                    '-Port', "$RestartPort",
+                    '-ManifestPath', $manifestPath,
+                    '-LogPath', $logPath
+                )
+                $sp = @{
+                    FilePath     = $psExe
+                    ArgumentList = $argList
+                    PassThru     = $true
+                }
+                if ($script:PromptParleIsWindows) {
+                    $sp.WorkingDirectory = $dest
+                    # New visible console — do not hide; -NoExit keeps window if start fails
+                    $sp.WindowStyle = 'Normal'
+                }
+                $spawned = Start-Process @sp
+            } catch {
+                Write-Host ("  restart spawn failed: {0}" -f $_) -ForegroundColor Red
+                Write-Host '  Module is updated on disk. Run:  pp' -ForegroundColor Cyan
+                return [pscustomobject]@{
+                    ok               = $true
+                    updated          = $true
+                    previous_version = $before
+                    version          = $after
+                    remote_version   = $remote
+                    message          = "$msg — could not auto-restart ($_); run  pp"
+                    restart_required = $false
+                    rolled_back      = $false
+                    kept_version     = $null
+                    stage            = 'done-manual-restart'
+                    module_path      = $dest
+                    backup_path      = $backup
+                    restart_log      = $logPath
+                }
+            }
+
+            # Brief settle — if child dies instantly, keep this server alive
+            Start-Sleep -Milliseconds 600
+            $childDead = $false
+            try {
+                if ($null -eq $spawned) { $childDead = $true }
+                elseif ($spawned.HasExited) { $childDead = $true }
+            } catch { $childDead = $false }
+
+            if ($childDead) {
+                Write-Host '  restart process exited immediately — keeping this server running' -ForegroundColor Yellow
+                Write-Host ("  check log: {0}" -f $logPath) -ForegroundColor DarkGray
+                Write-Host '  Or run:  pp' -ForegroundColor Cyan
+                return [pscustomobject]@{
+                    ok               = $true
+                    updated          = $true
+                    previous_version = $before
+                    version          = $after
+                    remote_version   = $remote
+                    message          = "$msg — auto-restart did not stay up; this window kept open. Run  pp  if needed."
+                    restart_required = $false
+                    rolled_back      = $false
+                    kept_version     = $null
+                    stage            = 'done-manual-restart'
+                    module_path      = $dest
+                    backup_path      = $backup
+                    restart_log      = $logPath
+                }
+            }
+
+            Write-Host ("  restart PID {0} started" -f $spawned.Id) -ForegroundColor DarkGray
         }
 
+        $restartLogPath = $null
+        try {
+            if ($RestartPort -gt 0) {
+                $restartLogPath = Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-restart.log'
+            }
+        } catch { }
         return [pscustomobject]@{
             ok               = $true
             updated          = $true
@@ -5678,6 +5943,7 @@ try {
             stage            = 'done'
             module_path      = $dest
             backup_path      = $backup
+            restart_log      = $restartLogPath
         }
     } catch {
         # Last-resort safety net: if we wrote files, try restore
@@ -6182,6 +6448,8 @@ function Start-PromptParleLocalServer {
                             continue
                         }
 
+                        $restartLog = $null
+                        try { $restartLog = Get-PromptParleProp $result 'restart_log' $null } catch { $restartLog = $null }
                         $payload = @{
                             ok               = $true
                             updated          = $updated
@@ -6193,6 +6461,7 @@ function Start-PromptParleLocalServer {
                             restart_port     = $Port
                             url              = "http://127.0.0.1:$Port/"
                             rolled_back      = $false
+                            restart_log      = $restartLog
                         } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
 
