@@ -231,6 +231,27 @@ Get-Content .\\firewall-rules.txt -Raw |
                 </ComingSoonButton>
               </div>
             </div>
+
+            <p className="mx-auto mt-8 max-w-xl text-center text-sm text-[var(--text-dim)]">
+              Source, docs, and install notes on{" "}
+              <a
+                href="https://github.com/exiled4disco/promptparle"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-[var(--accent-strong)] hover:underline"
+              >
+                GitHub
+              </a>
+              {" · "}
+              <a
+                href="https://github.com/exiled4disco/promptparle/blob/main/powershell/PromptParle/README.md"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-[var(--accent-strong)] hover:underline"
+              >
+                Desktop client guide
+              </a>
+            </p>
           </div>
         </section>
       </main>
