@@ -38,7 +38,8 @@ export default async function UsagePage() {
       <div>
         <h1 className="page-title !text-left">Usage</h1>
         <p className="page-sub !mx-0 !text-left max-w-xl">
-          Token savings and request history — expand a row for before/after.
+          Token savings and <strong>Request History</strong> — expand a row for
+          before/after, delete any request, or clear all.
         </p>
       </div>
 
@@ -102,10 +103,11 @@ export default async function UsagePage() {
       </div>
 
       <section className="card min-h-[20rem] overflow-hidden">
-        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[var(--border)] px-4 py-3 sm:px-5">
-          <h2 className="text-sm font-semibold">Request history</h2>
-          <p className="text-xs text-[var(--text-dim)]">
-            Click a row for before/after
+        <div className="border-b border-[var(--border)] px-4 py-3 sm:px-5">
+          <h2 className="text-sm font-semibold">Request History</h2>
+          <p className="mt-0.5 text-xs text-[var(--text-dim)]">
+            Every stored optimize/chat request for your account. Delete one row
+            or clear all history (token totals update after refresh).
           </p>
         </div>
         <UsageHistory
