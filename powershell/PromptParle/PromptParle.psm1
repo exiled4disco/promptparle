@@ -860,11 +860,16 @@ function Get-PromptParleSessionState {
         # 0.15: durable product bind (monorepo root + live deploy) — not per-turn keyword packs
         product_root      = ''
         product_live      = ''
+        # 0.18 sticky open obligation (document/implement contract across short follow-ups)
+        open_obligation_kind       = ''
+        open_obligation_artifact   = ''
+        open_obligation_source     = ''
+        open_obligation_source_ref = ''
     }
     if (Test-Path -LiteralPath $path) {
         try {
             $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd', 'product_root', 'product_live')) {
+            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd', 'product_root', 'product_live', 'open_obligation_kind', 'open_obligation_artifact', 'open_obligation_source', 'open_obligation_source_ref')) {
                 $v = Get-PromptParleProp $s $k
                 if ($null -ne $v -and "$v" -ne '') { $state[$k] = [string]$v }
             }
@@ -930,7 +935,11 @@ function New-PromptParleSessionSnapshot {
         $SshPort = $null,
         [string]$SshCwd,
         [string]$ProductRoot,
-        [string]$ProductLive
+        [string]$ProductLive,
+        [string]$OpenObligationKind,
+        [string]$OpenObligationArtifact,
+        [string]$OpenObligationSource,
+        [string]$OpenObligationSourceRef
     )
     if (-not $Base) { $Base = Get-PromptParleSessionState }
     $recent = @()
@@ -969,6 +978,10 @@ function New-PromptParleSessionSnapshot {
         ssh_cwd          = if ($PSBoundParameters.ContainsKey('SshCwd')) { [string]$SshCwd } else { [string](Get-PromptParleProp $Base 'ssh_cwd' '') }
         product_root     = if ($PSBoundParameters.ContainsKey('ProductRoot')) { [string]$ProductRoot } else { [string](Get-PromptParleProp $Base 'product_root' '') }
         product_live     = if ($PSBoundParameters.ContainsKey('ProductLive')) { [string]$ProductLive } else { [string](Get-PromptParleProp $Base 'product_live' '') }
+        open_obligation_kind       = if ($PSBoundParameters.ContainsKey('OpenObligationKind')) { [string]$OpenObligationKind } else { [string](Get-PromptParleProp $Base 'open_obligation_kind' '') }
+        open_obligation_artifact   = if ($PSBoundParameters.ContainsKey('OpenObligationArtifact')) { [string]$OpenObligationArtifact } else { [string](Get-PromptParleProp $Base 'open_obligation_artifact' '') }
+        open_obligation_source     = if ($PSBoundParameters.ContainsKey('OpenObligationSource')) { [string]$OpenObligationSource } else { [string](Get-PromptParleProp $Base 'open_obligation_source' '') }
+        open_obligation_source_ref = if ($PSBoundParameters.ContainsKey('OpenObligationSourceRef')) { [string]$OpenObligationSourceRef } else { [string](Get-PromptParleProp $Base 'open_obligation_source_ref' '') }
     }
     return [pscustomobject]$out
 }
@@ -1005,6 +1018,10 @@ function Save-PromptParleSessionState {
         ssh_cwd          = [string](Get-PromptParleProp $State 'ssh_cwd' '')
         product_root     = [string](Get-PromptParleProp $State 'product_root' '')
         product_live     = [string](Get-PromptParleProp $State 'product_live' '')
+        open_obligation_kind       = [string](Get-PromptParleProp $State 'open_obligation_kind' '')
+        open_obligation_artifact   = [string](Get-PromptParleProp $State 'open_obligation_artifact' '')
+        open_obligation_source     = [string](Get-PromptParleProp $State 'open_obligation_source' '')
+        open_obligation_source_ref = [string](Get-PromptParleProp $State 'open_obligation_source_ref' '')
         updated_at       = (Get-Date).ToString('o')
     }
     ($out | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
@@ -1146,16 +1163,13 @@ function Get-PromptParleChatSystemPrompt {
     #>
     return @(
         'You are a capable engineering assistant in a continuous chat (same feel as Grok Build / Claude / Cursor).',
-        'DOCTRINE (non-negotiable): capability = obligation. If this client can read, write, run, or report — YOU make it do that via apply/run blocks. Never dump homework the client could execute. Never ask permission after a clear implement ask. Never "Ready / Name it and I ship / Just say the word" theater.',
-        'PromptParle already optimized this turn for fewer tokens (dial). Tags are live evidence from the user machine: [PROJECT][CONN][SSH][MEM][ATTACH][WEB] + images — trust them.',
-        '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps into those roots — not the whole codebase. Never claim portal/settings/API missing because only a handoff mirror was in SSH cwd.',
-        '[MEM] is auto-compacted prior-turn memory (not the current attachment). Never ask the user to re-paste chat. When [ATTACH]/===== FILE: is present THIS turn, that attachment is PRIMARY evidence — do not reuse a prior document topic or prior executive summary from [MEM] instead of the new file.',
-        'When the user wants work done (do it / implement / lets go / just get it done / stop asking): DO IT this turn. Zero clarifying questions unless a single secret fact is blocking and has no secure default.',
-        'Default to the most secure reasonable choice yourself. Do not interview the user.',
-        'Implement channel (client executes): (1) ```apply path=rel``` FULL file under source_root — client reads-before-write, *.pp-bak backup, refuses stubs/destructive shrinks, NEVER writes live /var/www. (2) ```run``` for allowlisted cmds the client can run (prisma migrate/generate, npm run build/test, git status/diff/log). (3) Client prefixes ## What changed. If migrate is needed after schema edits, emit ```run``` — do not tell the user to run npx.',
-        'Documents for the user (PDF/Word/Excel/CSV/MD/HTML/TXT): emit ```file name=Report.docx``` (or .pdf .xlsx .csv .md .html .txt .json) with FULL content body. Client builds a real file and shows a Download link in chat. Never dump homework to "save as" manually. For spreadsheets put CSV rows (header first) in the block body even when name ends .xlsx.',
-        'Do not claim live-deployed/migrated/committed unless a run block succeeded or evidence shows it. local-ui is vanilla HTML/CSS/JS when in evidence.',
-        'Opaque outcomes are bugs: either land apply/run/file or say clearly what single fact blocked you.'
+        'DOCTRINE 0.18 (non-negotiable): capability = obligation. If the CLIENT can obtain a fact, YOU must not answer with the method. If the CLIENT can produce an artifact, the turn is incomplete until that artifact exists.',
+        'OBSERVE (client-first): [OBSERVE] and [WEB] are results the client already fetched (SSH list/read, web/page). Present those results. NEVER answer a listing/search ask with ```run ls``` or "run this command" or "I will search". Never invent website content from [MEM] when [WEB]/[OBSERVE] is present — or when the user required the website and observe failed, say the hard blocker.',
+        'MUTATE (model proposes, client executes): (1) ```apply path=rel``` FULL file under source_root — client read-before-write, *.pp-bak, refuses stubs, NEVER writes live /var/www. (2) ```run``` only for allowlisted pipeline cmds (prisma/npm/git status-class) the client executes — not as a way to teach the user. Client prefixes ## What changed.',
+        'DELIVER (post-condition): user-facing docs (PDF/Word/Excel/CSV/MD/HTML/TXT) require ```file name=Report.docx``` (or .pdf/.xlsx/.csv/.md/.html/.txt/.json) with FULL body in THIS turn. Client builds the download. NEVER say "Generating now" / "Understood, I will base…" without the ```file``` block in the same reply. Empty promise = product failure.',
+        'Tags are live evidence: [PROJECT][CONN][SSH][MEM][ATTACH][WEB][OBSERVE]. Trust them. [PROJECT] is product bind (source + live). Handoff/docs map into those roots — never claim portal missing because only a handoff mirror was in SSH cwd.',
+        '[MEM] is compact thread state (open asks, delivered names) — not a rival document corpus. When [ATTACH]/===== FILE: is THIS turn, that file is PRIMARY. When open obligation source is web, [WEB]/[OBSERVE] is PRIMARY over [MEM] summaries.',
+        'When the user wants work done (do it / implement / just get it done): DO IT this turn. Zero permission theater. Secure defaults. Opaque outcomes are bugs: land apply/run/file or state the single hard blocker.'
     ) -join ' '
 }
 
@@ -1571,9 +1585,16 @@ function Get-PromptParleWebSearchQuery {
     param([string]$Prompt)
     if (-not $Prompt) { return '' }
     $p = $Prompt.Trim()
+    # Prefer explicit URL
+    if ($p -match 'https?://[^\s<>"'']+') { return $Matches[0].TrimEnd('.,;:)') }
+    # Prefer domain after search/from
+    if ($p -match '(?i)\bsearch\s+([\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)') { return $Matches[1] }
+    if ($p -match '(?i)\bfrom\s+(?:the\s+)?([\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)') { return $Matches[1] }
     # Strip leading search-intent phrases
     $p2 = [regex]::Replace($p, '(?i)^(please\s+)?(search(\s+the\s+web)?(\s+for)?|look\s+up|google|find\s+online|web\s+search(\s+for)?|what\s+is|who\s+is|what''?s\s+the\s+latest|docs?\s+for|documentation\s+for)\s*[:\-]?\s*', '')
     if (-not $p2) { $p2 = $p }
+    # Drop trailing summarize/write clauses
+    $p2 = [regex]::Replace($p2, '(?i)\s+and\s+(summarize|summarise|write|create|make|give|tell).*$', '').Trim()
     # Drop trailing "please" / filler
     $p2 = [regex]::Replace($p2, '(?i)\s+(please|thanks|thank you)[.!?]?\s*$', '').Trim()
     if ($p2.Length -gt 160) { $p2 = $p2.Substring(0, 160).Trim() }
@@ -1581,13 +1602,21 @@ function Get-PromptParleWebSearchQuery {
 }
 
 function Test-PromptParleWebSearchIntent {
+    <# 0.18: structural web observe — URLs/domains/search verbs, not a phrase mole list. #>
     param([string]$Prompt)
     if (-not $Prompt) { return $false }
     $b = $Prompt.ToLowerInvariant()
-    if ($b -match '(?i)\b(search the web|web search|look up|google|find online|according to (the )?(docs|documentation|internet|web))\b') { return $true }
+    if ($b -match 'https?://') { return $true }
+    if ($b -match '(?i)\b(search the web|web search|look up|google|find online|according to (the )?(docs|documentation|internet|web)|on the website|from (their|the) site)\b') { return $true }
+    # "from the website" / "from the X.com website" / "I said from … website"
+    if ($b -match '(?i)\bfrom\b.{0,60}\bwebsite\b') { return $true }
+    if ($b -match '(?i)\b(not (from )?memory|live site|official site)\b') { return $true }
+    if ($b -match '(?i)\bsearch\s+[\w.-]+\.[a-z]{2,}') { return $true }
+    if ($b -match '(?i)\b(?:from|on|at|via)\s+(?:the\s+)?[\w.-]+\.(?:com|org|net|io|ai|dev|co|info|biz)\b') { return $true }
+    # domain present + website/site/web/search language
+    if ($b -match '(?i)\b[\w.-]+\.(?:com|org|net|io|ai|dev)\b' -and $b -match '(?i)\b(website|web site|site|search|online|url|http)\b') { return $true }
     if ($b -match '(?i)^(what is|who is|what''?s the latest|current version of)\b') { return $true }
     if ($b -match '(?i)\b(latest (news|release|version)|as of 20\d{2})\b') { return $true }
-    # Explicit /search is handled by slash router, not here
     return $false
 }
 
@@ -3304,6 +3333,517 @@ fi
     }
 }
 
+# =============================================================================
+# 0.18 — Obligation pipeline (client-first observe · mutate · deliver)
+# Doctrine: if the client can obtain the fact, the model must not answer with the method.
+# =============================================================================
+
+function Get-PromptParleOpenObligation {
+    <# Sticky open document/implement contract from session.json. #>
+    $st = $null
+    try { $st = Get-PromptParleSessionState } catch { $st = $null }
+    $kind = if ($st) { [string](Get-PromptParleProp $st 'open_obligation_kind' '') } else { '' }
+    $art  = if ($st) { [string](Get-PromptParleProp $st 'open_obligation_artifact' '') } else { '' }
+    $src  = if ($st) { [string](Get-PromptParleProp $st 'open_obligation_source' '') } else { '' }
+    $ref  = if ($st) { [string](Get-PromptParleProp $st 'open_obligation_source_ref' '') } else { '' }
+    return [pscustomobject]@{
+        kind     = $kind.Trim().ToLowerInvariant()
+        artifact = $art.Trim()
+        source   = $src.Trim().ToLowerInvariant()
+        source_ref = $ref.Trim()
+    }
+}
+
+function Set-PromptParleOpenObligation {
+    param(
+        [string]$Kind = '',
+        [string]$Artifact = '',
+        [string]$Source = '',
+        [string]$SourceRef = '',
+        [switch]$Clear
+    )
+    try {
+        $st = Get-PromptParleSessionState
+        if ($Clear) {
+            $st = New-PromptParleSessionSnapshot -Base $st `
+                -OpenObligationKind '' -OpenObligationArtifact '' `
+                -OpenObligationSource '' -OpenObligationSourceRef ''
+        } else {
+            $st = New-PromptParleSessionSnapshot -Base $st `
+                -OpenObligationKind $Kind -OpenObligationArtifact $Artifact `
+                -OpenObligationSource $Source -OpenObligationSourceRef $SourceRef
+        }
+        Save-PromptParleSessionState -State $st
+    } catch { }
+}
+
+function Get-PromptParleUrlsFromText {
+    param([string]$Text = '')
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    if (-not $Text) { return @() }
+    foreach ($m in [regex]::Matches($Text, 'https?://[^\s<>\"''\)\]]+')) {
+        $u = $m.Value.Trim().TrimEnd('.,;:)')
+        $k = $u.ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($u) }
+    }
+    return @($out.ToArray())
+}
+
+function Get-PromptParleDomainsFromText {
+    <# Structural domain tokens (not file.ext code names). #>
+    param([string]$Text = '')
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    if (-not $Text) { return @() }
+    $codeExt = '(?i)\.(?:md|txt|ps1|psm1|psd1|php|js|ts|tsx|jsx|py|json|ya?ml|toml|sh|go|rs|cs|java|css|html?|xml|sql|log|cfg|conf|ini|env|csv|lock|prisma|vue|svelte)$'
+    foreach ($m in [regex]::Matches($Text, '(?i)\b(?:www\.)?([a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)+)\b')) {
+        $d = $m.Groups[1].Value.Trim().TrimEnd('.')
+        if (-not $d) { continue }
+        if ($d -match $codeExt) { continue }
+        if ($d -notmatch '(?i)\.(com|org|net|io|ai|dev|co|info|biz|us|uk|gov|edu|app|cloud|tech)(?:\.[a-z]{2})?$') { continue }
+        # skip pure version-like 1.2.3
+        if ($d -match '^\d+(\.\d+)+$') { continue }
+        $k = $d.ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($d) }
+    }
+    return @($out.ToArray())
+}
+
+function Get-PromptParlePathsFromText {
+    <# Absolute or project-looking paths for observe list/read. #>
+    param([string]$Text = '')
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    if (-not $Text) { return @() }
+    foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9_])((?:/home|/var|/opt|/usr|/tmp|/etc|~)[A-Za-z0-9_./+\-]{2,220})')) {
+        $p = $m.Groups[1].Value.Trim().TrimEnd('.,);:')
+        $k = $p.ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($p) }
+    }
+    foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9_])((?:\./|\.\./)[A-Za-z0-9_./+\-]{1,200})')) {
+        $p = $m.Groups[1].Value.Trim().TrimEnd('.,);:')
+        $k = $p.ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($p) }
+    }
+    return @($out.ToArray())
+}
+
+function Resolve-PromptParleTurnObligation {
+    <#
+    .SYNOPSIS
+      0.18: classify owed outcome for this turn (not phrase theater).
+      Modes: observe | mutate | deliver | reason  (primary mode; observe can co-occur with deliver)
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [object[]]$History = @()
+    )
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    $open = Get-PromptParleOpenObligation
+    $urls = @(Get-PromptParleUrlsFromText -Text $p)
+    $domains = @(Get-PromptParleDomainsFromText -Text $p)
+    $paths = @(Get-PromptParlePathsFromText -Text $p)
+
+    $wantWeb = $false
+    if ($urls.Count -gt 0) { $wantWeb = $true }
+    if (Test-PromptParleWebSearchIntent -Prompt $p) { $wantWeb = $true }
+    if ($domains.Count -gt 0 -and ($p -match '(?i)\b(search|website|site|online|web|url|from|summar|capabilit|one.?page|executive)\b')) {
+        $wantWeb = $true
+    }
+    # Sticky source correction: open document + user points at website/domain
+    if ($open.kind -eq 'document' -and (
+            $p -match '(?i)\b(from the website|from (their|the) site|from the web|not (from )?memory|I said from)\b' `
+            -or $p -match '(?i)\bfrom\b.{0,60}\bwebsite\b' `
+            -or $domains.Count -gt 0 -or $urls.Count -gt 0
+        )) {
+        $wantWeb = $true
+    }
+    # Any turn that names a public site as the source of truth for content
+    if (-not $wantWeb -and $domains.Count -gt 0 -and $p -match '(?i)\b(website|web site|from|search|summar|capabilit|official)\b') {
+        $wantWeb = $true
+    }
+
+    $wantList = [bool]($p -match '(?i)\b(list(\s+the)?(\s+dir|\s+directory|\s+files|\s+folder)?|directory listing|dir listing|\bls\b|show (me )?(the )?(files|contents|listing)|what''?s in|whats in|tree\s+(the\s+)?(dir|directory|folder)|contents of)\b')
+    $wantRead = [bool]($p -match '(?i)\b(read|cat|show|open|fetch|get)\b.+\.(md|txt|ps1|php|js|ts|json|yml|yaml|log|conf)\b')
+    if ($paths.Count -gt 0 -and ($wantList -or $p -match '(?i)\b(list|ls|dir|directory|folder|contents)\b')) {
+        $wantList = $true
+    }
+
+    $wantDeliver = [bool]($p -match '(?i)\b(one[\s-]?page|one[\s-]?pager|executive summary|write me (a |an )?(article|summary|brief|report|pdf|docx|document)|deliverable|download(able)?|as (a )?(pdf|docx|markdown|md)\b)')
+    if ($open.kind -eq 'document' -and $p -match '(?i)\b(from the website|from (their|the) site|do it|generate|again|now|updated|strictly)\b') {
+        $wantDeliver = $true
+    }
+
+    $wantMutate = $false
+    try {
+        $tk = Get-PromptParleTurnKind -Prompt $p -History $History
+        if ($tk -eq 'implement') { $wantMutate = $true }
+    } catch { }
+    if ($p -match '(?i)\b(implement|apply path|ship it|get it done|fix the|add the|wire up)\b') { $wantMutate = $true }
+
+    # Primary mode priority: mutate > deliver > observe > reason
+    $mode = 'reason'
+    if ($wantMutate) { $mode = 'mutate' }
+    elseif ($wantDeliver) { $mode = 'deliver' }
+    elseif ($wantWeb -or $wantList -or $wantRead) { $mode = 'observe' }
+
+    $artifact = $open.artifact
+    if ($wantDeliver) {
+        if ($p -match '(?i)one[\s-]?page|executive summary') { $artifact = 'one-page executive summary' }
+        elseif ($p -match '(?i)article') { $artifact = 'article' }
+        elseif (-not $artifact) { $artifact = 'document' }
+    }
+
+    $source = $open.source
+    $sourceRef = $open.source_ref
+    if ($wantWeb) {
+        $source = 'web'
+        if ($urls.Count -gt 0) { $sourceRef = $urls[0] }
+        elseif ($domains.Count -gt 0) { $sourceRef = $domains[0] }
+        elseif ($sourceRef) { }
+        else { $sourceRef = '' }
+    } elseif ($p -match '\[ATTACHED THIS TURN' -or $p -match '(?i)attached') {
+        $source = 'attach'
+    }
+
+    $observe = New-Object System.Collections.Generic.List[string]
+    if ($wantWeb) { [void]$observe.Add('web') }
+    if ($wantList) { [void]$observe.Add('ssh_list') }
+    if ($wantRead) { [void]$observe.Add('ssh_read') }
+
+    return [pscustomobject]@{
+        mode       = $mode
+        observe    = @($observe.ToArray())
+        want_web   = $wantWeb
+        want_list  = $wantList
+        want_read  = $wantRead
+        want_deliver = $wantDeliver
+        want_mutate  = $wantMutate
+        artifact   = $artifact
+        source     = $source
+        source_ref = $sourceRef
+        urls       = $urls
+        domains    = $domains
+        paths      = $paths
+        open_kind  = $open.kind
+        sticky     = [bool]$open.kind
+    }
+}
+
+function Invoke-PromptParleWebPageFetch {
+    <#
+    .SYNOPSIS
+      0.18: fetch a URL/domain page to plain text for [OBSERVE]/[WEB] (client-first).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$UrlOrDomain,
+        [int]$MaxChars = 6000
+    )
+    $raw = $UrlOrDomain.Trim().TrimEnd('/')
+    if (-not $raw) {
+        return [pscustomobject]@{ ok = $false; text = ''; url = ''; notes = @('empty-url') }
+    }
+    $url = $raw
+    if ($url -notmatch '^https?://') { $url = 'https://' + $url }
+    $ua = 'PromptParle/0.18 (desktop observe; +https://promptparle.com)'
+    try {
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 18 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+        $html = [string]$resp.Content
+        if (-not $html) {
+            return [pscustomobject]@{ ok = $false; text = ''; url = $url; notes = @('empty-body') }
+        }
+        $t = [regex]::Replace($html, '(?is)<script[^>]*>.*?</script>', ' ')
+        $t = [regex]::Replace($t, '(?is)<style[^>]*>.*?</style>', ' ')
+        $t = [regex]::Replace($t, '(?is)<noscript[^>]*>.*?</noscript>', ' ')
+        $t = [regex]::Replace($t, '(?s)<[^>]+>', ' ')
+        try { $t = [System.Net.WebUtility]::HtmlDecode($t) } catch { }
+        $t = [regex]::Replace($t, '[ \t]+', ' ')
+        $t = [regex]::Replace($t, '(\r?\n\s*){3,}', "`n`n")
+        $t = $t.Trim()
+        if ($t.Length -gt $MaxChars) { $t = $t.Substring(0, $MaxChars) + "`n…[page budget]" }
+        if ($t.Length -lt 40) {
+            return [pscustomobject]@{ ok = $false; text = $t; url = $url; notes = @('thin-page') }
+        }
+        return [pscustomobject]@{ ok = $true; text = $t; url = $url; notes = @('page-fetch'); bytes = $t.Length }
+    } catch {
+        return [pscustomobject]@{ ok = $false; text = ''; url = $url; notes = @("page-fail: $_") }
+    }
+}
+
+function Invoke-PromptParleSshDirListing {
+    <#
+    .SYNOPSIS
+      0.18 client-first: list a remote directory over SSH (results, not a command for the user).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$RemotePath = '',
+        [int]$MaxChars = 7000
+    )
+    $bind = $null
+    try { $bind = Resolve-PromptParleProductBind } catch { $bind = $null }
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
+    $target = if ($RemotePath) { $RemotePath.Trim() } else { '' }
+    if (-not $target) {
+        if ($bind -and $bind.root) { $target = [string]$bind.root }
+        elseif ($ws -and (Get-PromptParleProp $ws 'ssh_cwd' '')) { $target = [string](Get-PromptParleProp $ws 'ssh_cwd' '') }
+    }
+    if (-not $target) {
+        return [pscustomobject]@{ ok = $false; text = ''; path = ''; notes = @('no-path') }
+    }
+    # Expand relative against product root
+    if ($target -notmatch '^(?:/|~|[A-Za-z]:)') {
+        $root = if ($bind) { [string]$bind.root } else { '' }
+        if ($root) { $target = ($root.TrimEnd('/') + '/' + $target.TrimStart('/')) }
+    }
+    $pathQ = $target -replace "'", "'\''"
+    $remote = @"
+set +e
+path='$pathQ'
+if [ -d "`$path" ]; then
+  echo "PATH `$path"
+  echo "TYPE directory"
+  ls -la -- "`$path" 2>&1 | head -n 200
+  echo "EXIT 0"
+elif [ -e "`$path" ]; then
+  echo "PATH `$path"
+  echo "TYPE file"
+  ls -la -- "`$path" 2>&1
+  echo "EXIT 0"
+else
+  echo "PATH `$path"
+  echo "TYPE missing"
+  echo "EXIT 1"
+fi
+"@
+    try {
+        $r = Invoke-PromptParleSsh -RemoteCommand $remote -TimeoutSec 30 -SkipSessionCwd
+        $out = [string]$r.text
+        if ($out.Length -gt $MaxChars) { $out = $out.Substring(0, $MaxChars) + "`n…[list budget]" }
+        $ok = ($out -match '(?m)^EXIT 0\s*$') -or ($out -match '(?m)^TYPE directory')
+        return [pscustomobject]@{
+            ok   = $ok
+            text = $out
+            path = $target
+            notes = @($(if ($ok) { 'ssh-list' } else { 'ssh-list-miss' }))
+        }
+    } catch {
+        return [pscustomobject]@{ ok = $false; text = "$_"; path = $target; notes = @("ssh-list-fail: $_") }
+    }
+}
+
+function Invoke-PromptParleObservePrep {
+    <#
+    .SYNOPSIS
+      0.18: fulfill observe obligations BEFORE model tokens.
+      Fills [OBSERVE]/[WEB] with real results. Model must present results, not methods.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Obligation,
+        [int]$Dial = 3,
+        [int]$Budget = 12000
+    )
+    $blocks = New-Object System.Collections.Generic.List[string]
+    $notes = New-Object System.Collections.Generic.List[string]
+    $tools = New-Object System.Collections.Generic.List[string]
+    $fulfilled = New-Object System.Collections.Generic.List[string]
+    $failed = New-Object System.Collections.Generic.List[string]
+
+    $webBudget = [Math]::Min(3200, [int]($Budget * 0.18))
+    $pageBudget = [Math]::Min(6000, [int]($Budget * 0.28))
+    $listBudget = [Math]::Min(7000, [int]($Budget * 0.30))
+    if ($Dial -ge 4) {
+        $webBudget = [Math]::Min(1800, $webBudget)
+        $pageBudget = [Math]::Min(3600, $pageBudget)
+        $listBudget = [Math]::Min(4000, $listBudget)
+    }
+
+    # --- WEB / page ---
+    if ($Obligation.want_web) {
+        $didPage = $false
+        $targets = New-Object System.Collections.Generic.List[string]
+        foreach ($u in @($Obligation.urls)) { if ($u) { [void]$targets.Add($u) } }
+        foreach ($d in @($Obligation.domains)) { if ($d) { [void]$targets.Add($d) } }
+        if ($Obligation.source_ref -and $targets.Count -eq 0) { [void]$targets.Add([string]$Obligation.source_ref) }
+
+        foreach ($t in @($targets | Select-Object -First 3)) {
+            $page = Invoke-PromptParleWebPageFetch -UrlOrDomain $t -MaxChars $pageBudget
+            if ($page.ok -and $page.text) {
+                $blocks.Add("[OBSERVE] kind=web_page client-first (0.18)`nurl: $($page.url)`nrule: Present these results. Do NOT answer with a search command or invent from [MEM].`n---`n$($page.text)")
+                [void]$fulfilled.Add("web_page:$($page.url)")
+                [void]$notes.Add('observe-page')
+                [void]$tools.Add('web_page')
+                $didPage = $true
+            } else {
+                foreach ($n in @($page.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+                [void]$failed.Add("web_page:$t")
+            }
+        }
+
+        # Always also run a brief search query when web wanted (fills gaps / multi-hit)
+        try {
+            $wq = ''
+            if ($Obligation.source_ref) { $wq = [string]$Obligation.source_ref }
+            elseif ($targets.Count -gt 0) { $wq = [string]$targets[0] }
+            else {
+                $wq = Get-PromptParleWebSearchQuery -Prompt ([string](Get-PromptParleProp $Obligation 'prompt' ''))
+            }
+            # If obligation carried raw user prompt via note field we may not have it — caller sets query
+            if (-not $wq -and $Obligation.PSObject.Properties['query'] -and $Obligation.query) {
+                $wq = [string]$Obligation.query
+            }
+            if ($wq) {
+                $web = Invoke-PromptParleWebSearchLocal -Query $wq -MaxResults 4 -MaxChars $webBudget
+                if ($web.ok -and $web.text) {
+                    $blocks.Add($web.text)
+                    [void]$fulfilled.Add("web_search:$wq")
+                    [void]$notes.Add($(if ($web.cached) { 'web-cache' } else { 'web' }))
+                    [void]$tools.Add('web_search')
+                }
+            }
+        } catch {
+            [void]$notes.Add('web-skip')
+        }
+
+        if (-not $didPage -and $fulfilled.Count -eq 0) {
+            $blocks.Add("[OBSERVE] kind=web_failed client-first (0.18)`nrule: Client could not fetch the website. Do NOT invent site content from [MEM]. State the hard blocker; do not say Generating from the website.")
+            [void]$notes.Add('observe-web-empty')
+        }
+    }
+
+    # --- SSH directory listing ---
+    if ($Obligation.want_list) {
+        $listPaths = New-Object System.Collections.Generic.List[string]
+        foreach ($p in @($Obligation.paths)) {
+            # Prefer directories over file-looking paths for list
+            if ($p -match '\.[A-Za-z0-9]{1,8}$' -and $p -notmatch '/$') { continue }
+            [void]$listPaths.Add($p)
+        }
+        if ($listPaths.Count -eq 0) { [void]$listPaths.Add('') }  # default product root / ssh_cwd
+
+        $anyList = $false
+        foreach ($lp in @($listPaths | Select-Object -First 2)) {
+            $listing = Invoke-PromptParleSshDirListing -RemotePath $lp -MaxChars $listBudget
+            if ($listing.ok -and $listing.text) {
+                $blocks.Add("[OBSERVE] kind=ssh_list client-first (0.18)`npath: $($listing.path)`nrule: Present this listing as the answer. NEVER reply with ```run ls``` or teach the user the command — results are already here.`n---`n$($listing.text)")
+                [void]$fulfilled.Add("ssh_list:$($listing.path)")
+                [void]$notes.Add('observe-ssh-list')
+                [void]$tools.Add('ssh')
+                $anyList = $true
+            } else {
+                foreach ($n in @($listing.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+                [void]$failed.Add("ssh_list:$($listing.path)")
+            }
+        }
+        if (-not $anyList) {
+            $blocks.Add("[OBSERVE] kind=ssh_list_failed client-first (0.18)`nrule: Client could not list the remote path. State the hard blocker. Do not invent a directory listing or dump ```run ls``` as homework.")
+            [void]$notes.Add('observe-list-empty')
+        }
+    }
+
+    $text = ($blocks -join "`n`n").Trim()
+    return [pscustomobject]@{
+        text      = $text
+        notes     = @($notes.ToArray())
+        tools     = @($tools | Select-Object -Unique)
+        fulfilled = @($fulfilled.ToArray())
+        failed    = @($failed.ToArray())
+        ok        = ($fulfilled.Count -gt 0)
+    }
+}
+
+function Update-PromptParleOpenObligationFromTurn {
+    <#
+    .SYNOPSIS
+      0.18: maintain sticky open document/implement contract after a turn.
+    #>
+    param(
+        $Obligation,
+        [string]$ResponseText = '',
+        [int]$ExportCount = 0,
+        [int]$ApplyCount = 0,
+        [int]$RunCount = 0
+    )
+    if (-not $Obligation) { return }
+    try {
+        if ($Obligation.mode -eq 'mutate' -or $Obligation.want_mutate) {
+            if (($ApplyCount + $RunCount) -gt 0) {
+                # landed work — clear implement sticky
+                if ((Get-PromptParleOpenObligation).kind -eq 'implement') {
+                    Set-PromptParleOpenObligation -Clear
+                }
+            } else {
+                Set-PromptParleOpenObligation -Kind 'implement' -Artifact 'code change' -Source 'project' -SourceRef ''
+            }
+            return
+        }
+        if ($Obligation.mode -eq 'deliver' -or $Obligation.want_deliver) {
+            if ($ExportCount -gt 0) {
+                Set-PromptParleOpenObligation -Clear
+            } else {
+                $src = if ($Obligation.source) { $Obligation.source } else { 'none' }
+                $ref = if ($Obligation.source_ref) { $Obligation.source_ref } else { '' }
+                $art = if ($Obligation.artifact) { $Obligation.artifact } else { 'document' }
+                Set-PromptParleOpenObligation -Kind 'document' -Artifact $art -Source $src -SourceRef $ref
+            }
+            return
+        }
+        # Source-only correction on existing open document
+        $open = Get-PromptParleOpenObligation
+        if ($open.kind -eq 'document' -and $Obligation.want_web) {
+            $ref = if ($Obligation.source_ref) { $Obligation.source_ref } else { $open.source_ref }
+            Set-PromptParleOpenObligation -Kind 'document' -Artifact $open.artifact -Source 'web' -SourceRef $ref
+        }
+    } catch { }
+}
+
+function Test-PromptParleDeliverOwed {
+    param($Obligation, [string]$ResponseText = '')
+    if (-not $Obligation) { return $false }
+    if ($Obligation.mode -eq 'deliver' -or $Obligation.want_deliver) { return $true }
+    $open = Get-PromptParleOpenObligation
+    if ($open.kind -eq 'document' -and $Obligation.want_web) { return $true }
+    # Theater promised a deliverable
+    if ($ResponseText -match '(?i)Generating (updated |the )?(deliverable|summary|one-?pager|document)') { return $true }
+    return $false
+}
+
+function Invoke-PromptParleDeliverFailClosed {
+    <# Append fail-closed banner when document was owed but no ```file``` landed. #>
+    param(
+        [string]$ResponseText = '',
+        [int]$ExportCount = 0
+    )
+    if ($ExportCount -gt 0) {
+        return [pscustomobject]@{ text = $ResponseText; fail_closed = $false }
+    }
+    $hasFile = [bool]($ResponseText -match '(?m)```(?:file|deliver)\s+')
+    if ($hasFile) {
+        # blocks present but deliver pipeline produced 0 — still fail-closed
+        return [pscustomobject]@{
+            text = $ResponseText + "`n`n## Deliver incomplete`n_Client saw ``file`` fences but built 0 downloads (empty/unsupported body). Capability=obligation: a document ask is not done until a download exists._`n"
+            fail_closed = $true
+        }
+    }
+    $banner = @(
+        '## Deliver FAIL-CLOSED (0.18)',
+        'Document was owed this turn but no file deliverable was produced (no download built).',
+        'Capability=obligation: do not accept "Understood / Generating now" as completion. Re-ask or continue until a real file body lands (or state the single hard blocker, e.g. no WEB evidence).',
+        '',
+        '---',
+        ''
+    ) -join "`n"
+    return [pscustomobject]@{
+        text = $banner + $ResponseText
+        fail_closed = $true
+    }
+}
+
 function Invoke-PromptParleAgentLocalPrep {
     <#
     .SYNOPSIS
@@ -3563,9 +4103,60 @@ function Invoke-PromptParleAgentLocalPrep {
         $notes.Add('ssh-product-skip')
     }
 
-    # 3) Optional web search brief (intent-only; char-capped; cached)
+    # 3) 0.18 obligation resolve + client-first OBSERVE (before model tokens)
     $blob = ("{0} {1}" -f $pr, $prof).ToLowerInvariant()
-    if (Test-PromptParleWebSearchIntent -Prompt $pr) {
+    $obligation = $null
+    try {
+        $obligation = Resolve-PromptParleTurnObligation -Prompt $pr -History $History
+        $notes.Add(('obligation:' + $obligation.mode))
+        if ($obligation.observe -and $obligation.observe.Count -gt 0) {
+            $notes.Add(('observe:' + ($obligation.observe -join '+')))
+        }
+    } catch {
+        $notes.Add('obligation-skip')
+    }
+
+    if ($obligation -and ($obligation.want_web -or $obligation.want_list)) {
+        try {
+            # Attach query for web_search fallback
+            try { $obligation | Add-Member -NotePropertyName query -NotePropertyValue (Get-PromptParleWebSearchQuery -Prompt $pr) -Force } catch {
+                try { $obligation | Add-Member -NotePropertyName query -NotePropertyValue $pr -Force } catch { }
+            }
+            $obs = Invoke-PromptParleObservePrep -Obligation $obligation -Dial $Dial -Budget $budget
+            if ($obs.text) {
+                if ($ctx) { $ctx = $ctx + "`n`n" + $obs.text } else { $ctx = [string]$obs.text }
+            }
+            foreach ($n in @($obs.notes)) { if ($n) { $notes.Add([string]$n) } }
+            foreach ($t in @($obs.tools)) { if ($t) { $tools.Add([string]$t) } }
+            if ($obs.fulfilled -and $obs.fulfilled.Count -gt 0) {
+                $notes.Add(('observe-ok:' + $obs.fulfilled.Count))
+                # Hard directive: results already obtained — do not answer with the method
+                $obsDir = @(
+                    '[CLIENT DIRECTIVE — observe fulfilled · capability=obligation 0.18]',
+                    'The client ALREADY obtained the requested facts ([OBSERVE]/[WEB] above).',
+                    'Answer from those results only. NEVER emit ```run ls``` / search homework / "I will fetch" theater.',
+                    'If the user also owes a document, emit ```file name=…``` with FULL body in THIS turn — no "Generating now" without the file block.'
+                ) -join ' '
+                if ($pr -notmatch '\[CLIENT DIRECTIVE — observe') {
+                    $pr = $pr + "`n`n" + $obsDir
+                    $notes.Add('observe-directive')
+                }
+            } elseif ($obligation.want_web -or $obligation.want_list) {
+                $failDir = @(
+                    '[CLIENT DIRECTIVE — observe failed · capability=obligation 0.18]',
+                    'Client could not fill required observe evidence. State the single hard blocker.',
+                    'Do NOT invent website or directory content from [MEM]. Do NOT dump commands as the answer.'
+                ) -join ' '
+                if ($pr -notmatch '\[CLIENT DIRECTIVE — observe') {
+                    $pr = $pr + "`n`n" + $failDir
+                    $notes.Add('observe-fail-directive')
+                }
+            }
+        } catch {
+            $notes.Add('observe-prep-skip')
+        }
+    } elseif (Test-PromptParleWebSearchIntent -Prompt $pr) {
+        # Residual thin web brief when obligation resolver missed but structural web intent hit
         try {
             $wq = Get-PromptParleWebSearchQuery -Prompt $pr
             if ($wq) {
@@ -3582,6 +4173,27 @@ function Invoke-PromptParleAgentLocalPrep {
         } catch {
             $notes.Add('web-skip')
         }
+    }
+
+    # Deliver sticky: if document owed, remind model of post-condition
+    if ($obligation -and ($obligation.mode -eq 'deliver' -or $obligation.want_deliver)) {
+        $delDir = @(
+            '[CLIENT DIRECTIVE — deliver owed · capability=obligation 0.18]',
+            'User is owed a real downloadable document this turn.',
+            'Emit ```file name=Report.md``` (or .pdf/.docx/.xlsx) with FULL content body NOW.',
+            'Never end with "Understood / Generating…" without the file fence. Client builds the download link.'
+        ) -join ' '
+        if ($pr -notmatch '\[CLIENT DIRECTIVE — deliver') {
+            $pr = $pr + "`n`n" + $delDir
+            $notes.Add('deliver-directive')
+        }
+        # Persist sticky early so short follow-ups keep the contract
+        try {
+            $src = if ($obligation.source) { $obligation.source } else { 'none' }
+            $ref = if ($obligation.source_ref) { $obligation.source_ref } else { '' }
+            $art = if ($obligation.artifact) { $obligation.artifact } else { 'document' }
+            Set-PromptParleOpenObligation -Kind 'document' -Artifact $art -Source $src -SourceRef $ref
+        } catch { }
     }
 
     # 4) At most ONE structure/slice pack when context is empty/thin
@@ -3699,6 +4311,8 @@ function Invoke-PromptParleAgentLocalPrep {
         budget        = $budget
         chars_in      = $charsIn
         chars_out     = $charsOut
+        obligation    = $obligation
+        turn_kind     = $turnKind
     }
 }
 
@@ -5262,11 +5876,11 @@ function Get-PromptParleHomeworkCommands {
 function Test-PromptParleTheaterText {
     <#
     .SYNOPSIS
-      Detect status theater / permission loops that violate capability=obligation.
+      Detect status theater / permission loops / empty-promise deliver that violate capability=obligation.
     #>
     param([string]$Text = '')
     if (-not $Text) { return $false }
-    return [bool]($Text -match '(?i)(Ready for the (named )?task|Name it and I ship|spine locked|Just say the word|Would you like me to (actually )?implement|Say the word and I|Ready when you are|Awaiting (your )?(go|approval)|I can implement (this|that) (if|when))')
+    return [bool]($Text -match '(?i)(Ready for the (named )?task|Name it and I ship|spine locked|Just say the word|Would you like me to (actually )?implement|Say the word and I|Ready when you are|Awaiting (your )?(go|approval)|I can implement (this|that) (if|when)|Generating (updated |the )?(deliverable|summary|document|one-?pager|file) now|I''?ll base .{0,80}(strictly )?on|Understood\.?\s*I''?ll)')
 }
 
 function Invoke-PromptParleApplyResponseBlocks {
@@ -9365,6 +9979,7 @@ function Start-PromptParleLocalServer {
                         } catch { }
 
                         # You → local prep → cloud optimize (dial) → model. No agent router.
+                        $prep = $null
                         try {
                             $prepParams = @{
                                 Prompt       = $prompt
@@ -9385,11 +10000,23 @@ function Start-PromptParleLocalServer {
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
                         $turnForRt = 'chat'
                         try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt -History $histArr } catch { }
-                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Doctrine: capability=obligation — if the client can act, use apply/run; never dump homework the client can run.'
-                        if ($turnForRt -eq 'implement') {
-                            $rtNote = 'IMPLEMENT TURN · capability=obligation. User already authorized work — zero permission questions. Emit full-file ```apply path=...``` for every change under source_root; emit ```run``` for migrate/build the client can execute. NEVER tell the user to run npx/git/npm. No Ready/Name-it theater. Opaque outcomes are bugs.'
+                        $oblForRt = $null
+                        try { $oblForRt = Get-PromptParleProp $prep 'obligation' $null } catch { $oblForRt = $null }
+                        if (-not $oblForRt) {
+                            try { $oblForRt = Resolve-PromptParleTurnObligation -Prompt $prompt -History $histArr } catch { }
+                        }
+                        $rtNote = 'Prep ran (0.18). Tags may include [PROJECT][CONN][SSH][MEM][ATTACH][WEB][OBSERVE]. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn.'
+                        if ($oblForRt -and $oblForRt.mode -eq 'mutate') {
+                            $rtNote = 'MUTATE TURN 0.18 · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
+                            $turnForRt = 'implement'
+                        } elseif ($oblForRt -and $oblForRt.mode -eq 'deliver') {
+                            $rtNote = 'DELIVER TURN 0.18 · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
+                        } elseif ($oblForRt -and $oblForRt.mode -eq 'observe') {
+                            $rtNote = 'OBSERVE TURN 0.18 · client already filled [OBSERVE]/[WEB] when possible. Present results only. NEVER ```run ls``` or search-homework as the answer.'
+                        } elseif ($turnForRt -eq 'implement') {
+                            $rtNote = 'IMPLEMENT TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` for migrate/build client executes. NEVER tell the user to run npx. No theater.'
                         } elseif ($turnForRt -eq 'question') {
-                            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/evidence first. No implement theater. If answer requires a safe read-only run, use ```run``` (git status/diff) instead of homework.'
+                            $rtNote = 'QUESTION TURN 0.18. Answer from [PROJECT]/[OBSERVE]/[WEB]/evidence first. Client-first observe already ran when applicable — do not answer with methods/commands.'
                         }
                         # Document turns: this-turn attachment beats prior MEM summaries
                         try {
@@ -9516,7 +10143,7 @@ function Start-PromptParleLocalServer {
                                 $respText = $respText + "`n`n**Implement pipeline failed:** $_"
                             }
                         }
-                        # 0.17: document deliverables — ```file name=Report.docx``` → real file + download URL
+                        # 0.17/0.18: document deliverables — ```file name=Report.docx``` → real file + download URL
                         $deliverInfo = $null
                         if ($respText -and ($respText -match '(?m)```(?:file|deliver)\s+')) {
                             try {
@@ -9544,6 +10171,32 @@ function Start-PromptParleLocalServer {
                                 Write-Host ("  chat: deliver pipeline failed: {0}" -f $_) -ForegroundColor Yellow
                                 $respText = $respText + "`n`n**Document deliver failed:** $_"
                             }
+                        }
+                        # 0.18: deliver fail-closed when document was owed but no export
+                        try {
+                            $expN = 0
+                            if ($deliverInfo) { $expN = [int]$deliverInfo.count }
+                            $oweDeliver = $false
+                            if ($oblForRt) { $oweDeliver = Test-PromptParleDeliverOwed -Obligation $oblForRt -ResponseText $respText }
+                            if ($oweDeliver) {
+                                $fc = Invoke-PromptParleDeliverFailClosed -ResponseText $respText -ExportCount $expN
+                                if ($fc.fail_closed) {
+                                    $respText = [string]$fc.text
+                                    Write-Host '  chat: FAIL-CLOSED deliver turn (no file artifact)' -ForegroundColor Yellow
+                                    if ($metaOut) { $metaOut.deliver_fail_closed = $true }
+                                }
+                            }
+                            # sticky open obligation update
+                            $appN = 0; $runN = 0
+                            if ($applyInfo) {
+                                try { $appN = [int]$applyInfo.count } catch { }
+                                try { $runN = [int]$applyInfo.run_count } catch { }
+                            }
+                            if ($oblForRt) {
+                                Update-PromptParleOpenObligationFromTurn -Obligation $oblForRt -ResponseText $respText -ExportCount $expN -ApplyCount $appN -RunCount $runN
+                            }
+                        } catch {
+                            Write-Host ("  chat: obligation post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
                         }
                         $payload = [ordered]@{
                             response         = $respText
