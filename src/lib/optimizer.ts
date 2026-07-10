@@ -1,7 +1,9 @@
 import type { OptimizationProfileId } from "./constants";
 import { estimateTokens } from "./tokens";
 import { maskSecrets } from "./secrets";
-import { compressDocument, looksLikeDocument } from "./document-compress";
+import { runContextFleet } from "./context-fleet";
+import { buildImageSignal } from "./image-signal";
+import type { AdapterImage } from "./adapters/types";
 
 export type OptimizeInput = {
   prompt: string;
@@ -9,6 +11,8 @@ export type OptimizeInput = {
   profile?: OptimizationProfileId | string;
   /** soft cap for optimized output tokens (estimate) */
   maxTokens?: number;
+  /** Vision images — binary still forwarded separately; we add a focus brief */
+  images?: AdapterImage[];
 };
 
 export type OptimizeResult = {
@@ -22,7 +26,7 @@ export type OptimizeResult = {
   secretsMasked: boolean;
   secretFindings: string[];
   notes: string[];
-  /** e.g. signal-brief | log-dedupe | passthrough */
+  /** e.g. signal-brief-hybrid | code-brief | sheet-card | fleet | log-dedupe */
   strategy?: string;
   /** optional structured impress stats for UI */
   signals?: Record<string, number | string | boolean>;
@@ -58,33 +62,6 @@ function stripChattyFiller(text: string): string {
       return true;
     })
     .join("\n");
-}
-
-/**
- * Drop exact duplicate consecutive lines.
- * Aggressive mode also caps non-consecutive identical lines (logs).
- */
-function dedupeLines(text: string, aggressive: boolean): string {
-  const lines = text.split("\n");
-  const out: string[] = [];
-  const counts = new Map<string, number>();
-  let prev = "";
-
-  for (const line of lines) {
-    const normalized = line.trimEnd();
-    if (normalized === prev && normalized.trim() !== "") {
-      continue;
-    }
-    if (aggressive && normalized.trim()) {
-      const key = normalized.trim();
-      const c = (counts.get(key) || 0) + 1;
-      counts.set(key, c);
-      if (c > 2) continue;
-    }
-    out.push(line);
-    prev = normalized;
-  }
-  return out.join("\n");
 }
 
 function truncateToTokenBudget(text: string, maxTokens: number): string {
@@ -140,12 +117,12 @@ function finalizeStats(
 }
 
 /**
- * Context optimizer.
- *
- * Paths:
- *  - Logs / repetitive noise → aggressive line dedupe
- *  - Well-formed documents → query-aware section keep + densify + chrome strip
- *  - Always refuse to expand the payload vs the user input
+ * Context optimizer — modality fleet:
+ *  - Documents → SIGNAL BRIEF (hybrid)
+ *  - Code → CODE BRIEF (signatures + query-deep bodies)
+ *  - Sheets → SHEET CARD (schema + stats + samples)
+ *  - Logs → dedupe
+ *  - Images → IMAGE SIGNAL focus brief (pixels still go multimodal)
  */
 export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   const profile = input.profile || "general";
@@ -175,71 +152,46 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     context = collapseBlankLines(stripChattyFiller(context));
   }
 
-  // 3) Path selection: SIGNAL BRIEF (docs) vs log dedupe
-  const aggressiveLog = profile === "log-analysis";
+  // 3) Context fleet (docs / code / sheets / logs / multi-file)
   let strategy = "lean";
   let signals: OptimizeResult["signals"] | undefined;
 
   if (context) {
-    const preferSignalBrief =
-      profile === "documentation" ||
-      profile === "executive-summary" ||
-      (looksLikeDocument(context) && profile !== "log-analysis");
+    const fleet = runContextFleet(context, { prompt, profile });
+    if (fleet.applied) {
+      context = fleet.text;
+      notes.push(...fleet.notes);
+      strategy = fleet.strategy || "fleet";
+      signals = { ...fleet.signals };
+    } else if (fleet.notes.length) {
+      notes.push(...fleet.notes);
+    }
+  }
 
-    if (preferSignalBrief && !aggressiveLog) {
-      const doc = compressDocument(context, {
-        prompt,
-        profile,
-      });
-      if (doc.applied) {
-        context = doc.text;
-        notes.push(...doc.notes);
-        strategy = doc.strategy || "signal-brief";
-        signals = {
-          ...doc.stats,
-          strategy: doc.strategy,
-        };
-      } else {
-        if (doc.notes.length) notes.push(...doc.notes);
-        // still try light dedupe
-        const before = context.length;
-        context = dedupeLines(context, false);
-        if (context.length < before) {
-          strategy = "log-dedupe";
-          notes.push("Removed consecutive duplicate lines");
-        }
-      }
-    } else {
-      const before = context.length;
-      context = dedupeLines(
-        context,
-        aggressiveLog || profile === "security-review"
-      );
-      if (context.length < before) {
-        strategy = "log-dedupe";
-        notes.push(
-          aggressiveLog || profile === "security-review"
-            ? "Deduplicated repetitive log/context lines"
-            : "Removed consecutive duplicate lines"
-        );
-      }
-      if (looksLikeDocument(context) && context.length > 1200) {
-        const doc = compressDocument(context, { prompt, profile });
-        if (doc.applied) {
-          context = doc.text;
-          notes.push(...doc.notes);
-          strategy = doc.strategy || "signal-brief";
-          signals = { ...doc.stats, strategy: doc.strategy };
-        }
+  // 4) Image focus brief (text channel) — binaries forwarded separately
+  if (input.images && input.images.length > 0) {
+    const img = buildImageSignal(input.images, { prompt, profile });
+    if (img.applied && img.text) {
+      // Prepend image signal to context so vision + text share one plan
+      context = context ? `${img.text}\n\n${context}` : img.text;
+      notes.push(...img.notes);
+      signals = {
+        ...(signals || {}),
+        ...img.stats,
+        imageStrategy: img.strategy,
+      };
+      if (strategy === "lean" || strategy === "passthrough") {
+        strategy = "image-signal";
+      } else if (!String(strategy).includes("image")) {
+        strategy = `fleet+image`;
       }
     }
   }
-  prompt = dedupeLines(prompt, false);
 
-  // 4) Lean payload
+  // 5) Lean payload
   let optimized = buildPayload(prompt, context);
 
-  // 5) Token budget
+  // 6) Token budget
   const maxTokens = input.maxTokens ?? 24000;
   const beforeBudget = optimized;
   optimized = truncateToTokenBudget(optimized, maxTokens);
@@ -256,29 +208,45 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     { strategy, signals }
   );
 
-  // 6) NEVER expand vs the user's original input
-  if (result.expanded) {
+  // 7) NEVER expand vs the user's original input
+  // Note: image brief can add text while images aren't in originalTokens —
+  // allow small growth only when images are present, else pass-through.
+  const imageSlack =
+    input.images && input.images.length > 0
+      ? Math.min(400, 80 * input.images.length + 120)
+      : 0;
+
+  if (result.expanded && result.optimizedTokens > originalTokens + imageSlack) {
     const passthrough = truncateToTokenBudget(
       collapseBlankLines(
         [promptScan.text, contextScan.text].filter(Boolean).join("\n\n")
       ),
       maxTokens
     );
+    // If we have images, still attach a minimal one-line focus so vision isn't blind
+    let ptText = passthrough;
+    let ptNotes = notes.length
+      ? [...notes, "Used pass-through to avoid expansion"]
+      : ["Pass-through (no safe reduction without growing the payload)"];
+    if (input.images && input.images.length > 0) {
+      const mini = `Images attached: ${input.images.length}. Prefer OCR of text/errors/tables in images.`;
+      ptText = `${passthrough}\n\n${mini}`;
+      ptNotes = [...ptNotes, "Kept minimal image focus line"];
+    }
     const pt = finalizeStats(
-      passthrough,
+      ptText,
       originalTokens,
       profile,
       secretFindings,
-      notes.length
-        ? [...notes, "Used pass-through to avoid expansion"]
-        : ["Pass-through (no safe reduction without growing the payload)"]
+      ptNotes,
+      { strategy: strategy === "lean" ? "passthrough" : strategy, signals }
     );
     if (pt.optimizedTokens <= result.optimizedTokens) {
       result = pt;
     }
   }
 
-  if (result.expanded && result.optimizedTokens > originalTokens) {
+  if (result.expanded && result.optimizedTokens > originalTokens + imageSlack) {
     const safe = truncateToTokenBudget(rawCombined.trim(), maxTokens);
     result = finalizeStats(safe, originalTokens, profile, secretFindings, [
       ...notes,
@@ -299,6 +267,25 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
         ],
       };
     }
+  }
+
+  // Image brief added intentional tokens — don't flag as bug expansion
+  if (
+    imageSlack > 0 &&
+    result.expanded &&
+    result.optimizedTokens <= originalTokens + imageSlack
+  ) {
+    result = {
+      ...result,
+      expanded: false,
+      reductionPercent: Math.max(
+        0,
+        Math.round(
+          ((originalTokens - result.optimizedTokens) / Math.max(1, originalTokens)) *
+            100
+        )
+      ),
+    };
   }
 
   return result;

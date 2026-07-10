@@ -92,13 +92,17 @@ export async function runOptimizedPrompt(
     context: input.context,
     profile,
     maxTokens: input.maxTokens,
+    images,
   });
 
   const notes = [...optimized.notes];
   if (images.length > 0) {
-    notes.push(
-      `${images.length} image(s) attached — passed to the model (not text-optimized)`
-    );
+    const hasImageNote = notes.some((n) => /image/i.test(n));
+    if (!hasImageNote) {
+      notes.push(
+        `${images.length} image(s) attached — full pixels to vision; text channel got IMAGE SIGNAL focus brief`
+      );
+    }
   }
 
   const baseMeta = {

@@ -161,8 +161,8 @@
       <div class="attach-bar">
         <button type="button" class="secondary" id="attachBtn">Attach files</button>
         <input type="file" id="fileInput" multiple
-          accept=".txt,.md,.log,.json,.xml,.yml,.yaml,.csv,.ps1,.psm1,.psd1,.cs,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.bash,.conf,.cfg,.ini,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
-        <span class="hint">Drop files here · paste screenshot (Ctrl+V) · max 8 files / 4 images</span>
+          accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
+        <span class="hint">Docs · code · CSV · paste screenshot · fleet keeps high fidelity, fewer tokens</span>
       </div>
       <div class="chips" id="chips"></div>
       <div class="checks">
@@ -203,9 +203,10 @@
     let idSeq = 1;
 
     const TEXT_EXT = new Set([
-      'txt','md','log','json','xml','yml','yaml','csv','ps1','psm1','psd1','cs','ts','tsx','js','jsx',
-      'py','go','rs','java','php','rb','sql','html','htm','css','scss','sh','bash','conf','cfg','ini',
-      'toml','env','dockerfile','makefile','c','h','cpp','hpp','swift','kt','kts','vue','svelte','r'
+      'txt','md','markdown','rst','log','json','xml','yml','yaml','csv','tsv','tab','ps1','psm1','psd1',
+      'cs','ts','tsx','js','jsx','mjs','cjs','py','go','rs','java','php','rb','sql','html','htm','css',
+      'scss','less','sh','bash','zsh','conf','cfg','ini','toml','env','dockerfile','makefile','c','h',
+      'cpp','hpp','cc','swift','kt','kts','vue','svelte','r','graphql','gql','proto','java','kt'
     ]);
     const MAX_FILES = 8;
     const MAX_IMAGES = 4;
@@ -248,16 +249,22 @@
           (meta.model ? '<span>' + meta.model + '</span>' : '');
         div.appendChild(m);
 
-        // Impressive savings card for real compressions / signal-brief
-        if (!expanded && (pct >= 8 || meta.strategy === 'signal-brief')) {
+        // Impressive savings card for fleet / signal-brief / code / sheet
+        const strat = String(meta.strategy || '');
+        const fleetish = /signal-brief|code-brief|sheet-card|fleet|image-signal/.test(strat);
+        if (!expanded && (pct >= 8 || fleetish)) {
           const wow = document.createElement('div');
           wow.className = 'wow';
           const saved = Math.max(0, orig - opt);
           const sig = meta.signals || {};
           const chips = [];
           if (meta.strategy) chips.push('<span class="chip2">strategy <strong>' + meta.strategy + '</strong></span>');
+          if (sig.fleetParts != null) chips.push('<span class="chip2">fleet parts <strong>' + sig.fleetParts + '</strong></span>');
           if (sig.obligations != null) chips.push('<span class="chip2">requirements <strong>' + sig.obligations + '</strong></span>');
           if (sig.numbers != null) chips.push('<span class="chip2">numbers <strong>' + sig.numbers + '</strong></span>');
+          if (sig.unitsFull != null) chips.push('<span class="chip2">code full units <strong>' + sig.unitsFull + '</strong></span>');
+          if (sig.rows != null) chips.push('<span class="chip2">sheet rows <strong>' + sig.rows + '</strong></span>');
+          if (sig.images != null) chips.push('<span class="chip2">images <strong>' + sig.images + '</strong></span>');
           if (sig.evidenceQuotes != null) chips.push('<span class="chip2">evidence <strong>' + sig.evidenceQuotes + '</strong></span>');
           if (sig.skippedSections != null) chips.push('<span class="chip2">deferred sections <strong>' + sig.skippedSections + '</strong></span>');
           if (meta.notes && meta.notes[0]) chips.push('<span class="chip2">' + String(meta.notes[0]).slice(0, 90) + '</span>');
@@ -492,7 +499,7 @@
       });
     }
 
-    addMsg('sys', 'Local PromptParle ready. Attach code files or paste a screenshot, pick Developer profile, then ask a question.');
+    addMsg('sys', 'Local PromptParle ready. Attach docs/code/CSV or paste a screenshot — context fleet compresses each type for high fidelity at low tokens.');
 
     async function loadProviders() {
       const res = await fetch('/api/providers');

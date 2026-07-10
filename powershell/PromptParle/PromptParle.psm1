@@ -604,7 +604,9 @@ function Invoke-PromptParle {
     process {
         if ($null -eq $InputObject) { return }
         if ($InputObject -is [System.IO.FileInfo]) {
-            $contextChunks.Add((Get-Content -LiteralPath $InputObject.FullName -Raw -ErrorAction Stop))
+            $leaf = $InputObject.Name
+            $raw = Get-Content -LiteralPath $InputObject.FullName -Raw -ErrorAction Stop
+            $contextChunks.Add("===== FILE: $leaf =====`n$raw")
         } elseif ($InputObject -is [string]) {
             $contextChunks.Add($InputObject)
         } else {
@@ -622,7 +624,9 @@ function Invoke-PromptParle {
             if (-not (Test-Path -LiteralPath $Path)) {
                 throw "Context file not found: $Path"
             }
-            $contextChunks.Add((Get-Content -LiteralPath $Path -Raw -ErrorAction Stop))
+            $leaf = Split-Path -Leaf $Path
+            $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+            $contextChunks.Add("===== FILE: $leaf =====`n$raw")
         }
 
         $contextText = $null
@@ -1459,8 +1463,16 @@ function Start-PromptParle {
                         continue
                     }
                     try {
-                        $sessionContext = Get-Content -LiteralPath $arg -Raw -ErrorAction Stop
-                        Write-Host ("Loaded context from file ({0} chars)." -f $sessionContext.Length) -ForegroundColor Green
+                        $rawFile = Get-Content -LiteralPath $arg -Raw -ErrorAction Stop
+                        $leaf = Split-Path -Leaf $arg
+                        # Tag for server context fleet (code/doc/sheet specialists)
+                        $tagged = "===== FILE: $leaf =====`n$rawFile"
+                        if ($sessionContext) {
+                            $sessionContext = "$sessionContext`n`n$tagged"
+                        } else {
+                            $sessionContext = $tagged
+                        }
+                        Write-Host ("Loaded $leaf ({0} chars) — fleet will route by type." -f $rawFile.Length) -ForegroundColor Green
                     } catch {
                         Write-Host "Could not read file: $_" -ForegroundColor Red
                     }
