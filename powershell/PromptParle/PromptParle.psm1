@@ -5266,7 +5266,8 @@ function Get-PromptParleUnverifiedPhrases {
     <#
     .SYNOPSIS
       Scan model response for multi-word claims not present in evidence corpus.
-      Conservative: flag 2–5 word phrases with substance tokens missing from evidence.
+      Conservative: flag high-severity invention keywords / phrases missing from evidence.
+      0.22.3: near-quote token coverage + known acronym expansions are NOT flagged.
     #>
     param(
         [string]$Response = '',
@@ -5276,6 +5277,8 @@ function Get-PromptParleUnverifiedPhrases {
     $flags = New-Object System.Collections.Generic.List[string]
     if (-not $Response -or -not $Evidence) { return @() }
     $ev = $Evidence.ToLowerInvariant()
+    $evNorm = [regex]::Replace($ev, '[^a-z0-9\s]+', ' ')
+    $evNorm = [regex]::Replace($evNorm, '\s+', ' ')
     $stop = @{
         'the'=$true;'and'=$true;'for'=$true;'with'=$true;'that'=$true;'this'=$true;'from'=$true
         'your'=$true;'their'=$true;'have'=$true;'has'=$true;'are'=$true;'was'=$true;'were'=$true
@@ -5283,33 +5286,58 @@ function Get-PromptParleUnverifiedPhrases {
         'also'=$true;'than'=$true;'then'=$true;'when'=$true;'which'=$true;'while'=$true;'over'=$true
         'such'=$true;'more'=$true;'most'=$true;'other'=$true;'only'=$true;'just'=$true;'been'=$true
         'based'=$true;'provides'=$true;'provide'=$true;'platform'=$true;'solution'=$true;'security'=$true
-        'network'=$true;'system'=$true;'systems'=$true;'real'=$true;'time'=$true;'designed'=$true
+        'network'=$true;'networks'=$true;'system'=$true;'systems'=$true;'real'=$true;'time'=$true;'designed'=$true
+        'these'=$true;'those'=$true;'them'=$true;'they'=$true;'what'=$true;'make'=$true;'makes'=$true
+        'delivering'=$true;'delivers'=$true;'together'=$true;'across'=$true;'before'=$true;'after'=$true
+        'emphasizes'=$true;'emphasize'=$true;'capabilities'=$true;'capability'=$true
     }
+    # Known expansions of terms present as acronyms/tokens in evidence (not inventions)
+    $knownExpansions = @(
+        @{ phrase = 'active moving target defense'; need = 'amtd' },
+        @{ phrase = 'moving target defense'; need = 'amtd' },
+        @{ phrase = 'automated moving target defense'; need = 'amtd' }
+    )
+    foreach ($kx in $knownExpansions) {
+        if ($ev.Contains($kx.need) -and $Response.ToLowerInvariant().Contains($kx.phrase)) {
+            # mark expansion as "present" so substring matcher won't flag pieces of it alone as invention
+            $ev = $ev + ' ' + $kx.phrase
+            $evNorm = $evNorm + ' ' + $kx.phrase
+        }
+    }
+
     # Candidate: 2-5 word runs of letters
     foreach ($m in [regex]::Matches($Response, '(?i)\b[a-z][a-z0-9]+(?:\s+[a-z][a-z0-9]+){1,4}\b')) {
         if ($flags.Count -ge $MaxFlags) { break }
         $ph = $m.Value.Trim()
         if ($ph.Length -lt 8 -or $ph.Length -gt 80) { continue }
         $low = $ph.ToLowerInvariant()
-        if ($ev.Contains($low)) { continue }
+        if ($ev.Contains($low) -or $evNorm.Contains($low)) { continue }
         $toks = @($low -split '\s+')
-        $sub = 0
+        $subToks = @()
         foreach ($t in $toks) {
-            if ($t.Length -ge 4 -and -not $stop.ContainsKey($t)) { $sub++ }
+            if ($t.Length -ge 4 -and -not $stop.ContainsKey($t)) { $subToks += $t }
         }
-        if ($sub -lt 2) { continue }
-        # require at least one distinctive token absent from evidence
-        $missingDistinct = $false
-        foreach ($t in $toks) {
-            if ($t.Length -lt 4 -or $stop.ContainsKey($t)) { continue }
-            if (-not $ev.Contains($t)) { $missingDistinct = $true; break }
+        if ($subToks.Count -lt 2) { continue }
+
+        # Near-quote: if most distinctive tokens appear in evidence, do not flag
+        $hit = 0
+        $missing = New-Object System.Collections.Generic.List[string]
+        foreach ($t in $subToks) {
+            if ($ev.Contains($t) -or $evNorm.Contains($t)) { $hit++ }
+            else { [void]$missing.Add($t) }
         }
-        if (-not $missingDistinct) { continue }
-        # high-value product claim patterns always flag if not in evidence
-        $priority = $low -match '(?i)honeypot|decoy|zero.?day|patent|certified|guaranteed|distributed|firewall|ransomware|ai-powered|machine learning'
+        $ratio = $hit / [double]$subToks.Count
+        if ($ratio -ge 0.6) { continue }  # paraphrase / near-quote of on-page wording
+        if ($missing.Count -eq 0) { continue }
+
+        # high-value product claim patterns always flag if distinctive tokens missing
+        $priority = $low -match '(?i)honeypot|decoy|zero.?day|patent|certified|guaranteed|distributed\s+honeypot|ransomware'
         if (-not $priority) {
-            # skip bland phrases
-            if ($sub -lt 3) { continue }
+            # 0.22.3: only flag non-priority when 3+ distinctive tokens AND majority missing
+            if ($subToks.Count -lt 3) { continue }
+            if ($ratio -ge 0.4) { continue }
+            # skip soft marketing glue that is not a concrete invention
+            if ($low -match '(?i)^(is |are |the platform|and |that |these |those )') { continue }
         }
         $dup = $false
         foreach ($f in $flags) { if ($f.ToLowerInvariant() -eq $low) { $dup = $true; break } }
@@ -5321,8 +5349,9 @@ function Get-PromptParleUnverifiedPhrases {
 function Invoke-PromptParleGroundingPostPass {
     <#
     .SYNOPSIS
-      0.20: after model answers a source-backed turn, attach client grounding audit.
-      User confidence: unverified claims are labeled — not silently trusted.
+      0.20/0.22.3: optional high-severity grounding audit.
+      Prefer quality gate (0.21+). This path only flags hard inventions (honeypot/etc.),
+      not near-quotes — and callers should not run it after a clean quality-gate pass.
     #>
     [CmdletBinding()]
     param(
@@ -5348,15 +5377,19 @@ function Invoke-PromptParleGroundingPostPass {
     if ($ev.Length -lt 40) {
         return [pscustomobject]@{ text = $text; flagged = @(); applied = $false }
     }
+    # 0.22.3: only high-severity invention patterns (not n-gram near-quote spam)
     $flags = @(Get-PromptParleUnverifiedPhrases -Response $text -Evidence $ev -MaxFlags 8)
+    $flags = @($flags | Where-Object {
+        $_ -match '(?i)honeypot|decoy|zero-?day|patent|certified|guaranteed|ransomware|distributed\s+honeypot'
+    })
     if ($flags.Count -eq 0) {
         return [pscustomobject]@{ text = $text; flagged = @(); applied = $false }
     }
     $banner = New-Object System.Collections.Generic.List[string]
     $banner.Add('')
     $banner.Add('---')
-    $banner.Add('## Grounding (client 0.20) — confidence audit')
-    $banner.Add('_The client checked this reply against fetched [OBSERVE]/[WEB]/[HANDS] evidence. These phrases were **not** found in that evidence (treat as unverified / possible invention):_')
+    $banner.Add('## Grounding (client 0.22.3) — high-severity audit')
+    $banner.Add('_These high-severity product phrases were **not** found in fetched [OBSERVE]/[WEB]/[HANDS] evidence:_')
     foreach ($f in $flags) {
         $banner.Add(('- `{0}`' -f $f))
     }
@@ -5620,6 +5653,11 @@ function Get-PromptParleClaimMatchStatus {
     $evNorm = [regex]::Replace($ev, '[\u2013\u2014\-_/]+', ' ')
     $evNorm = [regex]::Replace($evNorm, '[^a-z0-9\s]+', ' ')
     $evNorm = [regex]::Replace($evNorm, '\s+', ' ')
+    # Acronym expansions present on-page as AMTD/etc. are not inventions
+    if ($evNorm -match '\bamtd\b') {
+        $evNorm += ' active moving target defense automated moving target defense moving target defense'
+        $ev += ' active moving target defense'
+    }
 
     if ($ev.Contains($c) -or ($cNorm.Length -ge 20 -and $evNorm.Contains($cNorm))) { return 'supported' }
 
@@ -5872,10 +5910,20 @@ function Invoke-PromptParleQualityGate {
         }
     }
 
-    # 0.22.2: only surface the gate when there is real risk (unverified product claims
-    # or soft-correct). Clean source-backed research stays silent — no spam tables.
-    $show = $AlwaysShowScore -or $corrected -or ($nUnsup -gt 0)
-    if (-not $show -and $score -lt 50 -and $checked -ge 2) { $show = $true }
+    # 0.22.2/0.22.3: only surface the gate when there is real risk.
+    # Soft marketing intros without invention keywords do not spam the user.
+    $severityRxShow = '(?i)\b(distributed\s+honeypots?|honeypots?|zero-?days?|guaranteed|patent(?:ed)?|certified\s+for|ransomware)\b'
+    $hardUnsup = 0
+    foreach ($r in $results) {
+        if ($r.status -ne 'unsupported') { continue }
+        if ([string]$r.claim -match $severityRxShow) { $hardUnsup++ }
+    }
+    $show = $AlwaysShowScore -or $corrected -or ($hardUnsup -gt 0)
+    if (-not $show -and $nUnsup -gt 0 -and $score -lt 50 -and $checked -ge 2) { $show = $true }
+    # Soft-only unverified + decent score → silent (still recorded in metadata)
+    if ($nUnsup -gt 0 -and $hardUnsup -eq 0 -and $score -ge 60 -and -not $corrected -and -not $AlwaysShowScore) {
+        $show = $false
+    }
     if ($nUnsup -eq 0 -and $score -ge 70 -and -not $corrected -and -not $AlwaysShowScore) {
         $show = $false
     }
@@ -5893,7 +5941,10 @@ function Invoke-PromptParleQualityGate {
         $silent = New-Object psobject
         $silent | Add-Member -NotePropertyName text -NotePropertyValue $raw
         $silent | Add-Member -NotePropertyName applied -NotePropertyValue $false
-        $silent | Add-Member -NotePropertyName reason -NotePropertyValue $(if ($score -ge 70) { 'clean-silent' } else { 'partial-silent' })
+        $silentReason = if ($hardUnsup -eq 0 -and $nUnsup -gt 0 -and $score -ge 60) { 'soft-unverified-silent' }
+            elseif ($score -ge 70) { 'clean-silent' }
+            else { 'partial-silent' }
+        $silent | Add-Member -NotePropertyName reason -NotePropertyValue $silentReason
         $silent | Add-Member -NotePropertyName claims -NotePropertyValue $claimArrSilent
         $silent | Add-Member -NotePropertyName supported -NotePropertyValue ([int]$nSup)
         $silent | Add-Member -NotePropertyName partial -NotePropertyValue ([int]$nPart)
@@ -12523,32 +12574,43 @@ function Start-PromptParleLocalServer {
                                     $metaOut.provenance_reason = [string]$pp.reason
                                 }
                             }
-                            # Quality gate supersedes separate grounding banner (includes claim score + soft-correct)
+                            # Quality gate is the claim auditor. clean-silent still means "evaluated".
+                            # 0.22.3: do NOT fall back to Grounding 0.20 n-gram banner (false near-quote flags).
                             $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
                             if ($qg.applied) {
                                 $respText = [string]$qg.text
                                 Write-Host ("  chat: quality gate {0}% ({1} supported, {2} unverified, corrected={3})" -f `
                                     $qg.score_pct, $qg.supported, $qg.unsupported, $qg.corrected) -ForegroundColor Yellow
-                                if ($metaOut) {
-                                    $metaOut.quality_gate = $true
-                                    $metaOut.quality_score_pct = [int]$qg.score_pct
+                            } elseif ($qg.reason -match 'clean-silent|partial-silent') {
+                                Write-Host ("  chat: quality gate silent ({0} score={1}%)" -f $qg.reason, $qg.score_pct) -ForegroundColor DarkGray
+                            }
+                            if ($metaOut) {
+                                $metaOut.quality_reason = [string]$qg.reason
+                                if ($null -ne $qg.score_pct) { $metaOut.quality_score_pct = [int]$qg.score_pct }
+                                try {
                                     $metaOut.quality_supported = [int]$qg.supported
                                     $metaOut.quality_partial = [int]$qg.partial
                                     $metaOut.quality_unsupported = [int]$qg.unsupported
                                     $metaOut.quality_corrected = [bool]$qg.corrected
-                                    $metaOut.quality_reason = [string]$qg.reason
-                                    try {
+                                } catch { }
+                                if ($qg.applied) { $metaOut.quality_gate = $true }
+                                try {
+                                    if ($qg.claims) {
                                         $metaOut.quality_claims = @($qg.claims | ForEach-Object {
                                             [ordered]@{ claim = [string]$_.claim; status = [string]$_.status }
                                         })
-                                    } catch { }
-                                }
-                            } else {
-                                # Fallback: thin grounding flags when gate had nothing to score
+                                    }
+                                } catch { }
+                            }
+                            # Last-resort high-severity only if gate never evaluated claims at all
+                            $gateEvaluated = $qg.applied -or ($null -ne $qg.score_pct) -or (
+                                [string]$qg.reason -match 'clean-silent|partial-silent|scored|unverified|corrected|no-claims|no-scored|no-evidence-meta|thin-evidence|empty-evidence|no-evidence|too-short'
+                            )
+                            if (-not $gateEvaluated) {
                                 $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
                                 if ($gp.applied) {
                                     $respText = [string]$gp.text
-                                    Write-Host ("  chat: grounding flagged {0} phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
+                                    Write-Host ("  chat: grounding flagged {0} high-severity phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
                                     if ($metaOut) {
                                         $metaOut.grounding_flagged = @($gp.flagged)
                                         $metaOut.grounding_audit = $true
@@ -12872,9 +12934,17 @@ function Start-PromptParle {
                         $txt = [string]$qgCli.text
                         Write-Host ("  quality: {0}% supported={1} unverified={2} corrected={3}" -f `
                             $qgCli.score_pct, $qgCli.supported, $qgCli.unsupported, $qgCli.corrected) -ForegroundColor Yellow
+                    } elseif ($qgCli.reason -match 'clean-silent|partial-silent') {
+                        Write-Host ("  quality: silent ({0} {1}%)" -f $qgCli.reason, $qgCli.score_pct) -ForegroundColor DarkGray
                     } else {
-                        $gpCli = Invoke-PromptParleGroundingPostPass -ResponseText $txt -Context $gctxCli
-                        if ($gpCli.applied) { $txt = [string]$gpCli.text; Write-Host ("  grounding: {0} flag(s)" -f $gpCli.flagged.Count) -ForegroundColor Yellow }
+                        # 0.22.3: high-severity only; never n-gram near-quote spam after gate
+                        $gateEvalCli = $qgCli.applied -or ($null -ne $qgCli.score_pct) -or (
+                            [string]$qgCli.reason -match 'clean-silent|partial-silent|no-claims|no-scored|no-evidence|thin-evidence|empty-evidence|too-short|no-evidence-meta'
+                        )
+                        if (-not $gateEvalCli) {
+                            $gpCli = Invoke-PromptParleGroundingPostPass -ResponseText $txt -Context $gctxCli
+                            if ($gpCli.applied) { $txt = [string]$gpCli.text; Write-Host ("  grounding: {0} high-severity flag(s)" -f $gpCli.flagged.Count) -ForegroundColor Yellow }
+                        }
                     }
                 } catch { }
                 Write-Host $txt
