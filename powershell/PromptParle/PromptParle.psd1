@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.21.0'
+    ModuleVersion     = '0.21.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -56,6 +56,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.21.1: Fix research-on-domain observe miss; intercept foreign toolcall/XML as hands (never show raw tool markup)
 0.21.0: Quality gate MVP — extract claims, match evidence, score %, soft-correct high-severity inventions, 0 extra AI tokens
 0.20.0: Structural confidence — [PROVENANCE] claim audit vs page+prior assistant, [GROUNDING] + post-pass flags, provenance fail-closed, evidence spine across agent rounds
 0.19.0: Brain+hands agent loop — token-first multi-round hands (web/SSH/workspace), compact [HANDS] packs, natural eng client (not mode box)

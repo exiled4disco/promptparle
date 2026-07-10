@@ -1166,8 +1166,9 @@ function Get-PromptParleChatSystemPrompt {
         'You are a capable engineering assistant in a continuous connected session (same feel as Grok Build / Claude / Cursor). Natural language only — no modes for the user.',
         'BRAIN + HANDS: You are the brain (this API). PromptParle on the user PC is the hands: local workspace, SSH/remote product bind, web fetch, apply/run, document deliver. Prefer hands over guessing.',
         'TOKEN DISCIPLINE (non-negotiable): minimize tokens. Do not restate large evidence. Do not dump full files unless required. Prefer short targeted hands requests over long essays. One clear plan, then act.',
-        'HANDS PROTOCOL: When you need evidence you do not have, emit ONLY compact blocks — no filler — then stop that step: a fenced hands block with lines tool: arg. Tools: web_search, web_page, ssh_list, ssh_read, ssh_run, workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Client runs them (0 AI tokens) and returns [HANDS] results. Then answer from results.',
-        'When evidence is enough: answer or implement. NEVER answer with the method (no run-ls homework, no search-yourself) when hands can do it. NEVER Generating-now without a file fence body for user documents.',
+        'HANDS PROTOCOL: When you need evidence you do not have, emit ONLY a fenced hands block with lines tool: arg — then stop. Tools: web_search, web_page, ssh_list, ssh_read, ssh_run, workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Client runs them (0 AI tokens) and returns [HANDS] results. Then answer from results.',
+        'FORBIDDEN: never emit toolcall/tool_call/function_call XML, HTML tool tags, or any foreign tool protocol. Never show raw tool markup to the user. Only ```hands fences. If [OBSERVE]/[WEB] already present, answer from that — do not re-search as theater.',
+        'When evidence is enough: answer or implement. NEVER answer with the method (no run-ls homework, no search-yourself, no toolcall dumps) when hands/observe can do it. NEVER Generating-now without a file fence body for user documents.',
         'MUTATE: apply path=rel full files under source_root (client writes, backups, never live /var/www). run allowlisted pipeline only (prisma/npm/git status-class). Client reports What changed.',
         'DELIVER: user docs need file name=Report.md (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
         'PLAN: for non-trivial mutate, brief plan + blast radius in few lines; on clear go-ahead implement same turn. Tags CONN PROJECT SSH MEM ATTACH WEB OBSERVE HANDS GROUNDING PROVENANCE are live evidence — trust them over memory invention.',
@@ -1592,14 +1593,28 @@ function Get-PromptParleWebSearchQuery {
     $p = $Prompt.Trim()
     # Prefer explicit URL
     if ($p -match 'https?://[^\s<>"'']+') { return $Matches[0].TrimEnd('.,;:)') }
-    # Prefer domain after search/from
+    # Prefer domain after search/from/of/about
     if ($p -match '(?i)\bsearch\s+([\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)') { return $Matches[1] }
     if ($p -match '(?i)\bfrom\s+(?:the\s+)?([\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)') { return $Matches[1] }
+    # "research the strengths of examplecorp.com" → domain + topic (page fetch uses domain; search uses this)
+    if ($p -match '(?i)\b([\w.-]+\.(?:com|org|net|io|ai|dev|co))\b') {
+        $dom = $Matches[1]
+        $topics = New-Object System.Collections.Generic.List[string]
+        [void]$topics.Add($dom)
+        if ($p -match '(?i)\bstrengths?\b') { [void]$topics.Add('strengths') }
+        if ($p -match '(?i)\bcapabilit') { [void]$topics.Add('capabilities') }
+        if ($p -match '(?i)\bfeatures?\b') { [void]$topics.Add('features') }
+        if ($p -match '(?i)\boverview\b') { [void]$topics.Add('overview') }
+        if ($p -match '(?i)\bsolution\b') { [void]$topics.Add('solution') }
+        if ($p -match '(?i)\bresearch\b') { [void]$topics.Add('product overview') }
+        return ($topics -join ' ')
+    }
     # Strip leading search-intent phrases
-    $p2 = [regex]::Replace($p, '(?i)^(please\s+)?(search(\s+the\s+web)?(\s+for)?|look\s+up|google|find\s+online|web\s+search(\s+for)?|what\s+is|who\s+is|what''?s\s+the\s+latest|docs?\s+for|documentation\s+for)\s*[:\-]?\s*', '')
+    $p2 = [regex]::Replace($p, '(?i)^(please\s+)?(can you\s+)?(research|investigate|search(\s+the\s+web)?(\s+for)?|look\s+up|google|find\s+online|web\s+search(\s+for)?|what\s+is|who\s+is|what''?s\s+the\s+latest|docs?\s+for|documentation\s+for|tell me about|explain)\s*[:\-]?\s*', '')
     if (-not $p2) { $p2 = $p }
     # Drop trailing summarize/write clauses
     $p2 = [regex]::Replace($p2, '(?i)\s+and\s+(summarize|summarise|write|create|make|give|tell).*$', '').Trim()
+    $p2 = [regex]::Replace($p2, '(?i)\s+I would like to understand.*$', '').Trim()
     # Drop trailing "please" / filler
     $p2 = [regex]::Replace($p2, '(?i)\s+(please|thanks|thank you)[.!?]?\s*$', '').Trim()
     if ($p2.Length -gt 160) { $p2 = $p2.Substring(0, 160).Trim() }
@@ -1607,19 +1622,23 @@ function Get-PromptParleWebSearchQuery {
 }
 
 function Test-PromptParleWebSearchIntent {
-    <# 0.18: structural web observe — URLs/domains/search verbs, not a phrase mole list. #>
+    <# 0.18/0.21: structural web observe — URLs/domains/research verbs, not a phrase mole list. #>
     param([string]$Prompt)
     if (-not $Prompt) { return $false }
     $b = $Prompt.ToLowerInvariant()
     if ($b -match 'https?://') { return $true }
     if ($b -match '(?i)\b(search the web|web search|look up|google|find online|according to (the )?(docs|documentation|internet|web)|on the website|from (their|the) site)\b') { return $true }
+    # research / understand / strengths of a product or site
+    if ($b -match '(?i)\b(research|investigate|dig into|learn about|tell me about|overview of|strengths?( of)?|weaknesses?( of)?|capabilities of|understand (this |the )?(solution|product|company|platform|site|website))\b') { return $true }
     # "from the website" / "from the X.com website" / "I said from … website"
     if ($b -match '(?i)\bfrom\b.{0,60}\bwebsite\b') { return $true }
     if ($b -match '(?i)\b(not (from )?memory|live site|official site)\b') { return $true }
     if ($b -match '(?i)\bsearch\s+[\w.-]+\.[a-z]{2,}') { return $true }
-    if ($b -match '(?i)\b(?:from|on|at|via)\s+(?:the\s+)?[\w.-]+\.(?:com|org|net|io|ai|dev|co|info|biz)\b') { return $true }
-    # domain present + website/site/web/search language
-    if ($b -match '(?i)\b[\w.-]+\.(?:com|org|net|io|ai|dev)\b' -and $b -match '(?i)\b(website|web site|site|search|online|url|http)\b') { return $true }
+    if ($b -match '(?i)\b(?:from|on|at|via|of|about|for)\s+(?:the\s+)?[\w.-]+\.(?:com|org|net|io|ai|dev|co|info|biz)\b') { return $true }
+    # domain present + research/product language (not only "website/search")
+    if ($b -match '(?i)\b[\w.-]+\.(?:com|org|net|io|ai|dev)\b' -and $b -match '(?i)\b(website|web site|site|search|online|url|http|research|strengths?|capabilities|solution|product|platform|company|overview|features?|understand)\b') { return $true }
+    # bare public domain as the subject of the ask
+    if ($b -match '(?i)\b[\w.-]+\.(?:com|org|net|io|ai|dev)\b' -and $b -match '(?i)\b(can you|please|what|how|why|tell|show|summar|explain)\b') { return $true }
     if ($b -match '(?i)^(what is|who is|what''?s the latest|current version of)\b') { return $true }
     if ($b -match '(?i)\b(latest (news|release|version)|as of 20\d{2})\b') { return $true }
     return $false
@@ -3204,6 +3223,121 @@ function Get-PromptParleHandsCatalogBrief {
     ) -join "`n"
 }
 
+function Test-PromptParleForeignToolTheater {
+    <# True when model dumped foreign tool XML / toolcall markup instead of answering or using ```hands. #>
+    param([string]$Text = '')
+    if (-not $Text) { return $false }
+    if ($Text -match '(?is)<\s*(tool_?call|toolcall|function_?call|invoke|tool_request|xai:tool)\b') { return $true }
+    if ($Text -match '(?is)</\s*(tool_?call|toolcall|function_?call)\s*>') { return $true }
+    if ($Text -match '(?im)^\s*(tool_?call|function_?call|invoke_tool)\s*$') { return $true }
+    if ($Text -match '(?is)```(?:html|xml|tool|json)?\s*\r?\n\s*<\s*(tool_?call|toolcall|function_?call)\b') { return $true }
+    return $false
+}
+
+function ConvertFrom-PromptParleForeignToolCalls {
+    <#
+    .SYNOPSIS
+      0.21: parse foreign model tool protocols into hands tool/arg requests.
+      Handles toolcall / tool_call / function_call XML and "tool\nq is …" bodies.
+    #>
+    param([string]$Text = '')
+    $reqs = New-Object System.Collections.Generic.List[object]
+    if (-not $Text) { return @() }
+
+    $normalizeTool = {
+        param([string]$Tool)
+        if (-not $Tool) { return '' }
+        $t = $Tool.ToLowerInvariant().Trim()
+        $t = $t -replace '^(tool_|function_|invoke_)', ''
+        switch ($t) {
+            'search' { return 'web_search' }
+            'websearch' { return 'web_search' }
+            'web-search' { return 'web_search' }
+            'google' { return 'web_search' }
+            'search_web' { return 'web_search' }
+            'browse' { return 'web_page' }
+            'open_url' { return 'web_page' }
+            'fetch_url' { return 'web_page' }
+            'fetch' { return 'web_page' }
+            'page' { return 'web_page' }
+            'read_url' { return 'web_page' }
+            default { return $t }
+        }
+    }
+    $normalizeArg = {
+        param([string]$Arg, [string]$Tool)
+        $a = if ($null -eq $Arg) { '' } else { $Arg.Trim() }
+        $t = $Tool
+        if ($a -match '(?is)^\s*(?:q|query|search|keywords?)\s*(?:is|=|:)\s*(.+)$') { $a = $Matches[1].Trim() }
+        if ($a -match '(?is)^\s*(?:url|uri|link|page|domain)\s*(?:is|=|:)\s*(.+)$') {
+            $a = $Matches[1].Trim().Trim('"').Trim("'")
+        }
+        $a = $a.Trim().Trim('"').Trim("'")
+        if ($a.Length -gt 500) { $a = $a.Substring(0, 500) }
+        return $a
+    }
+
+    # <toolcall>...</toolcall> and variants
+    foreach ($m in [regex]::Matches($Text, '(?is)<\s*(tool_?call|toolcall|function_?call|invoke|tool_request)\b[^>]*>(.*?)</\s*\1\s*>')) {
+        $body = $m.Groups[2].Value.Trim()
+        $tool = ''
+        $arg = ''
+        if ($m.Value -match '(?i)<[^>]+\bname\s*=\s*["'']?([a-z_][a-z0-9_]*)') { $tool = $Matches[1] }
+        $lines = @($body -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if (-not $tool -and $lines.Count -gt 0 -and $lines[0] -match '^(?i)([a-z_][a-z0-9_]*)$') {
+            $tool = $lines[0]
+            $arg = if ($lines.Count -gt 1) { ($lines[1..($lines.Count - 1)] -join ' ').Trim() } else { '' }
+        } else {
+            if ($body -match '(?im)^\s*(?:name|tool|function)\s*[:=]\s*([a-z_][a-z0-9_]*)') { $tool = $Matches[1] }
+            if ($body -match '(?is)(?:q|query|search|input|arguments?|parameters?)\s*(?:is|=|:)\s*(.+)$') {
+                $arg = $Matches[1].Trim()
+            } elseif ($lines.Count -gt 0) {
+                $arg = ($lines -join ' ')
+            }
+        }
+        if (-not $tool -and $body -match '(?i)\b(web_search|web_page|ssh_list|ssh_read|ssh_run|workspace_find|relevant_slice)\b') {
+            $tool = $Matches[1]
+            if (-not $arg) { $arg = $body }
+        }
+        $tool = & $normalizeTool $tool
+        $arg = & $normalizeArg $arg $tool
+        if ($tool) {
+            [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = $m.Index; foreign = $true })
+        }
+    }
+
+    # Bare / unclosed toolcall bodies
+    if ($reqs.Count -eq 0 -and $Text -match '(?is)(?:tool_?call|toolcall|function_?call)') {
+        if ($Text -match '(?im)\b(web_search|web_page|websearch|search_web|browse)\b') {
+            $tool = & $normalizeTool $Matches[1]
+            $arg = ''
+            if ($Text -match '(?is)(?:q|query|search)\s*(?:is|=|:)\s*([^\r\n<]+)') { $arg = $Matches[1].Trim() }
+            elseif ($Text -match '(?is)(?:url|page|domain)\s*(?:is|=|:)\s*([^\r\n<]+)') {
+                $arg = $Matches[1].Trim()
+                $tool = 'web_page'
+            }
+            $arg = & $normalizeArg $arg $tool
+            if ($tool) {
+                [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = 0; foreign = $true })
+            }
+        }
+    }
+
+    # fenced json/xml tool payloads
+    foreach ($m in [regex]::Matches($Text, '(?ms)```(?:tool|json|xml|html)?[^\n]*\r?\n(.*?)```')) {
+        $body = $m.Groups[1].Value
+        if ($body -match '(?i)"(?:name|tool)"\s*:\s*"(web_search|web_page|ssh_list|ssh_read|workspace_find)"') {
+            $tool = $Matches[1]
+            $arg = ''
+            if ($body -match '(?i)"(?:q|query|input|url|arguments?)"\s*:\s*"([^"]+)"') { $arg = $Matches[1] }
+            $arg = & $normalizeArg $arg $tool
+            [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = $m.Index; foreign = $true })
+        }
+    }
+
+    return @($reqs.ToArray())
+}
+
 function Parse-PromptParleHandsBlocks {
     param([string]$Text = '')
     $reqs = New-Object System.Collections.Generic.List[object]
@@ -3237,6 +3371,15 @@ function Parse-PromptParleHandsBlocks {
             arg = $m.Groups[2].Value.Trim()
             index = $m.Index
         })
+    }
+    # Foreign tool protocols → treat as hands (never show raw toolcall to user)
+    foreach ($fr in @(ConvertFrom-PromptParleForeignToolCalls -Text $Text)) {
+        if (-not $fr.tool) { continue }
+        $dup = $false
+        foreach ($existing in $reqs) {
+            if ($existing.tool -eq $fr.tool -and $existing.arg -eq $fr.arg) { $dup = $true; break }
+        }
+        if (-not $dup) { [void]$reqs.Add($fr) }
     }
     return @($reqs.ToArray())
 }
@@ -3319,6 +3462,7 @@ function Test-PromptParleResponseNeedsHands {
     if (-not $Text) { return $false }
     if ($Text -match '(?ms)```hands') { return $true }
     if ($Text -match '(?i)<<hands\s+') { return $true }
+    if (Test-PromptParleForeignToolTheater -Text $Text) { return $true }
     return $false
 }
 
@@ -3327,7 +3471,24 @@ function Remove-PromptParleHandsBlocks {
     if (-not $Text) { return '' }
     $t = [regex]::Replace($Text, '(?ms)```hands[^\n]*\r?\n.*?```', '')
     $t = [regex]::Replace($t, '(?i)<<hands\s+[^>]+>>', '')
+    # Strip foreign toolcall theater (never show to user)
+    $t = [regex]::Replace($t, '(?is)```(?:html|xml|tool|json)?\s*\r?\n\s*<\s*(?:tool_?call|toolcall|function_?call)\b[\s\S]*?```', '')
+    $t = [regex]::Replace($t, '(?is)<\s*(tool_?call|toolcall|function_?call|invoke|tool_request)\b[^>]*>[\s\S]*?</\s*\1\s*>', '')
+    $t = [regex]::Replace($t, '(?is)<\s*(tool_?call|toolcall|function_?call)\b[^>]*/\s*>', '')
+    $t = [regex]::Replace($t, '(?im)^\s*(tool_?call|function_?call|invoke_tool)\s*$', '')
     return $t.Trim()
+}
+
+function Test-PromptParleResponseIsToolTheaterOnly {
+    <# True when stripped response has no real user-facing answer (only tool markup residue). #>
+    param([string]$Text = '')
+    if (-not $Text) { return $true }
+    $t = Remove-PromptParleHandsBlocks -Text $Text
+    $t = [regex]::Replace($t, '(?is)<[^>]+>', ' ')
+    $t = [regex]::Replace($t, '\s+', ' ').Trim()
+    if ($t.Length -lt 24) { return $true }
+    if ($t -match '(?i)^(web_search|web_page|q is|query is|searching|looking up)\b' -and $t.Length -lt 120) { return $true }
+    return $false
 }
 
 function Invoke-PromptParleAgentTurn {
@@ -3499,14 +3660,40 @@ function Invoke-PromptParleAgentTurn {
         }
     }
 
-    if (Test-PromptParleResponseNeedsHands -Text $lastResp) {
-        $stripped = Remove-PromptParleHandsBlocks -Text $lastResp
-        if (-not $stripped -or $stripped.Length -lt 20) {
-            $lastResp = @(
-                '**Hands ran; model did not produce a final answer in round budget.**'
-                ''
-                Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 6000
-            ) -join "`n"
+    # Never show raw hands fences or foreign toolcall XML to the user
+    $rawFinal = [string]$lastResp
+    $hadToolMarkup = (Test-PromptParleResponseNeedsHands -Text $rawFinal) -or (Test-PromptParleForeignToolTheater -Text $rawFinal) -or (Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal)
+
+    # Emergency: foreign toolcall never entered the hands loop (parse miss) → run tools now
+    if ($hadToolMarkup -and $allHands.Count -eq 0) {
+        $emergency = @(ConvertFrom-PromptParleForeignToolCalls -Text $rawFinal)
+        if ($emergency.Count -eq 0) { $emergency = @(Parse-PromptParleHandsBlocks -Text $rawFinal) }
+        foreach ($req in $emergency) {
+            if ($allHands.Count -ge 4) { break }
+            if (-not $req.tool) { continue }
+            $hr = Invoke-PromptParleHandsRequest -Tool $req.tool -Arg $req.arg -MaxChars 4500
+            [void]$allHands.Add($hr)
+            Write-Host ("  hands(emergency): {0} ({1})" -f $hr.tool, $(if ($hr.ok) { 'ok' } else { 'FAIL' })) -ForegroundColor Magenta
+        }
+    }
+
+    if ($hadToolMarkup) {
+        $stripped = Remove-PromptParleHandsBlocks -Text $rawFinal
+        if ((Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal) -or (-not $stripped) -or $stripped.Length -lt 24) {
+            if ($allHands.Count -gt 0) {
+                $lastResp = @(
+                    '**Client ran tools (model returned tool markup instead of an answer).**'
+                    ''
+                    Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 6000
+                    ''
+                    '_Raw toolcall/XML is never shown. Ask a follow-up for a prose summary if needed._'
+                ) -join "`n"
+            } else {
+                $lastResp = @(
+                    '**Blocked: model emitted foreign tool markup instead of answering.**'
+                    'Client could not map it to hands tools. Retry — research on a .com domain should auto-fetch via observe first.'
+                ) -join "`n"
+            }
         } else {
             $lastResp = $stripped
         }
@@ -4011,7 +4198,7 @@ function Resolve-PromptParleTurnObligation {
     $wantWeb = $false
     if ($urls.Count -gt 0) { $wantWeb = $true }
     if (Test-PromptParleWebSearchIntent -Prompt $p) { $wantWeb = $true }
-    if ($domains.Count -gt 0 -and ($p -match '(?i)\b(search|website|site|online|web|url|from|summar|capabilit|one.?page|executive)\b')) {
+    if ($domains.Count -gt 0 -and ($p -match '(?i)\b(search|website|site|online|web|url|from|of|about|summar|capabilit|strengths?|research|understand|solution|product|overview|features?|one.?page|executive)\b')) {
         $wantWeb = $true
     }
     # Sticky source correction: open document + user points at website/domain
@@ -4022,8 +4209,12 @@ function Resolve-PromptParleTurnObligation {
         )) {
         $wantWeb = $true
     }
-    # Any turn that names a public site as the source of truth for content
-    if (-not $wantWeb -and $domains.Count -gt 0 -and $p -match '(?i)\b(website|web site|from|search|summar|capabilit|official)\b') {
+    # Any turn that names a public site as the subject to research/understand
+    if (-not $wantWeb -and $domains.Count -gt 0 -and $p -match '(?i)\b(website|web site|from|search|summar|capabilit|strengths?|research|understand|solution|product|official|overview)\b') {
+        $wantWeb = $true
+    }
+    # Domain present + "can you / please / I would like" → treat as web observe
+    if (-not $wantWeb -and $domains.Count -gt 0 -and $p -match '(?i)\b(can you|please|i would like|help me|tell me)\b') {
         $wantWeb = $true
     }
 
@@ -5482,6 +5673,7 @@ function Invoke-PromptParleAgentLocalPrep {
                     '[CLIENT DIRECTIVE — observe fulfilled · capability=obligation 0.20]',
                     'The client ALREADY obtained the requested facts ([OBSERVE]/[WEB] above).',
                     'Answer from those results only. NEVER invent product capabilities not in the fetch. NEVER emit method homework.',
+                    'NEVER emit toolcall/tool_call/function_call XML or any foreign tool protocol — observe is already done.',
                     'If the user also owes a document, emit ```file name=…``` with FULL body in THIS turn — no "Generating now" without the file block.'
                 ) -join ' '
                 if ($pr -notmatch '\[CLIENT DIRECTIVE — observe') {
