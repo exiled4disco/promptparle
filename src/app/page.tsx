@@ -144,14 +144,14 @@ export default async function LandingPage() {
 
         {/* How it works */}
         <section id="how-it-works" className="border-t border-[var(--border)] py-16">
-          <div className="container">
+          <div className="container text-center">
             <h2 className="page-title text-center">The flow</h2>
             <p className="page-sub mx-auto max-w-xl text-center">
               One path from your terminal to any AI provider — with optimization
               and secret masking in the middle.
             </p>
-            <div className="mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)]">
-              <pre className="overflow-x-auto p-6 text-sm leading-7 text-[var(--text-muted)] mono">
+            <div className="mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] text-center">
+              <pre className="overflow-x-auto p-6 text-center text-sm leading-7 text-[var(--text-muted)] mono">
 {`You (local PowerShell UI or script)
   ↓  desktop key pp_live_…
 PromptParle API  →  auth · secret scan · optimize (dial 1–5)
@@ -162,9 +162,9 @@ Response + original → optimized token savings`}
               </pre>
             </div>
 
-            <div className="mx-auto mt-8 max-w-3xl card p-6">
+            <div className="mx-auto mt-8 max-w-3xl card p-6 text-center">
               <p className="text-sm font-medium text-[var(--text-dim)]">Example savings</p>
-              <pre className="mt-3 overflow-x-auto text-sm leading-7 mono text-[#c7d7f5]">
+              <pre className="mt-3 overflow-x-auto text-center text-sm leading-7 mono text-[#c7d7f5]">
 {`Set-PromptParleApiKey -ApiKey "pp_live_xxxxx"
 
 Get-Content .\\firewall-rules.txt -Raw |
@@ -173,7 +173,7 @@ Get-Content .\\firewall-rules.txt -Raw |
     -Profile "security-review" \`
     -Prompt "Find risky firewall rules"`}
               </pre>
-              <div className="mt-4 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[var(--success-soft)] p-4 text-sm text-[#a7f3d0]">
+              <div className="mt-4 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[var(--success-soft)] p-4 text-center text-sm text-[#a7f3d0]">
                 Original tokens: 18,450 → Optimized: 6,230 · Reduction:{" "}
                 <strong>66%</strong> · Saved <strong>12,220</strong> tokens
               </div>
@@ -191,16 +191,18 @@ Get-Content .\\firewall-rules.txt -Raw |
             </p>
 
             <div className="mx-auto mt-10 grid max-w-4xl gap-4 md:grid-cols-2">
-              <div className="card flex flex-col p-6">
+              <div className="card flex flex-col items-center p-6 text-center">
                 <div className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-strong)]">
                   Available now · Portal
                 </div>
                 <h3 className="mt-2 text-lg font-semibold">Create free account</h3>
-                <ul className="mt-4 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
-                  <li>• Register and verify email</li>
-                  <li>• Add OpenAI / Claude / Gemini / Grok keys (encrypted)</li>
-                  <li>• Create a desktop API key (<span className="mono">pp_live_…</span>)</li>
-                  <li>• Track usage and token savings</li>
+                <ul className="mt-4 flex-1 list-none space-y-2 text-sm text-[var(--text-muted)]">
+                  <li>Register and verify email</li>
+                  <li>Add OpenAI / Claude / Gemini / Grok keys (encrypted)</li>
+                  <li>
+                    Create a desktop API key (<span className="mono">pp_live_…</span>)
+                  </li>
+                  <li>Track usage and token savings</li>
                 </ul>
                 <Link
                   href={user ? "/app" : "/register"}
@@ -210,19 +212,19 @@ Get-Content .\\firewall-rules.txt -Raw |
                 </Link>
               </div>
 
-              <div className="card flex flex-col p-6">
+              <div className="card flex flex-col items-center p-6 text-center">
                 <div className="text-xs font-semibold uppercase tracking-wide text-[var(--warning)]">
                   Coming soon · Desktop
                 </div>
                 <h3 className="mt-2 text-lg font-semibold">Install desktop client</h3>
-                <p className="mt-3 text-sm text-[var(--text-muted)]">
+                <p className="mx-auto mt-3 max-w-sm text-sm text-[var(--text-muted)]">
                   Free local PowerShell chat on your PC — dial, agents, workspace,
                   Git, and SSH — without putting the full chat SPA in the cloud.
                 </p>
-                <ul className="mt-4 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
-                  <li>• Local chat UI on 127.0.0.1</li>
-                  <li>• Chat history, agents, dial, workspace / SSH / Git</li>
-                  <li>• Self-update when new builds ship</li>
+                <ul className="mt-4 flex-1 list-none space-y-2 text-sm text-[var(--text-muted)]">
+                  <li>Local chat UI on 127.0.0.1</li>
+                  <li>Chat history, agents, dial, workspace / SSH / Git</li>
+                  <li>Self-update when new builds ship</li>
                 </ul>
                 <ComingSoonButton className="btn btn-secondary mt-6 w-full">
                   Install desktop client
