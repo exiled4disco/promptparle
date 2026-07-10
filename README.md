@@ -1,156 +1,104 @@
-# PromptParle Portal
+# PromptParle
 
 **Trim the prompt. Keep the signal.**
 
-PromptParle is an AI context optimization gateway. This repo is the **cloud portal** for [promptparle.com](https://promptparle.com):
+AI context optimization gateway — thin bloated context, keep the signal, route cleaner prompts to OpenAI, Claude, Gemini, or Grok.
 
-- User registration / login
-- Encrypted AI provider key storage (OpenAI, Anthropic, Gemini, Grok)
-- Desktop API key generation (`pp_live_…`)
-- Usage history and token savings dashboard
-- Retention / prompt storage settings
-- Public desktop API (`/api/v1`) with optimizer + provider adapters
-- **PowerShell module** (this repo → `powershell/`)
+| Surface | What it is |
+|---------|------------|
+| **Desktop (recommended)** | Free local PowerShell chat UI on your PC |
+| **Portal** | https://promptparle.com — account, provider keys, usage, desktop API keys |
+| **API** | `https://promptparle.com/api/v1` — optimize + route |
 
-VS Code extension is next.
+This repo contains both the **portal** (Next.js) and the **PowerShell module** (`powershell/`).
 
-## Stack
+---
 
-- **Next.js 16** (App Router) + TypeScript + Tailwind
-- **Postgres** via Prisma
-- **AES-256-GCM** for provider API keys at rest
-- **HTTP-only session cookies** + bcrypt password hashes
-- Desktop keys stored as **SHA-256 hashes only**
+## Install desktop client (Windows)
 
-## Quick start
+**You need:** [Git for Windows](https://git-scm.com/download/win), PowerShell 5.1+, and a free [promptparle.com](https://promptparle.com) account.
 
-### 1. Prerequisites
+### 1. Portal (2 minutes)
 
-- Node.js 20+
-- Docker (for Postgres) or any Postgres 14+
+1. Register → **verify email**  
+2. **Providers** → add OpenAI / Claude / Gemini / Grok key  
+3. **API Keys** → create desktop key → copy `pp_live_...`  
 
-### 2. Database
-
-```bash
-docker compose up -d
-# or use the existing container on port 5433
-```
-
-### 3. Environment
-
-```bash
-cp .env.example .env
-# Generate secrets:
-# openssl rand -hex 32   → ENCRYPTION_KEY
-# openssl rand -hex 32   → SESSION_SECRET
-```
-
-Required vars:
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | Postgres connection string |
-| `ENCRYPTION_KEY` | 64-char hex (32 bytes) for provider key encryption |
-| `SESSION_SECRET` | Session signing / app secret |
-| `NEXT_PUBLIC_APP_URL` | e.g. `http://localhost:3000` or `https://promptparle.com` |
-
-### 4. Migrate & run
-
-```bash
-npm install
-npx prisma migrate dev
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-## Portal routes
-
-| Path | Description |
-|------|-------------|
-| `/` | Marketing landing |
-| `/register` | Create account |
-| `/login` | Sign in |
-| `/app` | Dashboard + setup checklist |
-| `/app/providers` | Add/delete encrypted provider keys |
-| `/app/api-keys` | Create/revoke desktop API keys |
-| `/app/usage` | Token savings history |
-| `/app/settings` | Profile + retention |
-
-## API (portal session)
-
-Authenticated with the browser session cookie:
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/api/auth/register` | Create account |
-| POST | `/api/auth/login` | Sign in |
-| POST | `/api/auth/logout` | Sign out |
-| GET | `/api/auth/me` | Current user |
-| GET/POST | `/api/providers` | List / upsert provider keys |
-| DELETE | `/api/providers/:id` | Delete provider key |
-| GET/POST | `/api/api-keys` | List / create desktop keys |
-| DELETE | `/api/api-keys/:id` | Revoke desktop key |
-| GET | `/api/usage` | Usage summary |
-| PATCH | `/api/settings` | Update profile / retention |
-
-## PowerShell module (Windows)
-
-### Install from GitHub (recommended)
-
-Requires [Git for Windows](https://git-scm.com/download/win).
+### 2. Install module
 
 ```powershell
-# Recommended (hosted on promptparle.com — no GitHub raw cache issues)
 irm https://promptparle.com/install.ps1 | iex
 ```
 
-Alternate (download-to-file bootstrap):
+Paste your `pp_live_...` key when prompted.
+
+### 3. Chat
 
 ```powershell
-irm https://promptparle.com/get.ps1 | iex
+pp
 ```
 
-Optional: auto-start local chat after install:
+Browser opens **http://127.0.0.1:7788/** (local only). Leave the PowerShell window open.
+
+### Update
 
 ```powershell
-$PromptParleStart = $true
-irm https://promptparle.com/install.ps1 | iex
+Update-PromptParleClient -Force
+pp
 ```
 
-Or from a clone:
+Or click **Update** in the local UI (red when a newer version is available).
 
-```powershell
-cd $env:USERPROFILE\src\promptparle
-git pull
-.\powershell\Install-PromptParle.ps1
+### Full docs (install options, slash commands, troubleshooting)
+
+→ **[powershell/PromptParle/README.md](powershell/PromptParle/README.md)**
+
+Includes: alternate install paths, uninstall, workspace/SSH/Git, and a **Troubleshooting** section (module not found, old UI, ports, keys, execution policy, etc.).
+
+---
+
+## Quick links
+
+| Link | Purpose |
+|------|---------|
+| https://promptparle.com | Portal |
+| https://promptparle.com/install.ps1 | Installer script |
+| https://promptparle.com/PromptParle-PowerShell.tgz | Module tarball |
+| https://promptparle.com/PromptParle.psd1 | Published module version |
+| [powershell/PromptParle/README.md](powershell/PromptParle/README.md) | Desktop client docs |
+| [powershell/examples/](powershell/examples/) | Scripted examples |
+
+---
+
+## How it works
+
+```text
+You (PowerShell / browser local UI)
+  ↓  desktop key pp_live_…
+PromptParle API  →  auth · secret scan · optimize
+  ↓
+Your provider     →  OpenAI / Claude / Gemini / Grok
+  ↓
+Response + token reduction metadata
 ```
 
-The installer asks for your desktop `pp_live_` key (or opens the portal to create one), verifies it, then offers to start local chat (`pp`).
+- **Provider keys** stay encrypted in the portal (AES-256-GCM).  
+- **Desktop key** is shown once; only a hash is stored server-side.  
+- **Local UI HTML** runs on your PC — not served as a full chat SPA from AWS per keystroke.  
+- **SSH / git credentials never leave your PC.**
 
-Scripted / automation (optional):
+---
 
-```powershell
-Invoke-PromptParle -Provider openai -Prompt 'Summarize' -Context 'noise...'
-Get-PromptParleUsage
-```
-
-See `powershell/PromptParle/README.md` for profiles, env vars, and more examples.
-
-Also available as a tarball on the site: https://promptparle.com/PromptParle-PowerShell.tgz
-
-## Public desktop API (`/api/v1`)
+## Public desktop API
 
 Auth: `Authorization: Bearer pp_live_...` (or `X-PromptParle-Key`).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/v1/prompt` | Optimize + route to provider (or `optimize_only: true`) |
+| POST | `/api/v1/prompt` | Optimize + route (or `optimize_only: true`) |
 | POST | `/api/v1/prompt/optimize` | Optimize only |
-| GET | `/api/v1/providers` | List providers + which keys are configured |
+| GET | `/api/v1/providers` | Providers + configured flags |
 | GET | `/api/v1/usage` | Usage summary |
-
-Example:
 
 ```bash
 curl -s https://promptparle.com/api/v1/prompt \
@@ -158,7 +106,6 @@ curl -s https://promptparle.com/api/v1/prompt \
   -H "Content-Type: application/json" \
   -d '{
     "provider": "openai",
-    "model": "gpt-4o",
     "optimization_profile": "security-review",
     "prompt": "Find risky firewall rules",
     "context": "...rules...",
@@ -166,53 +113,85 @@ curl -s https://promptparle.com/api/v1/prompt \
   }'
 ```
 
-Providers with key storage + routing: OpenAI, Anthropic, Gemini, Grok.
+---
 
-## Security model (MVP)
+## Portal development (this repo)
 
-1. **Provider keys** — encrypted with AES-256-GCM; only last 4 chars shown in UI.
-2. **Desktop API keys** — full key shown once; only SHA-256 hash stored.
-3. **Passwords** — bcrypt (cost 12).
-4. **Sessions** — random token, hashed in DB, HTTP-only cookie.
-5. **No plaintext secrets in logs** by design.
+For contributing to the **website / API**, not required for desktop install.
 
-## Product context
+### Stack
 
-See the product plan: context optimizer, PowerShell-first client, VS Code later, provider adapters, secret masking, optimization profiles.
+- Next.js 16 (App Router) + TypeScript + Tailwind  
+- Postgres via Prisma  
+- AES-256-GCM provider keys · HTTP-only sessions · bcrypt  
 
-## Deploy notes for promptparle.com
-
-1. Point DNS A/AAAA (or CNAME) for `promptparle.com` to your host (Vercel, Fly, VPS, etc.).
-2. Set production env vars (`DATABASE_URL`, `ENCRYPTION_KEY`, `SESSION_SECRET`, `NEXT_PUBLIC_APP_URL=https://promptparle.com`).
-3. Run migrations against production Postgres.
-4. `npm run build && npm start` (or platform build command `next build`).
-
-## Scripts
+### Quick start
 
 ```bash
-npm run dev       # local dev
-npm run build     # production build
-npm run start     # run production server
-npx prisma studio # inspect DB
+# Prerequisites: Node 20+, Docker (or Postgres 14+)
+docker compose up -d
+cp .env.example .env
+# Set ENCRYPTION_KEY + SESSION_SECRET (openssl rand -hex 32 each)
+# Set DATABASE_URL, NEXT_PUBLIC_APP_URL
+
+npm install
+npx prisma migrate dev
+npm run dev
 ```
 
-## Roadmap
+Open [http://localhost:3000](http://localhost:3000).
 
-Done: portal, email verification, `/api/v1`, providers (OpenAI/Anthropic/Gemini/Grok), secret masking, profiles, PowerShell module.
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | Postgres connection string |
+| `ENCRYPTION_KEY` | 64-char hex for provider key encryption |
+| `SESSION_SECRET` | Session signing |
+| `NEXT_PUBLIC_APP_URL` | e.g. `http://localhost:3000` |
 
-Next: VS Code extension, richer optimizer, PSGallery publish.
+### Portal routes
 
-## Production (this host)
+| Path | Description |
+|------|-------------|
+| `/` | Marketing |
+| `/register` · `/login` | Auth |
+| `/app` | Dashboard |
+| `/app/chat` | Portal web chat |
+| `/app/providers` | Provider keys |
+| `/app/api-keys` | Desktop API keys |
+| `/app/usage` | Token savings |
+| `/app/settings` | Profile / retention |
 
-Live on **https://promptparle.com** (A → `3.140.203.94`).
+### Scripts
+
+```bash
+npm run dev
+npm run build
+npm run start
+npx prisma studio
+```
+
+---
+
+## Security model
+
+1. **Provider keys** — AES-256-GCM; only last 4 chars shown in UI.  
+2. **Desktop API keys** — full key once; SHA-256 hash stored.  
+3. **Passwords** — bcrypt (cost 12).  
+4. **Sessions** — random token, hashed in DB, HTTP-only cookie.  
+5. **No plaintext secrets in logs** by design.  
+
+---
+
+## Production ops (promptparle.com host)
+
+Live: **https://promptparle.com**
 
 | Piece | Location |
 |-------|----------|
 | App code | `/var/www/promptparle` |
 | Systemd | `promptparle.service` (Next.js on `127.0.0.1:3110`) |
 | Nginx | `/etc/nginx/sites-available/promptparle.com` |
-| TLS | Let's Encrypt `promptparle.com` (webroot `/var/www/html`) |
-| Postgres | Docker `promptparle-db` on host port `5433` |
+| Postgres | Docker `promptparle-db` host port `5433` |
 | Env | `/var/www/promptparle/.env` (mode 600) |
 
 ### Redeploy after code changes
@@ -238,33 +217,22 @@ sudo nginx -t && sudo systemctl reload nginx
 docker ps --filter name=promptparle-db
 ```
 
-## Email verification
+### Email (Amazon SES)
 
-New accounts must click a verification link before sign-in.
+Domain identity in SES `us-east-2`, SPF + DKIM at DNS, then:
 
-### Amazon SES (production on this host)
-
-1. Domain identity: `promptparle.com` (created in SES `us-east-2`)
-2. Add these DNS records at Squarespace:
-
-**SPF** (replace the current `v=spf1 -all` TXT):
-```
-v=spf1 include:amazonses.com ~all
-```
-
-**DKIM** (3 CNAMEs):
-```
-t6as4qsirdsid7v4fd2qog5mbdeogbti._domainkey  →  t6as4qsirdsid7v4fd2qog5mbdeogbti.dkim.amazonses.com
-lxfq3vffj25l5xlfojdmslvg2tjirybq._domainkey  →  lxfq3vffj25l5xlfojdmslvg2tjirybq.dkim.amazonses.com
-udyw2q4fcaufvwkqoivhuirrrzhhm5h6._domainkey  →  udyw2q4fcaufvwkqoivhuirrrzhhm5h6.dkim.amazonses.com
-```
-
-3. Wait until SES shows domain **Verified**
-4. Request SES production access (sandbox can only send to verified addresses)
-
-Env:
 ```
 MAIL_TRANSPORT=ses
 MAIL_FROM=PromptParle <noreply@promptparle.com>
 AWS_REGION=us-east-2
 ```
+
+New accounts must verify email before full use.
+
+---
+
+## Roadmap
+
+**Done:** portal, email verification, `/api/v1`, multi-provider adapters, secret masking, profiles, PowerShell module + local UI (workspace / git / SSH / chat history).
+
+**Next:** VS Code extension, richer optimizer, PSGallery publish.
