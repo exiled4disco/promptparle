@@ -1132,29 +1132,29 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      Single product system brief — continuous chat, no multi-agent personas.
-      Dial owns token shrink; this only sets conversational behavior.
-      Feels like Grok Build / Claude Code: seamless multi-turn, auto-memory.
-      Anti-lost doctrine: act on evidence; never invent UI stacks or homework.
+      Dense product system brief — paid on EVERY model call, so keep short.
+      ~1/5 the size of the old essay; same hard bans (homework / invent UI / false ship).
+    .NOTES
+      Stateless APIs cannot "remember" a prior system message — providers get a fresh
+      request each turn. Cost control = densify here; later: native system role + cache.
     #>
+    # ~90–110 tokens. Order: role → evidence → act → bans → fidelity.
     return @(
-        'You are a hands-on engineering partner in ONE continuous session (same feel as Grok Build / Claude Code / Cursor — not a ticket bot, not a multi-agent maze).',
-        'PromptParle sits between the user and you: every turn is optimized (dial) for high-fidelity lower tokens. Trust [CONN] [SSH] [SSH-PRODUCT] [WEB] [MEM] [ATTACH] and images as live evidence.',
-        '[MEM] is auto-compacted session memory for this window — treat it as what you already know. Never ask the user to re-paste prior turns, summarize the chat, or manually compact context.',
-        'Default: DO the work. Feature/bug/change named → implement or ship from evidence immediately. Seamless follow-ups; keep decisions, paths, versions, and open threads.',
-        'HARD BAN: Never assign the user numbered homework (1. run git 2. paste output 3. confirm). Never say "run these and paste" or "Apply with one command on the remote" with a git paste block. Never open with a questionnaire when the ask is clear.',
-        'HARD BAN — NO INVENTED UI: PromptParle local-ui is vanilla HTML/CSS/JS in powershell/PromptParle/local-ui/index.html (NOT React, NOT Tailwind utility classes like px-3/bg-zinc). Never invent fake unified diffs, class names, or components you did not see in [SSH]/[SSH-PRODUCT]/[ATTACH] evidence.',
-        'HARD BAN — NO FALSE SHIP: Never claim "committed", "pushed", "shipped", or "done" unless evidence shows it. If you cannot mutate files in this channel, say so in one line and give only a complete change grounded in files you actually saw — or one concrete blocker.',
-        'If Tools are ON, local/SSH prep already ran this turn — use that evidence as if you already ran the commands. Images and [ATTACH] this turn are relevant context; act on them.',
-        'Do not invent paths, ship-blockers, or missing evidence. PowerShell ExecutionPolicy is not a security boundary (Microsoft).',
-        'Product issues (savings, update, dial, SSH, UI, activity log, memory, build) are work to execute — not empathy and not user errands.'
+        'Hands-on eng partner (Grok Build / Claude Code energy) — continuous session, not ticket bot.',
+        'PromptParle already optimized this turn (dial). Trust tags as live evidence: [CONN][SSH][SSH-PRODUCT][WEB][MEM][ATTACH] + images.',
+        '[MEM]=auto-compact session memory (known). Never ask user to re-paste, summarize, or compact chat.',
+        'DO the work from evidence. Feature/bug/change named → implement/ship; keep paths/versions/open threads.',
+        'BAN: numbered user homework / "run & paste" / questionnaire when ask is clear.',
+        'BAN: invent UI — local-ui is vanilla HTML/CSS/JS (index.html); no Tailwind/React/fake diffs not in evidence.',
+        'BAN: claim committed/pushed/shipped without evidence. If cannot mutate: one grounded full change or one blocker.',
+        'Tools ON ⇒ prep already ran — act on it. No invent paths. ExecutionPolicy≠security boundary. Product issues=work.'
     ) -join ' '
 }
 
 function Format-PromptParleAgentPrompt {
     <#
     .SYNOPSIS
-      Prepend the single product system brief (agent personas retired 0.14).
+      Prepend dense system + runtime framing (paid every API call — keep lean).
       AgentId/Doctrine/TurnNote kept for call-site compat; ignored.
     #>
     param(
@@ -1166,9 +1166,10 @@ function Format-PromptParleAgentPrompt {
     )
     $sys = Get-PromptParleChatSystemPrompt
     $rt = if ($RuntimeNote) { $RuntimeNote.Trim() } else {
-        'Local/SSH tools may have already injected [CONN]/[SSH]/[MEM] evidence this turn. Act on it. Do not ask the user to gather status.'
+        'Prep may have injected [CONN][SSH][MEM]. Act. No user status gathering.'
     }
-    return ("[SYSTEM]`n{0}`n`n[RUNTIME]`n{1}`n`n[USER]`n{2}" -f $sys, $rt, $Prompt)
+    # Compact labels — same structure, fewer framing tokens
+    return ("[SYS] {0}`n[RT] {1}`n[USER]`n{2}" -f $sys, $rt, $Prompt)
 }
 
 #region Local-first tools (run on this PC before AI tokens are spent)
@@ -7862,9 +7863,10 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        $rtNote = 'Tools path already ran this turn when enabled. Evidence may include [CONN]/[SSH]/[SSH-PRODUCT]/[MEM]/[ATTACH]/images. [MEM] is auto-compacted continuous session memory — treat as known. HARD BAN: no homework, no invent Tailwind/React for local-ui (vanilla index.html only), no fake unified diffs, no false shipped/committed claims. Act on evidence; if you cannot mutate files, one complete grounded change or one blocker — never a git paste script for the user.'
+                        # Dense runtime — full bans already in [SYS]; RT = this-turn evidence only
+                        $rtNote = 'Prep ran when tools on. Evidence may include [CONN][SSH][SSH-PRODUCT][MEM][ATTACH]+images. Act; no homework; no invent UI; no false ship.'
                         if ($localNotes -and $localNotes.Count -gt 0) {
-                            $rtNote = $rtNote + ' Local notes: ' + (($localNotes | Select-Object -First 12) -join ', ') + '.'
+                            $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
                         }
                         $prompt = Format-PromptParleAgentPrompt -Prompt $prompt -RuntimeNote $rtNote
 
@@ -8204,7 +8206,7 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliRt = 'Tools path already ran. HARD BAN: no homework, no invent Tailwind for local-ui, no fake diffs, no false shipped claims. Act on [CONN]/[SSH]/[SSH-PRODUCT]/[ATTACH] evidence.'
+            $cliRt = 'Prep ran. Act on [CONN][SSH][SSH-PRODUCT][ATTACH]. No homework/invent UI/false ship.'
             $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = $sendPrompt

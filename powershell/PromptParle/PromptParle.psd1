@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.14.10'
+    ModuleVersion     = '0.14.11'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.14.11: Dense [SYS]/[RT] framing (~60% fewer tokens/turn) — same hard bans, less wasteful "You are a…" every call
 0.14.10: Fix Update not offering newer version — robust remote parse + portal text/plain version.txt; never fake "Up to date"
 0.14.9: Fix attach stick after send — epoch cancels in-flight compress; hard wipe chips; visible "composer cleared"
 0.14.8: Stop lost PP — ban invent Tailwind/fake diffs/homework; clear attachments on submit; [ATTACH] as relevant evidence
