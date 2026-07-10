@@ -65,28 +65,91 @@
       flex: 0 0 auto;
     }
     .side-head h1 { margin: 0; font-size: .92rem; line-height: 1.2; }
-    .head-meta {
-      display: flex; align-items: center; gap: .3rem; flex-wrap: wrap;
-    }
     .badge {
-      display: inline-block; font-size: .65rem; padding: .1rem .4rem; border-radius: 999px;
+      display: inline-block; font-size: .68rem; padding: .18rem .45rem; border-radius: 999px;
       border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1);
+      white-space: nowrap;
     }
     .badge.warn {
       color: var(--warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.35);
     }
     .update-btn {
-      background: linear-gradient(135deg, #34d399, #059669) !important;
-      color: #042f1a !important; font-weight: 700;
-      border: 0; border-radius: 999px; padding: .22rem .55rem; cursor: pointer; font-size: .7rem;
-      width: auto; margin: 0;
+      background: #0a0e16 !important; color: var(--muted) !important;
+      border: 1px solid var(--border) !important; font-weight: 500;
+      border-radius: 999px; padding: .28rem .7rem; cursor: pointer; font-size: .75rem;
+      width: auto; margin: 0; font: inherit; line-height: 1.2;
     }
     .update-btn.secondary-look {
       background: #0a0e16 !important; color: var(--muted) !important;
       border: 1px solid var(--border) !important; font-weight: 500;
     }
-    .update-btn:disabled { opacity: .55; cursor: not-allowed; }
+    /* Update available — red highlight next to Help */
+    .update-btn.needs-update {
+      background: linear-gradient(135deg, #f87171, #b91c1c) !important;
+      color: #fff !important;
+      border: 1px solid rgba(248,113,113,.85) !important;
+      font-weight: 800;
+      box-shadow: 0 0 0 1px rgba(248,113,113,.35), 0 0 14px rgba(248,113,113,.45);
+      animation: pp-update-pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pp-update-pulse {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(248,113,113,.35), 0 0 10px rgba(248,113,113,.35); }
+      50% { box-shadow: 0 0 0 2px rgba(248,113,113,.55), 0 0 18px rgba(248,113,113,.55); }
+    }
+    .update-btn:disabled { opacity: .55; cursor: not-allowed; animation: none; }
     .ver-line { font-size: .7rem; color: var(--dim); line-height: 1.25; }
+    .hist-head {
+      display: flex; align-items: center; justify-content: space-between; gap: .35rem;
+      margin-bottom: .3rem;
+    }
+    .hist-head h2 { margin: 0 !important; }
+    .hist-head .mini-primary {
+      padding: .14rem .45rem; font-size: .68rem; border-radius: 999px;
+    }
+    .side-section.hist-section {
+      flex: 1 1 auto;
+      min-height: 7rem;
+      display: flex;
+      flex-direction: column;
+      max-height: none;
+    }
+    .hist-list {
+      display: flex; flex-direction: column; gap: .25rem;
+      flex: 1 1 auto;
+      min-height: 4.5rem;
+      max-height: min(32vh, 16rem);
+      overflow-y: auto;
+    }
+    .hist-item {
+      display: grid; grid-template-columns: 1fr auto; gap: .1rem .35rem;
+      align-items: start;
+      width: 100%; text-align: left;
+      background: #0a0e16; border: 1px solid var(--border); border-radius: 7px;
+      padding: .3rem .4rem; cursor: pointer; color: var(--text); font: inherit;
+    }
+    .hist-item:hover { border-color: rgba(91,140,255,.4); }
+    .hist-item.active {
+      border-color: rgba(91,140,255,.55);
+      background: var(--accent-soft);
+    }
+    .hist-item .hist-title {
+      font-size: .72rem; line-height: 1.25; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0;
+    }
+    .hist-item .hist-meta {
+      grid-column: 1; font-size: .62rem; color: var(--dim); line-height: 1.2;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .hist-item .hist-del {
+      grid-column: 2; grid-row: 1 / span 2; align-self: center;
+      background: transparent; border: 0; color: var(--dim); cursor: pointer;
+      font-size: .9rem; line-height: 1; padding: .1rem .2rem; border-radius: 4px;
+    }
+    .hist-item .hist-del:hover { color: var(--danger); }
+    .hist-empty {
+      font-size: .68rem; color: var(--dim); padding: .2rem 0;
+    }
     .side-toggle {
       display: none;
       background: #0a0e16; border: 1px solid var(--border); color: var(--text);
@@ -120,6 +183,13 @@
     .dial-value .hint { color: var(--dim); font-weight: 400; }
     .checks { font-size: .72rem; color: var(--muted); margin-top: .25rem; }
     .checks label { display: flex; align-items: center; gap: .35rem; margin: 0; color: var(--muted); cursor: pointer; }
+    .side-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
     .side-foot { display: none; }
     .profile-chip {
       display: none; /* dial/agent meta is enough; saves a line */
@@ -142,10 +212,16 @@
       align-items: center;
       justify-content: space-between;
       gap: .5rem;
+      width: 100%;
+      min-width: 0;
     }
     .main-top .title {
       font-size: .82rem;
       color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: min(36vw, 280px);
+      flex: 0 1 auto;
+      min-width: 0;
     }
     .savings-strip {
       flex: 0 0 auto;
@@ -288,7 +364,24 @@
       background:#3a1520 !important; border:1px solid rgba(248,113,113,.45) !important; color:#fecaca !important;
       border-radius: 999px; padding: .4rem .7rem; font-size: .78rem; font-weight: 600; cursor: pointer; width: 100%;
     }
-    .top-actions { display: flex; align-items: center; gap: .4rem; position: relative; }
+    /* Pin version / Update / Help / ⋯ to the far right of the main header */
+    .top-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: .4rem;
+      position: relative;
+      margin-left: auto;
+      flex: 0 0 auto;
+      flex-wrap: wrap;
+    }
+    .top-actions .attach-hint {
+      margin-right: .15rem;
+      max-width: 12rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .icon-btn {
       background: #0a0e16; border: 1px solid var(--border); color: var(--text);
       border-radius: 999px; padding: .35rem .7rem; font-size: .8rem; font-weight: 600;
@@ -433,18 +526,20 @@
   <div class="shell">
     <aside class="sidebar" id="sidebar">
       <div class="side-head">
-        <div>
-          <h1>PromptParle</h1>
-          <div class="head-meta">
-            <span class="badge" id="versionBadge">…</span>
-            <button type="button" class="update-btn secondary-look" id="updateBtn" title="Update client">Update</button>
-          </div>
-          <div class="ver-line" id="versionLine" hidden></div>
-        </div>
+        <h1>PromptParle</h1>
         <button type="button" class="side-toggle" id="sideToggle" aria-label="Toggle tools">Tools</button>
       </div>
 
       <div class="side-body" id="sideBody">
+        <!-- History first so it is always visible in the left menu -->
+        <div class="side-section hist-section">
+          <div class="hist-head">
+            <h2>Chat history</h2>
+            <button type="button" class="secondary mini-primary" id="newChatBtn" title="Start a new chat">New</button>
+          </div>
+          <div class="hist-list" id="histList" aria-label="Chat history"></div>
+        </div>
+
         <div class="side-section">
           <h2>Chat</h2>
           <div class="field-compact">
@@ -513,12 +608,15 @@
 
     <div class="main">
       <div class="main-top">
-        <div class="title">Chat</div>
-        <div class="top-actions">
-          <span class="hint" id="attachHint"></span>
+        <div class="title" id="chatTitle">Chat</div>
+        <div class="top-actions" id="topActions">
+          <span class="hint attach-hint" id="attachHint"></span>
+          <span class="badge" id="versionBadge" title="Client version">…</span>
+          <button type="button" class="update-btn secondary-look" id="updateBtn" title="Update client">Update</button>
           <button type="button" class="icon-btn" id="helpBtn" title="Help &amp; commands">Help</button>
           <button type="button" class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">⋯</button>
           <div class="menu" id="appMenu" role="menu">
+            <button type="button" id="menuNewChat">New chat</button>
             <button type="button" id="menuHelp">Help &amp; slash commands</button>
             <button type="button" id="menuProviders" data-info="providers">Providers</button>
             <button type="button" id="menuUsage" data-info="usage">Usage / savings</button>
@@ -561,6 +659,12 @@
 /status               agent, workspace, ssh, dial
 /agents · /agent &lt;name&gt;
 /dial 1-5 · /provider · /optimize · /usage · /clear</pre>
+
+      <h3>Chat history</h3>
+      <pre>Sidebar → History: switch past chats, New chat, delete (×)
+⋯ menu → New chat
+/clear                clears the active chat only
+History stays in this browser (localStorage)</pre>
 
       <h3>Project connections (sidebar buttons)</h3>
       <pre>This PC → Browse / Detach
@@ -675,10 +779,12 @@ code:      /review  /explain</pre>
     const sidebar = document.getElementById('sidebar');
     const sideToggle = document.getElementById('sideToggle');
     const versionBadge = document.getElementById('versionBadge');
-    const versionLine = document.getElementById('versionLine');
     const updateBtn = document.getElementById('updateBtn');
     const savingsStrip = document.getElementById('savingsStrip');
     const attachHint = document.getElementById('attachHint');
+    const chatTitleEl = document.getElementById('chatTitle');
+    const histList = document.getElementById('histList');
+    const newChatBtn = document.getElementById('newChatBtn');
     const agentSelect = document.getElementById('agentSelect');
     const agentMeta = document.getElementById('agentMeta');
     const workspaceLine = document.getElementById('workspaceLine');
@@ -716,6 +822,19 @@ code:      /review  /explain</pre>
     const infoEdit = document.getElementById('infoEdit');
     const PORTAL = 'https://promptparle.com';
     let infoKind = null;
+
+    /* ---- chat history (localStorage, this browser only) ---- */
+    const HIST_INDEX_KEY = 'pp_chat_index_v1';
+    const HIST_ACTIVE_KEY = 'pp_chat_active_v1';
+    const HIST_MSG_PREFIX = 'pp_chat_msgs_v1_';
+    const HIST_MAX_CHATS = 40;
+    const HIST_MAX_MSGS = 200;
+    const WELCOME_MSG = 'Chat or /commands. Local folders: Browse folders (sidebar) or /workspace C:\\path. Also /github clone · /ssh (keys stay on this PC).';
+    let currentChatId = null;
+    /** @type {{role:string,text:string,meta:object|null,isError:boolean,thumbNote?:string}[]} */
+    let currentMessages = [];
+    let skipHistorySave = false;
+    let historySaveTimer = null;
 
     const DIAL_META = {
       1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
@@ -909,7 +1028,358 @@ code:      /review  /explain</pre>
       }
       chat.appendChild(div);
       scrollChatToBottom();
+
+      if (!skipHistorySave) {
+        const entry = {
+          role: role,
+          text: String(text || ''),
+          meta: nmeta,
+          isError: !!isError
+        };
+        if (thumbs && thumbs.length) {
+          entry.thumbNote = thumbs.length + ' image(s)';
+        }
+        // Cap very large bot/sys text in storage
+        if (entry.text.length > 80000) {
+          entry.text = entry.text.slice(0, 80000) + '\n…[truncated for history]';
+        }
+        currentMessages.push(entry);
+        if (currentMessages.length > HIST_MAX_MSGS) {
+          currentMessages = currentMessages.slice(-HIST_MAX_MSGS);
+        }
+        if (role === 'user') {
+          maybeSetChatTitleFromUser(entry.text);
+        }
+        scheduleHistorySave();
+      }
       return div;
+    }
+
+    function lsGet(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw == null) return fallback;
+        return JSON.parse(raw);
+      } catch (e) {
+        return fallback;
+      }
+    }
+    function lsSet(key, val) {
+      try {
+        localStorage.setItem(key, JSON.stringify(val));
+        return true;
+      } catch (e) {
+        // Quota — drop oldest chats and retry once
+        try {
+          pruneOldestChats(8);
+          localStorage.setItem(key, JSON.stringify(val));
+          return true;
+        } catch (e2) {
+          return false;
+        }
+      }
+    }
+    function newChatId() {
+      return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+    function loadIndex() {
+      const idx = lsGet(HIST_INDEX_KEY, []);
+      return Array.isArray(idx) ? idx : [];
+    }
+    function saveIndex(idx) {
+      lsSet(HIST_INDEX_KEY, idx.slice(0, HIST_MAX_CHATS));
+    }
+    function loadChatMessages(id) {
+      const msgs = lsGet(HIST_MSG_PREFIX + id, []);
+      return Array.isArray(msgs) ? msgs : [];
+    }
+    function saveChatMessages(id, msgs) {
+      lsSet(HIST_MSG_PREFIX + id, msgs || []);
+    }
+    function pruneOldestChats(n) {
+      const idx = loadIndex();
+      const drop = idx.slice(Math.max(0, idx.length - n));
+      const keep = idx.slice(0, Math.max(0, idx.length - n));
+      drop.forEach(function (c) {
+        try { localStorage.removeItem(HIST_MSG_PREFIX + c.id); } catch (e) {}
+      });
+      saveIndex(keep);
+    }
+    function titleFromText(text) {
+      const t = String(text || '').replace(/\s+/g, ' ').trim();
+      if (!t) return 'New chat';
+      // Skip slash-only titles if possible
+      const line = t.split('\n')[0];
+      if (line.length <= 48) return line;
+      return line.slice(0, 46) + '…';
+    }
+    function maybeSetChatTitleFromUser(text) {
+      if (!currentChatId) return;
+      const idx = loadIndex();
+      const row = idx.find(function (c) { return c.id === currentChatId; });
+      if (!row) return;
+      // Only auto-title once (still "New chat" or empty)
+      if (row.title && row.title !== 'New chat') return;
+      if (String(text || '').trim().startsWith('/')) return;
+      row.title = titleFromText(text);
+      row.preview = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      row.updatedAt = Date.now();
+      // Move active chat to top
+      const rest = idx.filter(function (c) { return c.id !== currentChatId; });
+      saveIndex([row].concat(rest));
+      if (chatTitleEl) chatTitleEl.textContent = row.title;
+      renderHistoryList();
+    }
+    function scheduleHistorySave() {
+      if (historySaveTimer) clearTimeout(historySaveTimer);
+      historySaveTimer = setTimeout(function () {
+        historySaveTimer = null;
+        persistCurrentChat();
+      }, 120);
+    }
+    function persistCurrentChat() {
+      if (!currentChatId) return;
+      saveChatMessages(currentChatId, currentMessages);
+      const idx = loadIndex();
+      let row = idx.find(function (c) { return c.id === currentChatId; });
+      const lastUser = currentMessages.slice().reverse().find(function (m) {
+        return m.role === 'user' && !String(m.text || '').startsWith('/');
+      });
+      const lastAny = currentMessages.length
+        ? currentMessages[currentMessages.length - 1]
+        : null;
+      const previewSrc = lastUser || lastAny;
+      if (!row) {
+        row = {
+          id: currentChatId,
+          title: lastUser ? titleFromText(lastUser.text) : 'New chat',
+          preview: previewSrc ? String(previewSrc.text || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '',
+          updatedAt: Date.now(),
+          createdAt: Date.now()
+        };
+        saveIndex([row].concat(idx).slice(0, HIST_MAX_CHATS));
+      } else {
+        row.updatedAt = Date.now();
+        if (previewSrc) {
+          row.preview = String(previewSrc.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        }
+        if ((!row.title || row.title === 'New chat') && lastUser) {
+          row.title = titleFromText(lastUser.text);
+        }
+        const rest = idx.filter(function (c) { return c.id !== currentChatId; });
+        saveIndex([row].concat(rest).slice(0, HIST_MAX_CHATS));
+      }
+      try { localStorage.setItem(HIST_ACTIVE_KEY, currentChatId); } catch (e) {}
+      if (chatTitleEl) chatTitleEl.textContent = row.title || 'Chat';
+      renderHistoryList();
+    }
+    function relTime(ts) {
+      if (!ts) return '';
+      const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      if (s < 60) return 'just now';
+      if (s < 3600) return Math.floor(s / 60) + 'm';
+      if (s < 86400) return Math.floor(s / 3600) + 'h';
+      if (s < 86400 * 14) return Math.floor(s / 86400) + 'd';
+      try {
+        return new Date(ts).toLocaleDateString();
+      } catch (e) {
+        return '';
+      }
+    }
+    function renderHistoryList() {
+      if (!histList) return;
+      const idx = loadIndex();
+      histList.innerHTML = '';
+      if (!idx.length) {
+        const empty = document.createElement('div');
+        empty.className = 'hist-empty';
+        empty.textContent = 'No past chats yet';
+        histList.appendChild(empty);
+        return;
+      }
+      idx.forEach(function (c) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'hist-item' + (c.id === currentChatId ? ' active' : '');
+        btn.setAttribute('data-id', c.id);
+        const title = document.createElement('span');
+        title.className = 'hist-title';
+        title.textContent = c.title || 'New chat';
+        const meta = document.createElement('span');
+        meta.className = 'hist-meta';
+        meta.textContent = relTime(c.updatedAt) + (c.preview ? ' · ' + c.preview : '');
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'hist-del';
+        del.title = 'Delete chat';
+        del.setAttribute('aria-label', 'Delete chat');
+        del.textContent = '×';
+        del.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          deleteChat(c.id);
+        });
+        btn.appendChild(title);
+        btn.appendChild(del);
+        btn.appendChild(meta);
+        btn.addEventListener('click', function () {
+          if (c.id === currentChatId) return;
+          switchChat(c.id);
+        });
+        histList.appendChild(btn);
+      });
+    }
+    function clearChatPane() {
+      chat.innerHTML = '';
+      savingsStrip.classList.remove('show');
+      savingsStrip.innerHTML = '';
+    }
+    function renderStoredMessages(msgs) {
+      skipHistorySave = true;
+      clearChatPane();
+      (msgs || []).forEach(function (m) {
+        // Image bytes are not stored — note only
+        let thumbs = null;
+        if (m.thumbNote) {
+          // no-op visual; text already may mention attachments
+        }
+        addMsg(m.role, m.text, m.meta, m.isError, thumbs);
+      });
+      skipHistorySave = false;
+      scrollChatToBottom();
+    }
+    function switchChat(id) {
+      if (currentChatId) persistCurrentChat();
+      currentChatId = id;
+      currentMessages = loadChatMessages(id);
+      try { localStorage.setItem(HIST_ACTIVE_KEY, id); } catch (e) {}
+      const idx = loadIndex();
+      const row = idx.find(function (c) { return c.id === id; });
+      if (chatTitleEl) chatTitleEl.textContent = (row && row.title) || 'Chat';
+      if (currentMessages.length) {
+        renderStoredMessages(currentMessages);
+      } else {
+        clearChatPane();
+        skipHistorySave = true;
+        addMsg('sys', WELCOME_MSG);
+        skipHistorySave = false;
+        currentMessages = [];
+      }
+      renderHistoryList();
+      inputEl.focus();
+    }
+    function startNewChat(opts) {
+      opts = opts || {};
+      if (currentChatId) persistCurrentChat();
+      // If current chat is empty "New chat", reuse it
+      if (!opts.force && currentChatId) {
+        const idx = loadIndex();
+        const row = idx.find(function (c) { return c.id === currentChatId; });
+        if (row && row.title === 'New chat' && (!currentMessages || !currentMessages.length)) {
+          clearChatPane();
+          skipHistorySave = true;
+          addMsg('sys', WELCOME_MSG);
+          skipHistorySave = false;
+          currentMessages = [];
+          inputEl.focus();
+          return;
+        }
+      }
+      const id = newChatId();
+      const row = {
+        id: id,
+        title: 'New chat',
+        preview: '',
+        updatedAt: Date.now(),
+        createdAt: Date.now()
+      };
+      const idx = loadIndex().filter(function (c) { return c.id !== id; });
+      // Drop oldest beyond max
+      while (idx.length >= HIST_MAX_CHATS) {
+        const old = idx.pop();
+        if (old) {
+          try { localStorage.removeItem(HIST_MSG_PREFIX + old.id); } catch (e) {}
+        }
+      }
+      saveIndex([row].concat(idx));
+      currentChatId = id;
+      currentMessages = [];
+      try { localStorage.setItem(HIST_ACTIVE_KEY, id); } catch (e) {}
+      saveChatMessages(id, []);
+      clearChatPane();
+      skipHistorySave = true;
+      addMsg('sys', WELCOME_MSG);
+      skipHistorySave = false;
+      currentMessages = [];
+      if (chatTitleEl) chatTitleEl.textContent = 'New chat';
+      renderHistoryList();
+      inputEl.focus();
+    }
+    function deleteChat(id) {
+      if (!confirm('Delete this chat from history?')) return;
+      const idx = loadIndex().filter(function (c) { return c.id !== id; });
+      saveIndex(idx);
+      try { localStorage.removeItem(HIST_MSG_PREFIX + id); } catch (e) {}
+      if (id === currentChatId) {
+        if (idx.length) {
+          switchChat(idx[0].id);
+        } else {
+          currentChatId = null;
+          startNewChat({ force: true });
+        }
+      } else {
+        renderHistoryList();
+      }
+    }
+    function clearCurrentChatHistory() {
+      // /clear — wipe messages of active chat, keep the slot
+      currentMessages = [];
+      clearChatPane();
+      if (currentChatId) {
+        saveChatMessages(currentChatId, []);
+        const idx = loadIndex();
+        const row = idx.find(function (c) { return c.id === currentChatId; });
+        if (row) {
+          row.preview = '';
+          row.updatedAt = Date.now();
+          // keep title so user can still find the thread slot
+          const rest = idx.filter(function (c) { return c.id !== currentChatId; });
+          saveIndex([row].concat(rest));
+        }
+      }
+      skipHistorySave = true;
+      addMsg('sys', 'Chat cleared.');
+      skipHistorySave = false;
+      // Don't re-store the "cleared" notice as only content permanently — soft
+      currentMessages = [];
+      if (currentChatId) saveChatMessages(currentChatId, []);
+      renderHistoryList();
+    }
+    function initChatHistory() {
+      const idx = loadIndex();
+      let active = null;
+      try { active = localStorage.getItem(HIST_ACTIVE_KEY); } catch (e) { active = null; }
+      if (active && idx.some(function (c) { return c.id === active; })) {
+        currentChatId = active;
+        currentMessages = loadChatMessages(active);
+        const row = idx.find(function (c) { return c.id === active; });
+        if (chatTitleEl) chatTitleEl.textContent = (row && row.title) || 'Chat';
+        if (currentMessages.length) {
+          renderStoredMessages(currentMessages);
+        } else {
+          skipHistorySave = true;
+          addMsg('sys', WELCOME_MSG);
+          skipHistorySave = false;
+          currentMessages = [];
+        }
+        renderHistoryList();
+        return;
+      }
+      if (idx.length) {
+        switchChat(idx[0].id);
+        return;
+      }
+      startNewChat({ force: true });
     }
 
     function refreshAttachHint() {
@@ -985,7 +1455,10 @@ code:      /review  /explain</pre>
       [updateBtn, document.getElementById('menuUpdate'), document.getElementById('helpUpdate')].forEach(function (btn) {
         if (!btn) return;
         btn.disabled = !!busy;
-        if (btn === updateBtn) btn.textContent = text;
+        if (btn === updateBtn) {
+          btn.textContent = text;
+          if (busy) btn.classList.remove('needs-update');
+        }
       });
     }
 
@@ -1169,7 +1642,18 @@ code:      /review  /explain</pre>
       });
     }
 
-    addMsg('sys', 'Chat or /commands. Local folders: Browse folders (sidebar) or /workspace C:\\path. Also /github clone · /ssh (keys stay on this PC).');
+    initChatHistory();
+
+    if (newChatBtn) {
+      newChatBtn.addEventListener('click', function () { startNewChat(); });
+    }
+    const menuNewChat = document.getElementById('menuNewChat');
+    if (menuNewChat) {
+      menuNewChat.addEventListener('click', function () {
+        closeMenu();
+        startNewChat();
+      });
+    }
 
     function shortPath(p) {
       if (!p) return '';
@@ -1712,9 +2196,12 @@ code:      /review  /explain</pre>
       }
       if (data.session) applySession(data.session);
       if (data.clear) {
-        chat.innerHTML = '';
-        savingsStrip.classList.remove('show');
-        savingsStrip.innerHTML = '';
+        clearCurrentChatHistory();
+        // message from server may still follow; avoid double "cleared"
+        if (data.message) {
+          const msg = String(data.message);
+          if (/clear/i.test(msg)) data.message = null;
+        }
       }
       // /workspace cat|pack and /ssh cat|run return files → chat attachments
       const fl = data.files || data.Files || [];
@@ -1734,19 +2221,19 @@ code:      /review  /explain</pre>
         if (data.update_available && remote) {
           versionBadge.classList.add('warn');
           versionBadge.title = 'Update available: v' + local + ' → v' + remote;
-          if (versionLine) versionLine.textContent = 'v' + local + ' → v' + remote;
           updateBtn.disabled = false;
-          updateBtn.textContent = 'v' + remote;
-          updateBtn.title = 'Update to v' + remote;
+          updateBtn.textContent = 'Update';
+          updateBtn.title = 'Update available — install v' + remote;
           updateBtn.classList.remove('secondary-look');
+          updateBtn.classList.add('needs-update');
         } else {
           versionBadge.classList.remove('warn');
           versionBadge.title = remote ? ('Up to date · v' + local) : ('Local v' + local);
-          if (versionLine) versionLine.textContent = '';
           updateBtn.disabled = false;
           updateBtn.textContent = 'Update';
           updateBtn.title = 'Reinstall latest client';
           updateBtn.classList.add('secondary-look');
+          updateBtn.classList.remove('needs-update');
         }
       } catch (e) {
         versionBadge.textContent = 'local';
@@ -1754,6 +2241,8 @@ code:      /review  /explain</pre>
         updateBtn.disabled = false;
         updateBtn.textContent = 'Update';
         updateBtn.title = 'Update from GitHub';
+        updateBtn.classList.remove('needs-update');
+        updateBtn.classList.add('secondary-look');
       }
     }
 
