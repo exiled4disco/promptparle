@@ -101,15 +101,21 @@ Authenticated with the browser session cookie:
 Requires [Git for Windows](https://git-scm.com/download/win).
 
 ```powershell
-# Clone/update + install + prompt for API key (works in Windows PowerShell 5.1)
-irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
+# Recommended (hosted on promptparle.com — no GitHub raw cache issues)
+irm https://promptparle.com/install.ps1 | iex
+```
+
+Alternate (download-to-file bootstrap):
+
+```powershell
+irm https://promptparle.com/get.ps1 | iex
 ```
 
 Optional: auto-start local chat after install:
 
 ```powershell
-$global:PromptParleStart = $true
-irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
+$PromptParleStart = $true
+irm https://promptparle.com/install.ps1 | iex
 ```
 
 Or from a clone:
