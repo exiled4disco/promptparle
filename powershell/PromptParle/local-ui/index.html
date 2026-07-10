@@ -196,7 +196,7 @@
       overflow-y: auto;
     }
     .hist-item {
-      display: grid; grid-template-columns: 1fr auto; gap: .1rem .35rem;
+      display: grid; grid-template-columns: 1fr auto auto; gap: .1rem .15rem;
       align-items: start;
       width: 100%; text-align: left;
       background: #0a0e16; border: 1px solid var(--border); border-radius: 7px;
@@ -212,16 +212,47 @@
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       min-width: 0;
     }
+    .hist-item .hist-title-input {
+      grid-column: 1 / -1;
+      width: 100%; font: inherit; font-size: .72rem; font-weight: 600;
+      color: var(--text); background: #06080f; border: 1px solid var(--accent);
+      border-radius: 5px; padding: .2rem .35rem; outline: none;
+    }
     .hist-item .hist-meta {
       grid-column: 1; font-size: .62rem; color: var(--dim); line-height: 1.2;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    .hist-item .hist-ren,
     .hist-item .hist-del {
-      grid-column: 2; grid-row: 1 / span 2; align-self: center;
+      grid-row: 1 / span 2; align-self: center;
       background: transparent; border: 0; color: var(--dim); cursor: pointer;
-      font-size: .9rem; line-height: 1; padding: .1rem .2rem; border-radius: 4px;
+      font-size: .78rem; line-height: 1; padding: .15rem .22rem; border-radius: 4px;
+      opacity: .55;
     }
+    .hist-item:hover .hist-ren,
+    .hist-item:hover .hist-del,
+    .hist-item.active .hist-ren,
+    .hist-item.active .hist-del { opacity: 1; }
+    .hist-item .hist-ren { grid-column: 2; }
+    .hist-item .hist-del { grid-column: 3; font-size: .9rem; }
+    .hist-item .hist-ren:hover { color: var(--accent); }
     .hist-item .hist-del:hover { color: var(--danger); }
+    .main-top .title.editable-title {
+      cursor: pointer;
+      border-radius: 6px;
+      padding: .1rem .25rem;
+      margin: -.1rem -.25rem;
+    }
+    .main-top .title.editable-title:hover {
+      background: rgba(91,140,255,.12);
+      color: var(--accent);
+    }
+    .main-top .title-input {
+      font: inherit; font-size: inherit; font-weight: 650;
+      color: var(--text); background: #06080f; border: 1px solid var(--accent);
+      border-radius: 6px; padding: .15rem .4rem; min-width: 8rem; max-width: min(40vw, 22rem);
+      outline: none;
+    }
     .hist-empty {
       font-size: .68rem; color: var(--dim); padding: .2rem 0;
     }
@@ -1282,7 +1313,7 @@
 
     <div class="main">
       <div class="main-top">
-        <div class="title" id="chatTitle">Chat</div>
+        <div class="title editable-title" id="chatTitle" title="Click to rename chat">Chat</div>
         <div class="top-actions" id="topActions">
           <span class="hint attach-hint" id="attachHint"></span>
           <span class="badge" id="versionBadge" title="Client version">…</span>
@@ -1378,6 +1409,7 @@ Sidebar: Provider + Dial + Tools — no agents</pre>
       <div>
       <h3>Chat history</h3>
       <pre>Sidebar → History: switch chats, New, delete (×)
+Rename: ✎ button, double-click title, or click header title
 ⋯ menu → New chat
 /clear                active chat only
 History: this browser (localStorage)</pre>
@@ -2237,12 +2269,85 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (line.length <= 48) return line;
       return line.slice(0, 46) + '…';
     }
+    function sanitizeChatTitle(raw) {
+      var t = String(raw || '').replace(/\s+/g, ' ').trim();
+      if (!t) return '';
+      if (t.length > 80) t = t.slice(0, 78) + '…';
+      return t;
+    }
+    /** User rename — locks title so auto-title never overwrites. */
+    function renameChat(id, newTitle) {
+      if (!id) return false;
+      var title = sanitizeChatTitle(newTitle);
+      if (!title) return false;
+      var idx = loadIndex();
+      var row = idx.find(function (c) { return c.id === id; });
+      if (!row) return false;
+      row.title = title;
+      row.titleCustom = true;
+      row.updatedAt = Date.now();
+      var rest = idx.filter(function (c) { return c.id !== id; });
+      saveIndex([row].concat(rest));
+      if (id === currentChatId && chatTitleEl) {
+        chatTitleEl.textContent = title;
+        chatTitleEl.title = 'Click to rename chat';
+      }
+      renderHistoryList();
+      return true;
+    }
+    function beginRenameChat(id, anchorEl) {
+      if (!id) return;
+      var idx = loadIndex();
+      var row = idx.find(function (c) { return c.id === id; });
+      if (!row) return;
+      var current = row.title || 'New chat';
+      // Prefer inline input when we have a hist-item host
+      var host = anchorEl && anchorEl.closest ? anchorEl.closest('.hist-item') : null;
+      if (host && histList && histList.contains(host)) {
+        if (host.querySelector('.hist-title-input')) return;
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'hist-title-input';
+        input.value = current;
+        input.setAttribute('aria-label', 'Rename chat');
+        input.maxLength = 80;
+        var titleEl = host.querySelector('.hist-title');
+        var metaEl = host.querySelector('.hist-meta');
+        var renEl = host.querySelector('.hist-ren');
+        var delEl = host.querySelector('.hist-del');
+        if (titleEl) titleEl.style.display = 'none';
+        if (metaEl) metaEl.style.display = 'none';
+        if (renEl) renEl.style.visibility = 'hidden';
+        if (delEl) delEl.style.visibility = 'hidden';
+        host.insertBefore(input, host.firstChild);
+        input.focus();
+        input.select();
+        var done = false;
+        function finish(ok) {
+          if (done) return;
+          done = true;
+          if (ok) renameChat(id, input.value);
+          renderHistoryList();
+        }
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener('blur', function () { finish(true); });
+        return;
+      }
+      // Header / fallback: prompt
+      var next = window.prompt('Rename chat', current);
+      if (next == null) return;
+      renameChat(id, next);
+    }
     function maybeSetChatTitleFromUser(text) {
       if (!currentChatId) return;
       const idx = loadIndex();
       const row = idx.find(function (c) { return c.id === currentChatId; });
       if (!row) return;
-      // Only auto-title once (still "New chat" or empty)
+      // User rename locks the label; only auto-title once (still "New chat" or empty)
+      if (row.titleCustom) return;
       if (row.title && row.title !== 'New chat') return;
       if (String(text || '').trim().startsWith('/')) return;
       row.title = titleFromText(text);
@@ -2287,14 +2392,17 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (previewSrc) {
           row.preview = String(previewSrc.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
         }
-        if ((!row.title || row.title === 'New chat') && lastUser) {
+        if (!row.titleCustom && (!row.title || row.title === 'New chat') && lastUser) {
           row.title = titleFromText(lastUser.text);
         }
         const rest = idx.filter(function (c) { return c.id !== currentChatId; });
         saveIndex([row].concat(rest).slice(0, HIST_MAX_CHATS));
       }
       try { localStorage.setItem(HIST_ACTIVE_KEY, currentChatId); } catch (e) {}
-      if (chatTitleEl) chatTitleEl.textContent = row.title || 'Chat';
+      if (chatTitleEl) {
+        chatTitleEl.textContent = row.title || 'Chat';
+        chatTitleEl.title = 'Click to rename chat';
+      }
       renderHistoryList();
     }
     function relTime(ts) {
@@ -2326,12 +2434,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         btn.type = 'button';
         btn.className = 'hist-item' + (c.id === currentChatId ? ' active' : '');
         btn.setAttribute('data-id', c.id);
+        btn.title = 'Open · double-click title to rename';
         const title = document.createElement('span');
         title.className = 'hist-title';
         title.textContent = c.title || 'New chat';
+        title.title = 'Double-click to rename';
+        title.addEventListener('dblclick', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          beginRenameChat(c.id, btn);
+        });
         const meta = document.createElement('span');
         meta.className = 'hist-meta';
         meta.textContent = relTime(c.updatedAt) + (c.preview ? ' · ' + c.preview : '');
+        const ren = document.createElement('button');
+        ren.type = 'button';
+        ren.className = 'hist-ren';
+        ren.title = 'Rename chat';
+        ren.setAttribute('aria-label', 'Rename chat');
+        ren.textContent = '✎';
+        ren.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          beginRenameChat(c.id, btn);
+        });
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'hist-del';
@@ -2344,6 +2470,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           deleteChat(c.id);
         });
         btn.appendChild(title);
+        btn.appendChild(ren);
         btn.appendChild(del);
         btn.appendChild(meta);
         btn.addEventListener('click', function () {
@@ -2379,7 +2506,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       try { localStorage.setItem(HIST_ACTIVE_KEY, id); } catch (e) {}
       const idx = loadIndex();
       const row = idx.find(function (c) { return c.id === id; });
-      if (chatTitleEl) chatTitleEl.textContent = (row && row.title) || 'Chat';
+      if (chatTitleEl) {
+        chatTitleEl.textContent = (row && row.title) || 'Chat';
+        chatTitleEl.title = 'Click to rename chat';
+      }
       if (currentMessages.length) {
         renderStoredMessages(currentMessages);
       } else {
@@ -2435,7 +2565,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       addMsg('sys', WELCOME_MSG);
       skipHistorySave = false;
       currentMessages = [];
-      if (chatTitleEl) chatTitleEl.textContent = 'New chat';
+      if (chatTitleEl) {
+        chatTitleEl.textContent = 'New chat';
+        chatTitleEl.title = 'Click to rename chat';
+      }
       renderHistoryList();
       inputEl.focus();
     }
@@ -2487,7 +2620,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         currentChatId = active;
         currentMessages = loadChatMessages(active);
         const row = idx.find(function (c) { return c.id === active; });
-        if (chatTitleEl) chatTitleEl.textContent = (row && row.title) || 'Chat';
+        if (chatTitleEl) {
+          chatTitleEl.textContent = (row && row.title) || 'Chat';
+          chatTitleEl.title = 'Click to rename chat';
+        }
         if (currentMessages.length) {
           renderStoredMessages(currentMessages);
         } else {
@@ -2864,6 +3000,41 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     if (newChatBtn) {
       newChatBtn.addEventListener('click', function () { startNewChat(); });
+    if (chatTitleEl) {
+      chatTitleEl.addEventListener('click', function () {
+        if (!currentChatId) return;
+        // Inline rename in the main header
+        if (chatTitleEl.querySelector('input')) return;
+        var cur = chatTitleEl.textContent || 'New chat';
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'title-input';
+        input.value = cur;
+        input.maxLength = 80;
+        input.setAttribute('aria-label', 'Rename chat');
+        chatTitleEl.textContent = '';
+        chatTitleEl.appendChild(input);
+        input.focus();
+        input.select();
+        var done = false;
+        function finish(ok) {
+          if (done) return;
+          done = true;
+          if (ok) renameChat(currentChatId, input.value);
+          else {
+            chatTitleEl.textContent = cur;
+            chatTitleEl.title = 'Click to rename chat';
+          }
+        }
+        input.addEventListener('keydown', function (e) {
+          e.stopPropagation();
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener('click', function (e) { e.stopPropagation(); });
+        input.addEventListener('blur', function () { finish(true); });
+      });
+    }
     }
     const menuNewChat = document.getElementById('menuNewChat');
     if (menuNewChat) {
