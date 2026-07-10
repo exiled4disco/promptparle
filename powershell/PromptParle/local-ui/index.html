@@ -5004,6 +5004,23 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           versionBadge.classList.add('warn');
           versionBadge.title = 'Update available: v' + local + ' → v' + remote;
         }
+      } else if (!remote) {
+        // Portal check failed — NEVER claim "Up to date" (that hid 0.14.9)
+        updateBtn.classList.remove('secondary-look');
+        updateBtn.classList.add('needs-update');
+        updateBtn.style.setProperty('color', '#fbbf24', 'important');
+        updateBtn.style.setProperty('font-weight', '700', 'important');
+        updateBtn.style.setProperty('border-color', 'rgba(251,191,36,0.55)', 'important');
+        updateBtn.textContent = 'Check update';
+        updateBtn.title = 'Could not read portal version · click to download latest from portal · Shift+click force';
+        updateBtn.setAttribute('data-update', 'check');
+        updateBtn.setAttribute('aria-label', 'Check for update — portal version unknown');
+        if (menuUp) menuUp.textContent = 'Check update (portal unknown)';
+        if (helpUp) helpUp.textContent = 'Check update (portal unknown)';
+        if (versionBadge) {
+          versionBadge.classList.add('warn');
+          versionBadge.title = 'Local v' + local + ' · portal version check failed';
+        }
       } else {
         updateBtn.classList.add('secondary-look');
         updateBtn.classList.remove('needs-update');
@@ -5011,16 +5028,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         updateBtn.style.removeProperty('font-weight');
         updateBtn.style.removeProperty('border-color');
         updateBtn.textContent = 'Up to date';
-        updateBtn.title = remote
-          ? ('Up to date · v' + local + ' (portal v' + remote + ') · click for options · Shift+click force reinstall')
-          : ('Up to date · v' + local + ' · portal check pending');
+        updateBtn.title = 'Up to date · v' + local + ' (portal v' + remote + ') · click for options · Shift+click force reinstall';
         updateBtn.removeAttribute('data-update');
         updateBtn.setAttribute('aria-label', 'Up to date: v' + local);
-        if (menuUp) menuUp.textContent = remote ? ('Up to date (v' + local + ')') : 'Update client';
-        if (helpUp) helpUp.textContent = remote ? ('Up to date (v' + local + ')') : 'Update client';
+        if (menuUp) menuUp.textContent = 'Up to date (v' + local + ')';
+        if (helpUp) helpUp.textContent = 'Up to date (v' + local + ')';
         if (versionBadge) {
           versionBadge.classList.remove('warn');
-          versionBadge.title = remote ? ('Up to date · v' + local) : ('Local v' + local);
+          versionBadge.title = 'Up to date · v' + local;
         }
       }
     }
@@ -5046,8 +5061,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           available = false;
         }
         setUpdateButtonState(available, local, remote);
-        if (data.check_error && versionBadge && !available) {
+        if (data.check_error && versionBadge) {
           versionBadge.title = (versionBadge.title || '') + ' · check: ' + data.check_error;
+        }
+        // Surface local vs portal in activity log when an update is available
+        if (available && remote) {
+          try {
+            logOps('Update available: v' + local + ' → v' + remote, { level: 'warn', source: 'version' });
+          } catch (e) { /* ignore */ }
         }
       } catch (e) {
         if (versionBadge) {

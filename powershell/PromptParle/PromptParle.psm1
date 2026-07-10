@@ -5701,10 +5701,55 @@ function Get-PromptParleClientVersion {
     return '0.0.0'
 }
 
+function ConvertTo-PromptParleWebText {
+    <# Decode Invoke-WebRequest Content that may be [string] or [byte[]] (PS 5.1 + octet-stream). #>
+    param($Content)
+    if ($null -eq $Content) { return '' }
+    if ($Content -is [byte[]]) {
+        try { return [System.Text.Encoding]::UTF8.GetString($Content) } catch {
+            try { return [System.Text.Encoding]::ASCII.GetString($Content) } catch { return '' }
+        }
+    }
+    # Char[] / other
+    if ($Content -is [System.Array] -and -not ($Content -is [string])) {
+        try {
+            if ($Content.Length -gt 0 -and $Content[0] -is [byte]) {
+                return [System.Text.Encoding]::UTF8.GetString([byte[]]$Content)
+            }
+        } catch { }
+    }
+    $s = [string]$Content
+    # Classic failure: [string][byte[]] => "System.Byte[]"
+    if ($s -eq 'System.Byte[]') { return '' }
+    return $s
+}
+
+function Get-PromptParleVersionFromRemoteText {
+    param([string]$Raw)
+    if (-not $Raw) { return $null }
+    $t = $Raw.Trim()
+    # Plain version.txt / PromptParle.version
+    if ($t -match '^(?i)v?(\d+\.\d+(?:\.\d+){0,3})\s*$') {
+        return [string]$Matches[1]
+    }
+    if ($t -match "(?im)ModuleVersion\s*=\s*'([^']+)'") {
+        return [string]$Matches[1]
+    }
+    if ($t -match '(?im)ModuleVersion\s*=\s*"([^"]+)"') {
+        return [string]$Matches[1]
+    }
+    # JSON { "version": "0.14.9" }
+    if ($t -match '(?i)"version"\s*:\s*"([^"]+)"') {
+        return [string]$Matches[1]
+    }
+    return $null
+}
+
 function Get-PromptParleRemoteClientVersion {
     <#
     .SYNOPSIS
       Latest client version from portal (deployed) then GitHub main.
+      Robust on Windows PowerShell 5.1: byte[] body decode + plain version.txt.
     #>
     [CmdletBinding()]
     param()
@@ -5713,32 +5758,59 @@ function Get-PromptParleRemoteClientVersion {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     } catch { }
 
+    # Unix-seconds cache bust (PS 5.1 safe — avoid ToUnixTimeSeconds)
     $bust = [int]((Get-Date).ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds
-    # Portal is authoritative for ship — GitHub can lag until push.
+    # Plain version first (text/plain — never byte[]-mangled). Portal is ship authority.
     $urls = @(
+        "https://promptparle.com/version.txt?v=$bust",
+        "https://promptparle.com/PromptParle.version?v=$bust",
         "https://promptparle.com/PromptParle.psd1?v=$bust",
         "https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1?v=$bust"
     )
     $lastErr = $null
+    $found = New-Object System.Collections.Generic.List[string]
     foreach ($url in $urls) {
         try {
             $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20 -Headers @{
                 'Cache-Control' = 'no-cache'
                 'Pragma'        = 'no-cache'
+                'Accept'        = 'text/plain, application/octet-stream, */*'
             }
-            $raw = [string]$resp.Content
-            if ($raw -match "ModuleVersion\s*=\s*'([^']+)'") {
-                return [string]$Matches[1]
+            $raw = ConvertTo-PromptParleWebText -Content $resp.Content
+            if (-not $raw) {
+                # Fallback: some hosts put text in RawContentStream
+                try {
+                    if ($resp.RawContentStream) {
+                        $sr = New-Object System.IO.StreamReader($resp.RawContentStream, [System.Text.Encoding]::UTF8, $true)
+                        $raw = $sr.ReadToEnd()
+                    }
+                } catch { }
+            }
+            $ver = Get-PromptParleVersionFromRemoteText -Raw $raw
+            if ($ver) {
+                [void]$found.Add($ver)
+                # Prefer first hit that is a portal plain version or any parseable
+                # Continue briefly to allow max() if multiple differ
+            } else {
+                $lastErr = "No version in response from $url (len=$(if ($raw) { $raw.Length } else { 0 }))"
             }
         } catch {
             $lastErr = "$_"
             continue
         }
     }
-    if ($lastErr) {
-        Write-Verbose "Remote version check failed: $lastErr"
+    if ($found.Count -eq 0) {
+        if ($lastErr) {
+            Write-Verbose "Remote version check failed: $lastErr"
+        }
+        return $null
     }
-    return $null
+    # Highest version among sources (portal plain + psd1 + github)
+    $best = $found[0]
+    foreach ($v in $found) {
+        if ((Compare-PromptParleVersion -A $best -B $v) -lt 0) { $best = $v }
+    }
+    return [string]$best
 }
 
 function Compare-PromptParleVersion {
@@ -5793,17 +5865,20 @@ function Get-PromptParleUpdateStatus {
         $err = "$_"
     }
     if (-not $remote -and -not $err) {
-        $err = 'Could not read remote ModuleVersion from portal or GitHub'
+        $err = 'Could not read remote version from portal (version.txt / PromptParle.psd1) or GitHub'
     }
     $updateAvailable = $false
     if ($remote) {
         $updateAvailable = (Compare-PromptParleVersion -A $local -B $remote) -lt 0
     }
+    # If remote check failed, do NOT claim "up to date" — UI should still offer Update
+    $checkOk = [bool]$remote
     return [pscustomobject]@{
         local_version    = [string]$local
         remote_version   = if ($remote) { [string]$remote } else { $null }
         update_available = [bool]$updateAvailable
         check_error      = $err
+        check_ok         = $checkOk
         module_root      = $root
     }
 }
@@ -7062,8 +7137,11 @@ function Start-PromptParleLocalServer {
                         $errV = [string](Get-PromptParleProp $st 'check_error' '')
                         $errJson = if ($errV) { '"' + ($errV -replace '\\', '\\\\' -replace '"', '\"' -replace "`n", ' ' -replace "`r", '') + '"' } else { 'null' }
                         $rootV = [string](Get-PromptParleProp $st 'module_root' '')
+                        $checkOk = $false
+                        try { $checkOk = [bool](Get-PromptParleProp $st 'check_ok' $false) } catch { $checkOk = [bool]$remV }
+                        $checkOkJson = if ($checkOk) { 'true' } else { 'false' }
                         $payload = @"
-{"ok":true,"local_version":"$($locV -replace '"','')","remote_version":$remJson,"update_available":$updJson,"check_error":$errJson,"module_root":"$($rootV -replace '\\','\\\\' -replace '"','')","port":$Port}
+{"ok":true,"local_version":"$($locV -replace '"','')","remote_version":$remJson,"update_available":$updJson,"check_ok":$checkOkJson,"check_error":$errJson,"module_root":"$($rootV -replace '\\','\\\\' -replace '"','')","port":$Port}
 "@
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload.Trim()
                     } catch {
