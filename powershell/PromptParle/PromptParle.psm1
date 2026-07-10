@@ -1445,7 +1445,7 @@ function Get-PromptParleToolCatalog {
         [pscustomobject]@{
             id = 'web_search'; name = 'Web search'
             category = 'research'; local = $true
-            description = 'Brief web results (DDG + Wikipedia); cached, char-capped.'
+            description = 'Brief web results (DDG IA + HTML + Wikipedia + domain page); cached, char-capped.'
             auto = $true
         },
         [pscustomobject]@{
@@ -1643,7 +1643,7 @@ function Invoke-PromptParleWebSearchLocal {
     <#
     .SYNOPSIS
       Brief multi-source web search on this PC (no AI tokens for the fetch).
-      Sources: DuckDuckGo Instant Answer → Wikipedia opensearch/summary.
+      Sources: DDG Instant Answer → Wikipedia → HTML DDG → domain/page auto-fetch (0.22.1).
       Optimized: cache 5m, max N hits, hard char budget, no HTML dumps.
     #>
     [CmdletBinding()]
@@ -1800,12 +1800,97 @@ function Invoke-PromptParleWebSearchLocal {
         }
     }
 
+    # 3) HTML DuckDuckGo search — Instant Answer is often empty for niche products
+    if ($hits.Count -lt 2) {
+        try {
+            $htmlHits = @(Invoke-PromptParleWebSearchHtml -Query $q -MaxResults $MaxResults)
+            $added = 0
+            foreach ($hh in $htmlHits) {
+                if ($hits.Count -ge $MaxResults) { break }
+                $dup = $false
+                foreach ($h in $hits) {
+                    if (($hh.url -and $h.url -eq $hh.url) -or ($h.title -eq $hh.title)) { $dup = $true; break }
+                }
+                if ($dup) { continue }
+                $hits.Add($hh)
+                $added++
+            }
+            if ($added -gt 0) { $notes.Add("ddg-html:$added") }
+        } catch {
+            $notes.Add('ddg-html-skip')
+        }
+    }
+
+    # 4) Domain / brand in query → always fetch primary page (site is source of truth)
+    $pageBlob = ''
+    $domainHit = ''
+    if ($q -match '(?i)\b((?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|dev|co))\b') {
+        $domainHit = $Matches[1].ToLowerInvariant()
+    } elseif ($q -match '(?i)\bexamplecorp\b') {
+        $domainHit = 'examplecorp.com'
+    }
+    # Brand-like token → try matching hit URL host (e.g. "examplecorp strengths")
+    if (-not $domainHit -and $hits.Count -gt 0) {
+        $qTokens = @([regex]::Matches($q.ToLowerInvariant(), '[a-z0-9]{4,}') | ForEach-Object { $_.Value } |
+            Where-Object { $_ -notmatch '^(https|http|www|com|org|net|news|latest|release|releases|strength|strengths|about|what|does|with|from|site|website|company|product|solution)$' })
+        foreach ($h in $hits) {
+            $hu = [string]$h.url
+            if (-not $hu) { continue }
+            if ($hu -match '(?i)https?://(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)') {
+                $hostCand = $Matches[1].ToLowerInvariant()
+                if ($hostCand -match '(?i)(wikipedia|duckduckgo|reddit|youtube|twitter|linkedin|facebook|medium\.com|github\.com)') { continue }
+                $hostCore = ($hostCand -split '\.')[0]
+                foreach ($tok in $qTokens) {
+                    if ($hostCore -eq $tok -or $hostCore.Contains($tok) -or $tok.Contains($hostCore)) {
+                        $domainHit = $hostCand
+                        break
+                    }
+                }
+                if ($domainHit) { break }
+            }
+        }
+    }
+    if ($domainHit) {
+        try {
+            $pg = Invoke-PromptParleWebPageFetch -UrlOrDomain $domainHit -MaxChars ([Math]::Min(4500, [int]($MaxChars * 0.7)))
+            if ($pg.ok -and $pg.text) {
+                $pageBlob = $pg.text
+                $notes.Add("page:$domainHit")
+                # Ensure domain appears as hit #1 if missing
+                $hasDom = $false
+                foreach ($h in $hits) {
+                    if ($h.url -and $h.url -match [regex]::Escape($domainHit)) { $hasDom = $true; break }
+                }
+                if (-not $hasDom) {
+                    $titleLine = $domainHit
+                    if ($pageBlob -match '(?i)\bExampleCorp[^\n.]{0,80}') {
+                        $titleLine = $Matches[0].Trim()
+                    }
+                    $snip = $pageBlob
+                    if ($snip.Length -gt 200) { $snip = $snip.Substring(0, 197) + '…' }
+                    $hits.Insert(0, [pscustomobject]@{
+                        title = $titleLine
+                        url   = "https://$domainHit/"
+                        snip  = $snip
+                    })
+                }
+                if (-not $abstract) {
+                    $abstract = if ($pageBlob.Length -gt 500) { $pageBlob.Substring(0, 497) + '…' } else { $pageBlob }
+                }
+            } else {
+                $notes.Add("page-fail:$domainHit")
+            }
+        } catch {
+            $notes.Add('page-skip')
+        }
+    }
+
     # Build brief text
     $out = New-Object System.Collections.Generic.List[string]
     $out.Add("[WEB] q=$q")
     if ($abstract) {
         $a = $abstract.Trim()
-        if ($a.Length -gt 420) { $a = $a.Substring(0, 417) + '…' }
+        if ($a.Length -gt 900) { $a = $a.Substring(0, 897) + '…' }
         $out.Add("Summary: $a")
     }
     $n = 0
@@ -1817,11 +1902,22 @@ function Invoke-PromptParleWebSearchLocal {
         $out.Add($line)
         if ($h.snip) { $out.Add("   $($h.snip)") }
     }
-    if ($n -eq 0 -and -not $abstract) {
-        $out.Add('(no brief hits — try a more specific query or /search <terms>)')
+    if ($pageBlob) {
+        $room = $MaxChars - (($out -join "`n").Length) - 80
+        if ($room -gt 400) {
+            $pb = $pageBlob
+            if ($pb.Length -gt $room) { $pb = $pb.Substring(0, $room) + '…[page]' }
+            $out.Add("---")
+            $out.Add("[OBSERVE] kind=web_page from web_search auto-fetch")
+            $out.Add("url: https://$domainHit/")
+            $out.Add($pb)
+        }
+    }
+    if ($n -eq 0 -and -not $abstract -and -not $pageBlob) {
+        $out.Add('(no brief hits — client will still try web_page if a domain is known)')
         $notes.Add('empty')
     }
-    $out.Add('Cite sources; prefer local workspace facts over web when they conflict.')
+    $out.Add('Cite sources; prefer fetched page text over memory.')
     $text = ($out -join "`n")
     if ($text.Length -gt $MaxChars) {
         $text = $text.Substring(0, $MaxChars) + "`n…[web budget]"
@@ -1839,8 +1935,9 @@ function Invoke-PromptParleWebSearchLocal {
         }
     }
 
+    $ok = ($n -gt 0 -or [bool]$abstract -or [bool]$pageBlob)
     return [pscustomobject]@{
-        ok      = $true
+        ok      = $ok
         tool    = 'web_search'
         local   = $true
         text    = $text
@@ -1848,7 +1945,71 @@ function Invoke-PromptParleWebSearchLocal {
         query   = $q
         cached  = $false
         hits    = $n
+        domain  = $domainHit
     }
+}
+
+function Invoke-PromptParleWebSearchHtml {
+    <#
+    .SYNOPSIS
+      0.22.1: HTML DuckDuckGo search fallback when Instant Answer API is empty.
+      Parses result titles + destination URLs (uddg=).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Query,
+        [int]$MaxResults = 5
+    )
+    $q = $Query.Trim()
+    if (-not $q) { return @() }
+    if ($MaxResults -lt 1) { $MaxResults = 1 }
+    if ($MaxResults -gt 8) { $MaxResults = 8 }
+    $ua = 'Mozilla/5.0 (compatible; PromptParle/0.22; +https://promptparle.com)'
+    $enc = [uri]::EscapeDataString($q)
+    $url = "https://html.duckduckgo.com/html/?q=$enc"
+    $html = ''
+    try {
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 18 -Headers @{
+            'User-Agent' = $ua
+            'Accept'     = 'text/html,application/xhtml+xml'
+        } -ErrorAction Stop
+        $html = [string]$resp.Content
+    } catch {
+        return @()
+    }
+    if (-not $html -or $html.Length -lt 80) { return @() }
+
+    $hits = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    # result links: class="result__a" ... uddg=ENCODED
+    foreach ($m in [regex]::Matches($html, '(?is)class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>')) {
+        if ($hits.Count -ge $MaxResults) { break }
+        $href = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+        $title = [System.Net.WebUtility]::HtmlDecode(($m.Groups[2].Value -replace '<[^>]+>', ' '))
+        $title = [regex]::Replace($title, '\s+', ' ').Trim()
+        $dest = $href
+        if ($href -match 'uddg=([^&]+)') {
+            try { $dest = [uri]::UnescapeDataString($Matches[1]) } catch { $dest = $Matches[1] }
+        } elseif ($href -match '^//') {
+            $dest = 'https:' + $href
+        }
+        if (-not $title -or $title.Length -lt 3) { continue }
+        if ($dest -match 'duckduckgo\.com' -and $dest -notmatch 'uddg=') { continue }
+        $k = ($dest + '|' + $title).ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        # nearby snippet
+        $snip = ''
+        $idx = $m.Index + $m.Length
+        $window = if ($idx -lt $html.Length) { $html.Substring($idx, [Math]::Min(600, $html.Length - $idx)) } else { '' }
+        if ($window -match '(?is)class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</td>|class="result__snippet"[^>]*>(.*?)</') {
+            $snip = [System.Net.WebUtility]::HtmlDecode(($Matches[1] + $Matches[2] + $Matches[3]) -replace '<[^>]+>', ' ')
+            $snip = [regex]::Replace($snip, '\s+', ' ').Trim()
+            if ($snip.Length -gt 180) { $snip = $snip.Substring(0, 177) + '…' }
+        }
+        $hits.Add([pscustomobject]@{ title = $title; url = $dest; snip = $snip })
+    }
+    return @($hits.ToArray())
 }
 
 function Invoke-PromptParleSecretScanLocal {
@@ -5359,6 +5520,8 @@ function Get-PromptParleCheckableClaims {
 
     $priorityRx = '(?i)\b(honeypot|decoy|zero-?day|patent|certified|certification|guaranteed|distributed|firewall|ransomware|ai-powered|machine learning|compliance|nist|fips|ot\b|scada|modbus|federation|amtd|vpatch|sensor|deception|capability|capabilities|feature|features|offers|provides|includes|supports|enables|integrates|platform|solution)\b'
     $metaRx = '(?i)^(i (can|will|would|think|believe|am|have)|here''s|heres|let me|sure[,.]|of course|based on (the )?(above|context)|as an ai|hope (this|that)|feel free|please (let|note)|note that|importantly)\b'
+    # 0.22.1: denial / empty-search meta is not a product claim (avoids 0% gate spam)
+    $denialRx = '(?i)\b(no web results|no (brief )?hits|no product facts|no (local )?(workspace|ssh) evidence|not present in (the )?(session|evidence|results|provided)|cannot be cited|requested research data is not present|all statements are therefore limited|quality gate \(client|evidence-backed \(|unverified rows|do not treat unverified|ask "where does it say)\b'
 
     # Sentence-ish splits
     $parts = [regex]::Split($body, '(?<=[.!?])\s+|\r?\n+')
@@ -5367,6 +5530,7 @@ function Get-PromptParleCheckableClaims {
         $s = [regex]::Replace(([string]$raw).Trim(), '\s+', ' ')
         if ($s.Length -lt 18 -or $s.Length -gt 220) { continue }
         if ($s -match $metaRx) { continue }
+        if ($s -match $denialRx) { continue }
         if ($s -match '(?i)^(what changed|applied|download|hands ran|client )') { continue }
         if ($s -match '^\s*[_*`]') { continue }
         # Must look like a factual assertion
@@ -5447,12 +5611,53 @@ function Get-PromptParleClaimMatchStatus {
     return 'partial'
 }
 
+function Test-PromptParleNoEvidenceMetaReply {
+    <#
+    .SYNOPSIS
+      0.22.1: true when the reply is about missing evidence (not product claims).
+      Quality gate must not score these as 0% unverified product facts.
+    #>
+    param([string]$Text = '')
+    if (-not $Text -or $Text.Length -lt 20) { return $false }
+    $t = $Text.ToLowerInvariant()
+    $hits = 0
+    if ($t -match 'no web results') { $hits++ }
+    if ($t -match 'no product facts|no (local )?(workspace|ssh) evidence') { $hits++ }
+    if ($t -match 'not present in (the )?(session|evidence|results|provided)') { $hits++ }
+    if ($t -match 'requested research data is not present|cannot be cited') { $hits++ }
+    if ($t -match 'all statements are therefore limited') { $hits++ }
+    if ($t -match 'no brief hits|client could not fetch') { $hits++ }
+    # Strong single signals
+    if ($t -match 'no web results available' -or $t -match 'requested research data is not present') { return $true }
+    return ($hits -ge 2)
+}
+
+function Test-PromptParleEvidenceHasSubstance {
+    <#
+    .SYNOPSIS
+      0.22.1: evidence corpus has real page/search content (not empty-shell tags).
+    #>
+    param([string]$Evidence = '')
+    if (-not $Evidence -or $Evidence.Length -lt 60) { return $false }
+    $e = $Evidence
+    # Strip observe/web scaffolding and failure notices
+    $e = [regex]::Replace($e, '(?im)^(kind|url|path|rule|q)=.*$', ' ')
+    $e = [regex]::Replace($e, '(?is)\[OBSERVE\][^\n]*|\[WEB\][^\n]*|client-first|from web_search auto-fetch', ' ')
+    $e = [regex]::Replace($e, '(?is)\(no brief hits[^)]*\)|kind=web_failed|kind=ssh_list_failed|client could not fetch[^\n]*|Cite sources[^\n]*', ' ')
+    $e = [regex]::Replace($e, '\s+', ' ').Trim()
+    if ($e.Length -lt 80) { return $false }
+    # Need some alphanumeric substance beyond scaffolding
+    $alnum = ([regex]::Matches($e, '[A-Za-z0-9]{4,}')).Count
+    return ($alnum -ge 12)
+}
+
 function Invoke-PromptParleQualityGate {
     <#
     .SYNOPSIS
-      0.21 quality gate — under-the-hood BS detector + corrector (0 AI tokens).
+      0.21/0.22.1 quality gate — under-the-hood BS detector + corrector (0 AI tokens).
       Extract checkable claims, match against [OBSERVE]/[WEB]/[HANDS] evidence,
       quantify support, flag unverified, soft-correct high-severity inventions.
+      0.22.1: skip no-evidence meta replies and empty-shell evidence (no 0% spam).
     .OUTPUTS
       text, applied, claims[], supported, partial, unsupported, score_pct, corrected
     #>
@@ -5471,6 +5676,16 @@ function Invoke-PromptParleQualityGate {
             claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
         }
     }
+
+    # Strip audit tails early so meta-detection sees model prose only
+    $bodyEarly = Remove-PromptParleClientAuditSections -Text $raw
+    if (Test-PromptParleNoEvidenceMetaReply -Text $bodyEarly) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'no-evidence-meta'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+
     $hasSource = $Force -or ($Context -match '(?m)\[OBSERVE\]') -or ($Context -match '(?m)\[WEB\]') -or ($Context -match '(?m)\[HANDS\]') -or ($Context -match '(?m)\[GROUNDING\]') -or ($Context -match '(?m)\[EVIDENCE_SPINE\]') -or ($Context -match '(?m)\[ATTACH\]') -or ($Context -match '===== FILE:')
     if (-not $hasSource) {
         return [pscustomobject]@{
@@ -5490,8 +5705,15 @@ function Invoke-PromptParleQualityGate {
             claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
         }
     }
+    # Empty-shell [WEB]/(no brief hits) is not scorable product evidence
+    if (-not $Force -and -not (Test-PromptParleEvidenceHasSubstance -Evidence $ev)) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'thin-evidence'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
 
-    $body = Remove-PromptParleClientAuditSections -Text $raw
+    $body = $bodyEarly
     # Preserve any already-appended audit tails (provenance) — reattach after gate
     $auditTail = ''
     if ($raw.Length -gt $body.Length -and $raw.StartsWith($body)) {
@@ -5590,7 +5812,7 @@ function Invoke-PromptParleQualityGate {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('')
     [void]$lines.Add('---')
-    [void]$lines.Add(('## Quality gate (client 0.21) — {0}% evidence-backed ({1}/{2} claims)' -f $score, $nSup, $checked))
+    [void]$lines.Add(('## Quality gate (client 0.22.1) — {0}% evidence-backed ({1}/{2} claims)' -f $score, $nSup, $checked))
     [void]$lines.Add(('_Client self-check vs fetched [OBSERVE]/[WEB]/[HANDS] evidence — 0 AI tokens. supported={0} partial={1} unverified={2}_' -f $nSup, $nPart, $nUnsup))
     if ($nUnsup -gt 0 -or $nPart -gt 0) {
         [void]$lines.Add('')
