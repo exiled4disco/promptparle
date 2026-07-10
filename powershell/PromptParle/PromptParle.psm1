@@ -1158,24 +1158,19 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      0.19: normal AI eng client — brain (API) + hands (this PC/SSH/web).
-      Primary product goal: fewest tokens that still get real work done.
-      Experience must match Claude/Cursor/Grok Build — natural, not boxed.
+      0.22: multi-AI eng client — native tools on the provider API; desktop is the hands.
+      Pass-through first; optimization is deferred.
     #>
     return @(
         'You are a capable engineering assistant in a continuous connected session (same feel as Grok Build / Claude / Cursor). Natural language only — no modes for the user.',
-        'BRAIN + HANDS: You are the brain (this API). PromptParle on the user PC is the hands: local workspace, SSH/remote product bind, web fetch, apply/run, document deliver. Prefer hands over guessing.',
-        'TOKEN DISCIPLINE (non-negotiable): minimize tokens. Do not restate large evidence. Do not dump full files unless required. Prefer short targeted hands requests over long essays. One clear plan, then act.',
-        'HANDS PROTOCOL: When you need evidence you do not have, emit ONLY a fenced hands block with lines tool: arg — then stop. Tools: web_search, web_page, ssh_list, ssh_read, ssh_run, workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Client runs them (0 AI tokens) and returns [HANDS] results. Then answer from results.',
-        'FORBIDDEN: never emit toolcall/tool_call/function_call XML, HTML tool tags, or any foreign tool protocol. Never show raw tool markup to the user. Only ```hands fences. If [OBSERVE]/[WEB] already present, answer from that — do not re-search as theater.',
-        'When evidence is enough: answer or implement. NEVER answer with the method (no run-ls homework, no search-yourself, no toolcall dumps) when hands/observe can do it. NEVER Generating-now without a file fence body for user documents.',
-        'MUTATE: apply path=rel full files under source_root (client writes, backups, never live /var/www). run allowlisted pipeline only (prisma/npm/git status-class). Client reports What changed.',
-        'DELIVER: user docs need file name=Report.md (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
-        'PLAN: for non-trivial mutate, brief plan + blast radius in few lines; on clear go-ahead implement same turn. Tags CONN PROJECT SSH MEM ATTACH WEB OBSERVE HANDS GROUNDING PROVENANCE are live evidence — trust them over memory invention.',
-        'GROUNDING 0.20: When [OBSERVE]/[WEB]/[GROUNDING] present, state ONLY facts supported by that text. Never invent capabilities (e.g. honeypots) not in the fetch.',
-        'PROVENANCE 0.20: When [PROVENANCE] is present, you MUST report client YES/NO facts: on-source or not, and if prior assistant invented the claim say so explicitly. Never answer only "nowhere" without saying where the phrase entered the chat.',
-        'QUALITY GATE 0.21: Client post-pass scores claims against evidence and may strike unverified product terms. Prefer source-backed wording so the gate stays clean.',
-        'Opaque outcomes are bugs: hands result, apply/run/file, provenance facts, quality score, or one hard blocker.'
+        'BRAIN + HANDS: You are the brain (this API call). PromptParle on the user PC executes tools: local workspace, SSH/remote product bind, web fetch, apply/run, document deliver.',
+        'NATIVE TOOLS: Use the provider tool/function calling API for web_search, web_page, ssh_list, ssh_read, ssh_run, workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. The client runs them and returns results. Prefer tools over guessing.',
+        'FORBIDDEN: never emit toolcall/tool_call/function_call XML, HTML tool tags, markdown hands fences, or fake tool theater as the user-visible answer. Only real tool calls or a final prose answer.',
+        'When evidence is enough: answer clearly. NEVER answer with the method (no run-ls homework, no search-yourself). NEVER Generating-now without a file fence body for user documents.',
+        'MUTATE: apply path=rel full files under source_root (client writes, backups, never live /var/www). run allowlisted pipeline only. Client reports What changed.',
+        'DELIVER: user docs need ```file name=Report.md``` (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
+        'PLAN: for non-trivial mutate, brief plan + blast radius; on clear go-ahead implement same turn. Connection context may include [CONN][PROJECT][SSH] — trust live evidence over invention.',
+        'Do not invent product capabilities not supported by tool results or user attachments. Opaque outcomes are bugs: tool result, apply/run/file, or one hard blocker.'
     ) -join ' '
 }
 
@@ -3491,13 +3486,332 @@ function Test-PromptParleResponseIsToolTheaterOnly {
     return $false
 }
 
-function Invoke-PromptParleAgentTurn {
+function Get-PromptParleNativeToolDefinitions {
+    <# OpenAI-style tool schemas for multi-provider agent pass-through (0.22). #>
+    $propsQ = @{
+        type = 'object'
+        properties = @{
+            query = @{ type = 'string'; description = 'Search query or free text' }
+            q     = @{ type = 'string'; description = 'Alias for query' }
+            path  = @{ type = 'string'; description = 'File or directory path' }
+            url   = @{ type = 'string'; description = 'URL or domain' }
+            command = @{ type = 'string'; description = 'Allowlisted remote command' }
+            arg   = @{ type = 'string'; description = 'Generic argument' }
+        }
+    }
+    $mk = {
+        param([string]$Name, [string]$Desc)
+        return [ordered]@{
+            type = 'function'
+            function = [ordered]@{
+                name        = $Name
+                description = $Desc
+                parameters  = $propsQ
+            }
+        }
+    }
+    return @(
+        (& $mk 'web_search' 'Search the web for public information. Returns brief results.')
+        (& $mk 'web_page' 'Fetch a URL or domain homepage as plain text.')
+        (& $mk 'ssh_list' 'List a directory on the connected SSH/product host.')
+        (& $mk 'ssh_read' 'Read a file on the connected SSH host.')
+        (& $mk 'ssh_run' 'Run an allowlisted pipeline command on SSH (build/test/git status-class).')
+        (& $mk 'workspace_find' 'Find files in the local workspace by glob/query.')
+        (& $mk 'relevant_slice' 'Load ranked relevant code slices for a query.')
+        (& $mk 'file_index' 'Brief local workspace file index.')
+        (& $mk 'git_diff' 'Git status/diff pack for the local workspace.')
+        (& $mk 'git' 'Git status summary for the local workspace.')
+        (& $mk 'connections' 'Show connected local folder / SSH targets.')
+        (& $mk 'tree_pack' 'Directory tree pack for workspace or path.')
+    )
+}
+
+function Get-PromptParleCaptureDir {
+    $root = Join-Path $HOME '.promptparle'
+    $dir = Join-Path $root 'captures'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
+function Write-PromptParleAgentCapture {
+    param(
+        [string]$TurnId,
+        [int]$Round,
+        [object]$Request,
+        [object]$Response,
+        [string]$Note = ''
+    )
+    try {
+        $dir = Get-PromptParleCaptureDir
+        $safe = if ($TurnId) { $TurnId } else { [guid]::NewGuid().ToString('N').Substring(0, 12) }
+        $name = ('{0:yyyyMMdd-HHmmss}-r{1}-{2}.json' -f (Get-Date), $Round, $safe)
+        $path = Join-Path $dir $name
+        $obj = [ordered]@{
+            at       = (Get-Date).ToUniversalTime().ToString('o')
+            turn_id  = $safe
+            round    = $Round
+            note     = $Note
+            request  = $Request
+            response = $Response
+        }
+        $json = ConvertTo-PromptParleJson -InputObject $obj -Depth 20
+        [System.IO.File]::WriteAllText($path, $json)
+        # prune old captures keep last ~80
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+        if ($files.Count -gt 80) {
+            $files | Select-Object -Skip 80 | Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+        return $path
+    } catch {
+        return $null
+    }
+}
+
+function ConvertTo-PromptParleHandsArgFromToolArgs {
+    param(
+        [string]$ToolName = '',
+        [string]$ArgumentsJson = ''
+    )
+    $raw = if ($null -eq $ArgumentsJson) { '' } else { $ArgumentsJson.Trim() }
+    if (-not $raw) { return '' }
+    try {
+        $o = $raw | ConvertFrom-Json
+        foreach ($k in @('query', 'q', 'url', 'path', 'command', 'arg', 'input', 'text', 'domain')) {
+            $v = Get-PromptParleProp $o $k $null
+            if ($null -ne $v -and "$v".Trim()) { return [string]$v }
+        }
+        # single property object
+        $props = @($o.PSObject.Properties)
+        if ($props.Count -eq 1) { return [string]$props[0].Value }
+        return $raw
+    } catch {
+        return $raw
+    }
+}
+
+function Invoke-PromptParleNativeAgentTurn {
     <#
     .SYNOPSIS
-      0.20 token-first agent loop: brain (API) + hands (local/SSH/web).
-      Max rounds capped by dial. After hands, next round = [HANDS] pack + compact evidence spine
-      (PROVENANCE/GROUNDING/OBSERVE excerpt) so confidence is not dropped for tokens.
+      0.22 multi-AI native tool agent loop (pass-through).
+      Portal /api/v1/agent = one model step with tools; desktop runs tools and continues.
+      Captures each request/response under ~/.promptparle/captures for later optimization.
     #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$Context = '',
+        [string]$System = '',
+        [string]$Runtime = '',
+        [string]$Provider = 'openai',
+        [string]$Profile = 'general',
+        [int]$CompressionLevel = 3,
+        [string]$Model = '',
+        [object]$Images = $null,
+        [int]$MaxRounds = 8,
+        [switch]$OptimizeOnly
+    )
+    if ($OptimizeOnly) {
+        $p = @{
+            Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+            Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+            Quiet = $true; Raw = $true; OptimizeOnly = $true
+        }
+        if ($Model) { $p.Model = $Model }
+        return Invoke-PromptParle @p
+    }
+
+    if ($MaxRounds -le 0) { $MaxRounds = 8 }
+    $turnId = [guid]::NewGuid().ToString('N').Substring(0, 12)
+    $tools = @(Get-PromptParleNativeToolDefinitions)
+    $sys = if ($System) { $System.Trim() } else { Get-PromptParleChatSystemPrompt }
+    if ($Runtime) { $sys = ($sys + "`n`n" + $Runtime.Trim()).Trim() }
+    $sys = ($sys + "`n`nAGENT 0.22 pass-through: use native tools when you need evidence; then answer in prose. Never dump tool XML.").Trim()
+
+    $userContent = $Prompt.Trim()
+    if ($Context) {
+        $userContent = $userContent + "`n`n--- connection / session context ---`n" + $Context.Trim()
+    }
+
+    $messages = New-Object System.Collections.Generic.List[object]
+    [void]$messages.Add([ordered]@{ role = 'system'; content = $sys })
+    [void]$messages.Add([ordered]@{ role = 'user'; content = $userContent })
+
+    $allHands = New-Object System.Collections.Generic.List[object]
+    $sumIn = 0
+    $sumOut = 0
+    $roundsUsed = 0
+    $lastContent = ''
+    $capturePaths = New-Object System.Collections.Generic.List[string]
+    $modelOut = $Model
+
+    for ($round = 1; $round -le $MaxRounds; $round++) {
+        $roundsUsed = $round
+        Write-Host ("  agent-native: round {0}/{1} provider={2}" -f $round, $MaxRounds, $Provider) -ForegroundColor DarkCyan
+
+        $body = [ordered]@{
+            provider     = [string]$Provider
+            messages     = @($messages.ToArray())
+            tools        = @($tools)
+            tool_choice  = 'auto'
+            include_raw  = $true
+            max_tokens   = 4096
+            temperature  = 0.2
+        }
+        if ($Model) { $body.model = [string]$Model }
+
+        $resp = $null
+        try {
+            $resp = Invoke-PromptParleApi -Method POST -Path '/api/v1/agent' -Body $body
+        } catch {
+            # Fallback: legacy text-hands path if agent endpoint missing
+            if ("$_" -match '404|Not Found|/api/v1/agent|Unknown path') {
+                Write-Host '  agent-native: /api/v1/agent unavailable — falling back to text-hands loop' -ForegroundColor Yellow
+                $fb = @{
+                    Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+                    Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+                    MaxRounds = $MaxRounds
+                }
+                if ($Model) { $fb.Model = $Model }
+                if ($Images) { $fb.Images = $Images }
+                return Invoke-PromptParleLegacyTextHandsTurn @fb
+            }
+            throw
+        }
+
+        $cap = Write-PromptParleAgentCapture -TurnId $turnId -Round $round -Request $body -Response $resp -Note 'native-step'
+        if ($cap) { [void]$capturePaths.Add($cap) }
+
+        if (-not $resp) { throw 'Empty agent response' }
+        $err = Get-PromptParleProp $resp 'error' $null
+        if ($err) { throw "Agent API: $err" }
+
+        $msg = Get-PromptParleProp $resp 'message' $null
+        if (-not $msg) { throw 'Agent response missing message' }
+        if (Get-PromptParleProp $resp 'model' $null) { $modelOut = [string](Get-PromptParleProp $resp 'model' $modelOut) }
+
+        $usage = Get-PromptParleProp $resp 'usage' $null
+        if ($usage) {
+            try { $sumIn += [int](Get-PromptParleProp $usage 'input_tokens' 0) } catch { }
+            try { $sumOut += [int](Get-PromptParleProp $usage 'output_tokens' 0) } catch { }
+        }
+
+        $content = Get-PromptParleProp $msg 'content' $null
+        if ($null -ne $content) { $lastContent = [string]$content }
+        $toolCalls = @()
+        $tcRaw = Get-PromptParleProp $msg 'tool_calls' $null
+        if ($null -ne $tcRaw) { $toolCalls = @($tcRaw) }
+
+        # Append assistant message (with tool_calls if any)
+        $asst = [ordered]@{ role = 'assistant'; content = $(if ($null -eq $content) { $null } else { [string]$content }) }
+        if ($toolCalls.Count -gt 0) {
+            $normCalls = New-Object System.Collections.Generic.List[object]
+            foreach ($tc in $toolCalls) {
+                $fn = Get-PromptParleProp $tc 'function' $null
+                $name = [string](Get-PromptParleProp $fn 'name' '')
+                $args = [string](Get-PromptParleProp $fn 'arguments' '{}')
+                $id = [string](Get-PromptParleProp $tc 'id' ("call_" + [guid]::NewGuid().ToString('N').Substring(0, 8)))
+                [void]$normCalls.Add([ordered]@{
+                    id       = $id
+                    type     = 'function'
+                    function = [ordered]@{ name = $name; arguments = $args }
+                })
+            }
+            $asst.tool_calls = @($normCalls.ToArray())
+        }
+        [void]$messages.Add($asst)
+
+        if ($toolCalls.Count -eq 0) {
+            break
+        }
+
+        # Execute tools on this PC
+        foreach ($tc in $toolCalls) {
+            $fn = Get-PromptParleProp $tc 'function' $null
+            $name = [string](Get-PromptParleProp $fn 'name' '')
+            $argsJson = [string](Get-PromptParleProp $fn 'arguments' '{}')
+            $id = [string](Get-PromptParleProp $tc 'id' '')
+            $arg = ConvertTo-PromptParleHandsArgFromToolArgs -ToolName $name -ArgumentsJson $argsJson
+            Write-Host ("  tool: {0} ({1})" -f $name, $(if ($arg.Length -gt 60) { $arg.Substring(0, 57) + '...' } else { $arg })) -ForegroundColor Cyan
+            $hr = Invoke-PromptParleHandsRequest -Tool $name -Arg $arg -MaxChars 6000
+            [void]$allHands.Add($hr)
+            $toolText = if ($hr.text) { [string]$hr.text } else { '' }
+            if (-not $hr.ok) { $toolText = "ERROR: $toolText" }
+            [void]$messages.Add([ordered]@{
+                role         = 'tool'
+                tool_call_id = $id
+                name         = $name
+                content      = $toolText
+            })
+        }
+    }
+
+    if (-not $lastContent -and $allHands.Count -gt 0) {
+        $lastContent = @(
+            '**Tools ran; model did not return a final prose answer within round budget.**'
+            ''
+            Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 8000
+        ) -join "`n"
+    }
+
+    # Strip any accidental tool theater from final text
+    if (Test-PromptParleForeignToolTheater -Text $lastContent) {
+        $lastContent = Remove-PromptParleHandsBlocks -Text $lastContent
+    }
+
+    $evidenceContext = $Context
+    if ($allHands.Count -gt 0) {
+        try {
+            $hp = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 12000
+            if ($evidenceContext) { $evidenceContext = $evidenceContext + "`n`n" + $hp }
+            else { $evidenceContext = $hp }
+        } catch { }
+    }
+
+    $agentMeta = [ordered]@{
+        agent_rounds         = $roundsUsed
+        hands_count          = $allHands.Count
+        hands_tools          = @($allHands | ForEach-Object { $_.tool } | Select-Object -Unique)
+        tokens_sum_original  = $sumIn
+        tokens_sum_optimized = $sumIn
+        tokens_sum_output    = $sumOut
+        token_first          = $false
+        pass_through         = $true
+        architecture         = '0.22-native-agent'
+        capture_dir          = (Get-PromptParleCaptureDir)
+        capture_files        = @($capturePaths)
+        turn_id              = $turnId
+    }
+
+    $metaOut = [ordered]@{
+        original_tokens         = $sumIn
+        optimized_tokens        = $sumIn
+        token_reduction_percent = 0
+        tokens_saved            = 0
+        expanded                = $false
+        provider                = [string]$Provider
+        model                   = [string]$modelOut
+        optimization_profile    = 'agent-pass-through'
+        compression_level       = 1
+        strategy                = 'native-agent-0.22'
+        secrets_masked          = $false
+        notes                   = @('pass-through', 'no-optimize', ('rounds:' + $roundsUsed), ('tools:' + $allHands.Count))
+        signals                 = @{}
+        image_count             = 0
+    }
+
+    return [pscustomobject]@{
+        response         = $lastContent
+        metadata         = [pscustomobject]$metaOut
+        agent            = [pscustomobject]$agentMeta
+        evidence_context = $evidenceContext
+        optimized_prompt = $null
+    }
+}
+
+function Invoke-PromptParleLegacyTextHandsTurn {
+    <# Internal fallback when /api/v1/agent is unavailable. #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Prompt,
@@ -3522,19 +3836,10 @@ function Invoke-PromptParleAgentTurn {
             default { 3 }
         }
     }
-    if ($OptimizeOnly) {
-        $p = @{
-            Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
-            Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
-            Quiet = $true; Raw = $true; OptimizeOnly = $true
-        }
-        if ($Model) { $p.Model = $Model }
-        return Invoke-PromptParle @p
-    }
 
     $handsCatalog = Get-PromptParleHandsCatalogBrief
     $baseRuntime = if ($Runtime) { $Runtime.Trim() } else { '' }
-    $runtime = ($baseRuntime + ' AGENT 0.20 token-first: use hands fence (tool: arg) when you need client evidence; keep requests tiny; when done, final answer with apply/run/file — no method homework. Never invent product facts not in [OBSERVE]/[HANDS]/[EVIDENCE_SPINE].').Trim()
+    $runtime = ($baseRuntime + ' AGENT legacy text-hands: use hands fence (tool: arg) when you need client evidence.').Trim()
 
     # Frozen prep evidence for post-pass + spine (agent must not discard confidence for tokens)
     $prepEvidence = if ($Context) { [string]$Context } else { '' }
@@ -3753,6 +4058,56 @@ function Invoke-PromptParleAgentTurn {
         agent            = [pscustomobject]$agentMeta
         evidence_context = $evidenceContext
     }
+}
+
+function Invoke-PromptParleAgentTurn {
+    <#
+    .SYNOPSIS
+      0.22 entry: multi-AI native tool agent (pass-through). Falls back to text-hands if portal agent API missing.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$Context = '',
+        [string]$System = '',
+        [string]$Runtime = '',
+        [string]$Provider = 'openai',
+        [string]$Profile = 'general',
+        [int]$CompressionLevel = 3,
+        [string]$Model = '',
+        [object]$Images = $null,
+        [int]$MaxRounds = 0,
+        [switch]$OptimizeOnly,
+        [switch]$LegacyTextHands
+    )
+    if ($OptimizeOnly) {
+        $p = @{
+            Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+            Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+            Quiet = $true; Raw = $true; OptimizeOnly = $true
+        }
+        if ($Model) { $p.Model = $Model }
+        if ($Images) { $p.Images = $Images }
+        return Invoke-PromptParle @p
+    }
+    if ($LegacyTextHands) {
+        $lp = @{
+            Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+            Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+            MaxRounds = $MaxRounds
+        }
+        if ($Model) { $lp.Model = $Model }
+        if ($Images) { $lp.Images = $Images }
+        return Invoke-PromptParleLegacyTextHandsTurn @lp
+    }
+    $np = @{
+        Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+        Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+        MaxRounds = $(if ($MaxRounds -gt 0) { $MaxRounds } else { 8 })
+    }
+    if ($Model) { $np.Model = $Model }
+    if ($Images) { $np.Images = $Images }
+    return Invoke-PromptParleNativeAgentTurn @np
 }
 
 function Get-PromptParleSshPathCandidatesFromPrompt {
@@ -11658,8 +12013,15 @@ function Start-PromptParleLocalServer {
                         if ($optOnly) { $params.OptimizeOnly = $true }
                         if ($images.Count -gt 0) { $params.Images = $images }
 
-                        # 0.19: token-first brain+hands agent loop
-                        $result = Invoke-PromptParleAgentTurn @params
+                        # 0.22: multi-AI native tool agent (pass-through; captures under ~/.promptparle/captures)
+                        if (-not $toolsEnChat) {
+                            # Tools off → single completion via portal optimize path
+                            $params.Quiet = $true
+                            $params.Raw = $true
+                            $result = Invoke-PromptParle @params
+                        } else {
+                            $result = Invoke-PromptParleAgentTurn @params
+                        }
                         # Normalize metadata keys for the browser UI (always snake_case numbers)
                         $metaIn = Get-PromptParleProp $result 'metadata'
                         if ($null -eq $metaIn) { $metaIn = Get-PromptParleProp $result 'Metadata' }
@@ -12336,6 +12698,8 @@ Export-ModuleMember -Function @(
     'Get-PromptParleProvider',
     'Get-PromptParleUsage',
     'Invoke-PromptParle',
+    'Invoke-PromptParleAgentTurn',
+    'Invoke-PromptParleNativeAgentTurn',
     'Invoke-PromptParleSecurityReview',
     'Start-PromptParle',
     'Start-PromptParleLocalServer',
