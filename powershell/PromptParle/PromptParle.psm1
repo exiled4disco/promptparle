@@ -1141,19 +1141,20 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      0.16 architecture: normal AI assistant + implement pipeline (read→apply→run→report).
-      Differentiator is token optimize + local evidence tags — not agent theater or ban lists.
+      0.16.1 architecture: normal AI eng client.
+      DOCTRINE: capability = obligation — if the client can do it, the model must use the channel that makes the client do it.
     #>
     return @(
         'You are a capable engineering assistant in a continuous chat (same feel as Grok Build / Claude / Cursor).',
+        'DOCTRINE (non-negotiable): capability = obligation. If this client can read, write, run, or report — YOU make it do that via apply/run blocks. Never dump homework the client could execute. Never ask permission after a clear implement ask. Never "Ready / Name it and I ship / Just say the word" theater.',
         'PromptParle already optimized this turn for fewer tokens (dial). Tags are live evidence from the user machine: [PROJECT][CONN][SSH][MEM][ATTACH][WEB] + images — trust them.',
-        '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps into those roots — not the whole codebase.',
+        '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps into those roots — not the whole codebase. Never claim portal/settings/API missing because only a handoff mirror was in SSH cwd.',
         '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
-        'Normal client behavior: answer questions directly. When the user wants work done (do it / implement / lets go / just get it done / stop asking and do it): DO IT in this turn — zero clarifying questions unless a single fact is blocking and cannot be chosen safely.',
-        'Default to the most secure reasonable choice yourself when options exist. Do not interview the user.',
-        'Implement pipeline (client executes, in order): (1) ```apply path=rel``` FULL file under source_root only — client reads existing file first, backups to *.pp-bak, refuses stubs/destructive shrinks, NEVER writes live /var/www. (2) Optional ```run``` one safe command under source_root (prisma migrate/generate, npm run build/test, git status/diff/log). Client allowlists commands; no rm/drop/curl|sh. (3) Client prefixes ## What changed with landed paths + cmd results.',
+        'When the user wants work done (do it / implement / lets go / just get it done / stop asking): DO IT this turn. Zero clarifying questions unless a single secret fact is blocking and has no secure default.',
+        'Default to the most secure reasonable choice yourself. Do not interview the user.',
+        'Implement channel (client executes): (1) ```apply path=rel``` FULL file under source_root — client reads-before-write, *.pp-bak backup, refuses stubs/destructive shrinks, NEVER writes live /var/www. (2) ```run``` for allowlisted cmds the client can run (prisma migrate/generate, npm run build/test, git status/diff/log). (3) Client prefixes ## What changed. If migrate is needed after schema edits, emit ```run``` — do not tell the user to run npx.',
         'Do not claim live-deployed/migrated/committed unless a run block succeeded or evidence shows it. local-ui is vanilla HTML/CSS/JS when in evidence.',
-        'Never dump multi-step homework instead of apply/run blocks when implement is requested.'
+        'Opaque outcomes are bugs: either land apply/run or say clearly what single fact blocked you.'
     ) -join ' '
 }
 
@@ -3280,15 +3281,15 @@ function Invoke-PromptParleAgentLocalPrep {
     try { $turnKind = Get-PromptParleTurnKind -Prompt $pr -History $History } catch { $turnKind = 'chat' }
     $notes.Add("turn:$turnKind")
 
-    # Hard implement directive — forces the *channel* (apply + optional run), not English understanding
+    # Hard implement directive — capability=obligation; forces apply/run channel
     if ($turnKind -eq 'implement') {
         $directive = @(
-            '[CLIENT DIRECTIVE — implement turn]',
-            'The user is speaking plain English to get work done (same as any normal AI client).',
-            'Do NOT ask questions or permission. Do NOT re-plan. Do NOT dump homework.',
-            'Land now via pipeline: (1) ```apply path=relative/from/source_root``` FULL file contents — client reads-before-write, backups, SSH-writes source only.',
-            '(2) If migrate/build/test is required after edits, emit ```run``` with ONE allowlisted command (e.g. npx prisma migrate deploy).',
-            'If something is already decided in [MEM]/prior turns, proceed with the secure default.'
+            '[CLIENT DIRECTIVE — implement turn · capability=obligation]',
+            'The user already authorized work in plain English (same as any normal AI eng client).',
+            'DO NOT ask questions, permission, or "say the word". DO NOT re-plan. DO NOT dump homework the client can run.',
+            'Land now: (1) ```apply path=relative/from/source_root``` FULL file — client reads-before-write, backups, SSH-writes source only.',
+            '(2) After schema/deps/build needs, emit ```run``` (e.g. npx prisma migrate deploy) — client executes; never tell the user to run it.',
+            'Secure defaults when undecided. Report only after apply/run blocks. Theater ("Ready/Name it and I ship") is a product failure.'
         ) -join ' '
         if ($pr -notmatch '\[CLIENT DIRECTIVE') {
             $pr = $pr + "`n`n" + $directive
@@ -5126,16 +5127,86 @@ echo "WROTE `$path `$(wc -c < "`$path" | tr -d ' ')"
     }
 }
 
+function Get-PromptParleHomeworkCommands {
+    <#
+    .SYNOPSIS
+      0.16.1: scrape "you run this" homework from model text into allowlisted commands.
+      Capability=obligation — if the model dumps a command the client can run, the client runs it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $found = New-Object System.Collections.Generic.List[string]
+    if (-not $Text) { return @() }
+
+    # Fenced blocks that are NOT apply/run (bash/sh/shell/powershell/text)
+    $rxFence = [regex]::new('(?ms)```(?:bash|sh|shell|zsh|powershell|ps1|console|terminal|text|cmd)?[ \t]*\r?\n(.*?)```')
+    foreach ($m in $rxFence.Matches($Text)) {
+        $full = $m.Value
+        if ($full -match '(?i)^```(?:apply|run)\b') { continue }
+        $body = ($m.Groups[1].Value -replace '^\s+|\s+$', '')
+        foreach ($line in ($body -split '\r?\n')) {
+            $c = ($line -replace '^\s*[$#>]\s*', '').Trim()
+            if (-not $c) { continue }
+            if ($c -match '^(?i)(cd|export|set)\s') { continue }
+            $chk = Test-PromptParleRunCommandAllowed -Command $c
+            if ($chk.ok) { $found.Add([string]$chk.command) }
+        }
+    }
+
+    # Inline backticks: `npx prisma migrate deploy`
+    $rxTick = [regex]::new('`([^`\n]{4,200})`')
+    foreach ($m in $rxTick.Matches($Text)) {
+        $c = $m.Groups[1].Value.Trim()
+        if ($c -match '(?i)^(apply path|run\b)') { continue }
+        $chk = Test-PromptParleRunCommandAllowed -Command $c
+        if ($chk.ok) { $found.Add([string]$chk.command) }
+    }
+
+    # "Run: npx prisma ..." single line
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -match '(?i)\b(?:run this|run the following|please run|you (?:can |should )?run|execute)\b[^:\n]*:\s*(.+)$') {
+            $c = $Matches[1].Trim().Trim('`').Trim()
+            $chk = Test-PromptParleRunCommandAllowed -Command $c
+            if ($chk.ok) { $found.Add([string]$chk.command) }
+        }
+    }
+
+    # de-dupe preserve order
+    $seen = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $found) {
+        $k = $c.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        $out.Add($c)
+    }
+    return @($out.ToArray())
+}
+
+function Test-PromptParleTheaterText {
+    <#
+    .SYNOPSIS
+      Detect status theater / permission loops that violate capability=obligation.
+    #>
+    param([string]$Text = '')
+    if (-not $Text) { return $false }
+    return [bool]($Text -match '(?i)(Ready for the (named )?task|Name it and I ship|spine locked|Just say the word|Would you like me to (actually )?implement|Say the word and I|Ready when you are|Awaiting (your )?(go|approval)|I can implement (this|that) (if|when))')
+}
+
 function Invoke-PromptParleApplyResponseBlocks {
     <#
     .SYNOPSIS
-      0.16 implement pipeline: ordered apply + run blocks under source_root, ## What changed report.
+      0.16.1 implement pipeline: capability=obligation.
       - ```apply path=...``` → read-before-write, backup, SSH write
-      - ```run``` → one allowlisted command under source_root
+      - ```run``` → allowlisted command under source_root
+      - Homework scrape: model "run this yourself" → client runs if allowlisted
+      - Auto follow-through: schema.prisma apply → prisma generate + migrate deploy when missing
+      - Fail-closed report on implement turns with zero action
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$ResponseText
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ResponseText,
+        [string]$TurnKind = 'chat'
     )
     $text = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
     $applied = New-Object System.Collections.Generic.List[string]
@@ -5143,8 +5214,14 @@ function Invoke-PromptParleApplyResponseBlocks {
     $errors = New-Object System.Collections.Generic.List[string]
     $runs = New-Object System.Collections.Generic.List[object]
     $skipped = New-Object System.Collections.Generic.List[string]
+    $notes = New-Object System.Collections.Generic.List[string]
+    $homeworkRan = New-Object System.Collections.Generic.List[string]
+
     if (-not $text) {
-        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); runs = @(); count = 0; run_count = 0 }
+        return [pscustomobject]@{
+            text = $text; applied = @(); errors = @(); backups = @(); runs = @()
+            skipped = @(); count = 0; run_count = 0; fail_closed = $false; homework = @()
+        }
     }
 
     # Collect apply + run blocks with document order
@@ -5158,25 +5235,42 @@ function Invoke-PromptParleApplyResponseBlocks {
             body   = $m.Groups[2].Value
         })
     }
-    # ```run``` or ```run cwd=...``` — body is the command (single line preferred)
     $rxRun = [regex]::new('(?ms)```run(?:\s+[^\r\n`]*)?[ \t]*\r?\n(.*?)```')
     foreach ($m in $rxRun.Matches($text)) {
         $body = ($m.Groups[1].Value -replace '^\s+|\s+$', '')
-        # first non-empty line is the command; ignore trailing commentary lines
         $cmdLine = ($body -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
         if (-not $cmdLine) { continue }
         $steps.Add([pscustomobject]@{
             kind    = 'run'
             index   = $m.Index
             command = $cmdLine.Trim()
+            source  = 'block'
         })
     }
 
-    if ($steps.Count -eq 0) {
-        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); runs = @(); count = 0; run_count = 0 }
+    # 0.16.1 homework interceptor — capability=obligation
+    $hw = @(Get-PromptParleHomeworkCommands -Text $text)
+    $existingRunCmds = @{}
+    foreach ($s in $steps) {
+        if ($s.kind -eq 'run') { $existingRunCmds[[string]$s.command.ToLowerInvariant()] = $true }
+    }
+    $hwIdx = 0
+    foreach ($c in $hw) {
+        $k = $c.ToLowerInvariant()
+        if ($existingRunCmds.ContainsKey($k)) { continue }
+        $steps.Add([pscustomobject]@{
+            kind    = 'run'
+            index   = 900000 + $hwIdx
+            command = $c
+            source  = 'homework'
+        })
+        $homeworkRan.Add($c)
+        $existingRunCmds[$k] = $true
+        $hwIdx++
+        $notes.Add("homework→run: $c")
     }
 
-    $ordered = $steps | Sort-Object index
+    $ordered = @($steps | Sort-Object index)
     foreach ($step in $ordered) {
         if ($step.kind -eq 'apply') {
             $rel = [string]$step.path
@@ -5211,14 +5305,57 @@ function Invoke-PromptParleApplyResponseBlocks {
         }
     }
 
+    # Auto follow-through: schema.prisma landed without prisma generate/migrate → client runs them
+    $touchedSchema = $false
+    foreach ($p in @($applied.ToArray() + $skipped.ToArray())) {
+        if ($p -match '(?i)schema\.prisma$') { $touchedSchema = $true; break }
+    }
+    $ranPrisma = $false
+    foreach ($rr in $runs) {
+        if ([string]$rr.command -match '(?i)prisma') { $ranPrisma = $true; break }
+    }
+    if ($touchedSchema -and -not $ranPrisma) {
+        foreach ($autoCmd in @('npx prisma generate', 'npx prisma migrate deploy')) {
+            try {
+                $rr = Invoke-PromptParleSshRunCommand -Command $autoCmd
+                $runs.Add($rr)
+                $notes.Add("auto-follow: $autoCmd")
+                if (-not $rr.ok) { $errors.Add(("auto ``$autoCmd`` exit $($rr.exit_code)")) }
+            } catch {
+                $errors.Add(("auto ``$autoCmd`` : $_"))
+                $runs.Add([pscustomobject]@{
+                    ok = $false; command = $autoCmd; exit_code = -1; text = "$_"; cwd = $null
+                })
+            }
+        }
+    }
+
+    $acted = ($applied.Count -gt 0) -or ($runs.Count -gt 0) -or ($skipped.Count -gt 0)
+    $theater = Test-PromptParleTheaterText -Text $text
+    $failClosed = $false
+    if ($TurnKind -eq 'implement' -and -not $acted) {
+        $failClosed = $true
+        $notes.Add('fail-closed: implement turn with zero apply/run')
+    }
+
     $headerLines = New-Object System.Collections.Generic.List[string]
     $headerLines.Add('## What changed')
-    $headerLines.Add('_Implement pipeline 0.16: read→apply→run→report (source_root only)._')
+    $headerLines.Add('_Implement pipeline 0.16.1 · capability=obligation · read→apply→run→report (source_root only)._')
     $headerLines.Add('')
+
+    if ($failClosed) {
+        $headerLines.Add('**FAIL-CLOSED: implement turn produced no apply/run action.**')
+        $headerLines.Add('The client can write source and run allowlisted commands — the model did not use that channel. This is a product failure, not a user homework gap. Re-ask or continue so apply/run blocks land.')
+        $headerLines.Add('')
+    }
+    if ($theater -and -not $acted) {
+        $headerLines.Add('**Theater detected** (Ready/Name it and I ship/permission loop) with no landed work — stripped of authority. Capability=obligation requires apply/run, not status speech.')
+        $headerLines.Add('')
+    }
     if ($applied.Count -gt 0) {
         $headerLines.Add("**Landed on SOURCE tree (not live deploy): $($applied.Count) file(s)**")
         foreach ($p in $applied) { $headerLines.Add("- ``$p``") }
-    } elseif ($skipped.Count -eq 0) {
+    } elseif ($skipped.Count -eq 0 -and $steps.Count -gt 0) {
         $headerLines.Add('**No files landed** from apply blocks (none, refused, or failed).')
     }
     if ($skipped.Count -gt 0) {
@@ -5233,7 +5370,7 @@ function Invoke-PromptParleApplyResponseBlocks {
     }
     if ($runs.Count -gt 0) {
         $headerLines.Add('')
-        $headerLines.Add("**Remote commands ($($runs.Count)):**")
+        $headerLines.Add("**Remote commands ($($runs.Count)) — client executed (not user homework):**")
         foreach ($rr in $runs) {
             $mark = if ($rr.ok) { 'ok' } else { 'FAIL' }
             $headerLines.Add("- ``$($rr.command)`` → exit $($rr.exit_code) ($mark)")
@@ -5245,10 +5382,19 @@ function Invoke-PromptParleApplyResponseBlocks {
             }
         }
     }
+    if ($homeworkRan.Count -gt 0) {
+        $headerLines.Add('')
+        $headerLines.Add("**Homework intercepted** (model told user to run; client ran instead): $($homeworkRan.Count)")
+        foreach ($h in $homeworkRan) { $headerLines.Add("- ``$h``") }
+    }
     if ($errors.Count -gt 0) {
         $headerLines.Add('')
         $headerLines.Add('**Pipeline errors (refused — no silent trash):**')
         foreach ($e in $errors) { $headerLines.Add("- $e") }
+    }
+    if ($notes.Count -gt 0 -and ($acted -or $failClosed)) {
+        $headerLines.Add('')
+        $headerLines.Add('_Pipeline notes: ' + (($notes | Select-Object -First 6) -join '; ') + '_')
     }
     $headerLines.Add('')
     $headerLines.Add('_Not git commit, not /var/www live deploy — unless a successful run/deploy step shows it._')
@@ -5257,15 +5403,23 @@ function Invoke-PromptParleApplyResponseBlocks {
     $headerLines.Add('')
     $header = ($headerLines -join "`n")
 
+    # Only prefix report when we acted, fail-closed, theater, or had steps
+    $needHeader = $acted -or $failClosed -or $theater -or ($steps.Count -gt 0) -or ($errors.Count -gt 0)
+    $outText = if ($needHeader) { $header + $text } else { $text }
+
     return [pscustomobject]@{
-        text      = $header + $text
-        applied   = @($applied.ToArray())
-        backups   = @($backups.ToArray())
-        skipped   = @($skipped.ToArray())
-        runs      = @($runs.ToArray())
-        errors    = @($errors.ToArray())
-        count     = $applied.Count
-        run_count = $runs.Count
+        text         = $outText
+        applied      = @($applied.ToArray())
+        backups      = @($backups.ToArray())
+        skipped      = @($skipped.ToArray())
+        runs         = @($runs.ToArray())
+        errors       = @($errors.ToArray())
+        homework     = @($homeworkRan.ToArray())
+        notes        = @($notes.ToArray())
+        count        = $applied.Count
+        run_count    = $runs.Count
+        fail_closed  = $failClosed
+        theater      = $theater
     }
 }
 
@@ -8629,11 +8783,11 @@ function Start-PromptParleLocalServer {
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
                         $turnForRt = 'chat'
                         try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt -History $histArr } catch { }
-                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Normal assistant: answer questions; implement when asked; use product bind roots.'
+                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Doctrine: capability=obligation — if the client can act, use apply/run; never dump homework the client can run.'
                         if ($turnForRt -eq 'implement') {
-                            $rtNote = 'IMPLEMENT TURN. User already authorized work — do not ask permission or "say the word". Emit full-file ```apply path=...``` blocks for every changed file under source_root; desktop writes them over SSH. No multi-step user homework. Brief verify steps only after apply blocks.'
+                            $rtNote = 'IMPLEMENT TURN · capability=obligation. User already authorized work — zero permission questions. Emit full-file ```apply path=...``` for every change under source_root; emit ```run``` for migrate/build the client can execute. NEVER tell the user to run npx/git/npm. No Ready/Name-it theater. Opaque outcomes are bugs.'
                         } elseif ($turnForRt -eq 'question') {
-                            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/evidence first. No implement theater.'
+                            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/evidence first. No implement theater. If answer requires a safe read-only run, use ```run``` (git status/diff) instead of homework.'
                         }
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
@@ -8708,11 +8862,17 @@ function Start-PromptParleLocalServer {
                             }
                         }
                         $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
-                        # 0.16: implement pipeline — apply path= + run blocks (read→write→cmd→report)
+                        # 0.16.1: always run implement pipeline post-pass when implement OR any apply/run/homework signal
                         $applyInfo = $null
-                        if ($respText -and ($respText -match '(?m)```apply\s+path' -or $respText -match '(?m)```run\b')) {
+                        $pipeTrigger = $false
+                        if ($respText) {
+                            if ($turnForRt -eq 'implement') { $pipeTrigger = $true }
+                            elseif ($respText -match '(?m)```apply\s+path' -or $respText -match '(?m)```run\b') { $pipeTrigger = $true }
+                            elseif ($respText -match '(?i)\b(run this|please run|npx prisma|npm run (build|test))\b') { $pipeTrigger = $true }
+                        }
+                        if ($pipeTrigger) {
                             try {
-                                $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText
+                                $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText -TurnKind $turnForRt
                                 if ($applyInfo -and $applyInfo.text) { $respText = [string]$applyInfo.text }
                                 if ($applyInfo -and $applyInfo.count -gt 0) {
                                     Write-Host ("  chat: applied {0} file(s) via SSH" -f $applyInfo.count) -ForegroundColor Green
@@ -8729,6 +8889,14 @@ function Start-PromptParleLocalServer {
                                             [ordered]@{ command = $_.command; exit_code = $_.exit_code; ok = [bool]$_.ok }
                                         })
                                     }
+                                }
+                                if ($applyInfo -and $applyInfo.homework -and $applyInfo.homework.Count -gt 0) {
+                                    Write-Host ("  chat: intercepted {0} homework command(s)" -f $applyInfo.homework.Count) -ForegroundColor Magenta
+                                    if ($metaOut) { $metaOut.homework_intercepted = @($applyInfo.homework) }
+                                }
+                                if ($applyInfo -and $applyInfo.fail_closed) {
+                                    Write-Host '  chat: FAIL-CLOSED implement turn (no apply/run)' -ForegroundColor Yellow
+                                    if ($metaOut) { $metaOut.fail_closed = $true }
                                 }
                                 if ($applyInfo -and $applyInfo.errors -and $applyInfo.errors.Count -gt 0) {
                                     Write-Host ("  chat: pipeline errors: {0}" -f ($applyInfo.errors -join '; ')) -ForegroundColor Yellow
