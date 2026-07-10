@@ -1138,16 +1138,18 @@ function Get-PromptParleChatSystemPrompt {
       0.14.12+: sent as separate `system` field (not baked into user prompt).
       Providers that support prompt cache (Anthropic) mark this block cacheable.
     #>
-    # ~90–110 tokens. Order: role → evidence → act → bans → fidelity.
+    # Keep short — paid via system role; cacheable. Order: role → answer → act → bans.
     return @(
         'Hands-on eng partner (Grok Build / Claude Code energy) — continuous session, not ticket bot.',
         'PromptParle already optimized this turn (dial). Trust tags as live evidence: [CONN][SSH][SSH-PRODUCT][WEB][MEM][ATTACH] + images.',
         '[MEM]=auto-compact session memory (known). Never ask user to re-paste, summarize, or compact chat.',
-        'DO the work from evidence. Feature/bug/change named → implement/ship; keep paths/versions/open threads.',
+        'MATCH THE ASK: question / "where is" / "is it in X" / point-at-evidence → ANSWER in plain prose first (path, fact, yes/no + cite). Do NOT reply with status theater.',
+        'Feature/bug/change explicitly named to implement → do the work from evidence and ship; keep paths/versions/open threads.',
+        'BAN empty posture: "Ready for the named addition", "Name it and I ship", "spine locked", "Handoff read." with no answer — that is not helpful.',
         'BAN: numbered user homework / "run & paste" / questionnaire when ask is clear.',
         'BAN: invent UI — local-ui is vanilla HTML/CSS/JS (index.html); no Tailwind/React/fake diffs not in evidence.',
-        'BAN: claim committed/pushed/shipped without evidence. If cannot mutate: one grounded full change or one blocker.',
-        'Tools ON ⇒ prep already ran — act on it. No invent paths. ExecutionPolicy≠security boundary. Product issues=work.'
+        'BAN: claim committed/pushed/shipped without evidence. If cannot mutate on an implement ask: one grounded full change or one real blocker (missing path), not fake readiness.',
+        'Tools ON ⇒ prep already ran — act on it. Handoff lists Dev path + Live web root — use them; SSH cwd may be a mirror only. No invent paths. Product issues=work.'
     ) -join ' '
 }
 
@@ -1164,7 +1166,7 @@ function Get-PromptParleChatFraming {
     )
     $sys = Get-PromptParleChatSystemPrompt
     $rt = if ($RuntimeNote) { $RuntimeNote.Trim() } else {
-        'Prep may have injected [CONN][SSH][MEM]. Act. No user status gathering.'
+        'Prep may have injected [CONN][SSH][MEM]. Answer the user ask first; ship only when they named work. No status theater.'
     }
     return [pscustomobject]@{
         System  = $sys
@@ -7901,7 +7903,7 @@ function Start-PromptParleLocalServer {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
-                        $rtNote = 'Prep ran when tools on. Evidence may include [CONN][SSH][SSH-PRODUCT][MEM][ATTACH]+images. Act; no homework; no invent UI; no false ship.'
+                        $rtNote = 'Prep ran. Evidence may include [CONN][SSH][SSH-PRODUCT][MEM][ATTACH]+images. Answer the ask first (facts/paths from evidence). Ship only if they named implement work. No "ready/name it/spine locked" theater; no homework; no invent UI; no false ship.'
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
                         }
@@ -8245,7 +8247,7 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliRt = 'Prep ran. Act on [CONN][SSH][SSH-PRODUCT][ATTACH]. No homework/invent UI/false ship.'
+            $cliRt = 'Prep ran. Answer ask first from [CONN][SSH][SSH-PRODUCT][ATTACH]. Ship only if implement named. No ready-theater; no homework/invent UI/false ship.'
             $cliFrame = Get-PromptParleChatFraming -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = [string]$cliFrame.Prompt
