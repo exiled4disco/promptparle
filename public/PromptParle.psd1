@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.18.0'
+    ModuleVersion     = '0.19.0'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -13,6 +13,7 @@
         'Get-PromptParleProvider',
         'Get-PromptParleUsage',
         'Invoke-PromptParle',
+        'Invoke-PromptParleAgentTurn',
         'Invoke-PromptParleSecurityReview',
         'Start-PromptParle',
         'Start-PromptParleLocalServer',
@@ -55,6 +56,8 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.19.0: Brain+hands agent loop — token-first multi-round hands (web/SSH/workspace), compact [HANDS] packs, natural eng client (not mode box)
+0.18.0: Client-first observe (SSH list, web page) + deliver fail-closed + sticky open obligation
 0.17.1: Fix doc2 poisoned by doc1 — collapse prior file deliverables in [MEM]/history; THIS-turn ATTACH is primary
 0.17.0: Document deliverables — ```file name=Report.docx``` (pdf/docx/xlsx/csv/md/html/txt/json) builds a real file; chat shows Download buttons via /api/exports/{token}
 0.16.1: Doctrine capability=obligation — homework interceptor, auto prisma follow-through, fail-closed implement, theater detect

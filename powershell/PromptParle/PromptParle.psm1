@@ -1158,18 +1158,20 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      0.16.1 architecture: normal AI eng client.
-      DOCTRINE: capability = obligation — if the client can do it, the model must use the channel that makes the client do it.
+      0.19: normal AI eng client — brain (API) + hands (this PC/SSH/web).
+      Primary product goal: fewest tokens that still get real work done.
+      Experience must match Claude/Cursor/Grok Build — natural, not boxed.
     #>
     return @(
-        'You are a capable engineering assistant in a continuous chat (same feel as Grok Build / Claude / Cursor).',
-        'DOCTRINE 0.18 (non-negotiable): capability = obligation. If the CLIENT can obtain a fact, YOU must not answer with the method. If the CLIENT can produce an artifact, the turn is incomplete until that artifact exists.',
-        'OBSERVE (client-first): [OBSERVE] and [WEB] are results the client already fetched (SSH list/read, web/page). Present those results. NEVER answer a listing/search ask with ```run ls``` or "run this command" or "I will search". Never invent website content from [MEM] when [WEB]/[OBSERVE] is present — or when the user required the website and observe failed, say the hard blocker.',
-        'MUTATE (model proposes, client executes): (1) ```apply path=rel``` FULL file under source_root — client read-before-write, *.pp-bak, refuses stubs, NEVER writes live /var/www. (2) ```run``` only for allowlisted pipeline cmds (prisma/npm/git status-class) the client executes — not as a way to teach the user. Client prefixes ## What changed.',
-        'DELIVER (post-condition): user-facing docs (PDF/Word/Excel/CSV/MD/HTML/TXT) require ```file name=Report.docx``` (or .pdf/.xlsx/.csv/.md/.html/.txt/.json) with FULL body in THIS turn. Client builds the download. NEVER say "Generating now" / "Understood, I will base…" without the ```file``` block in the same reply. Empty promise = product failure.',
-        'Tags are live evidence: [PROJECT][CONN][SSH][MEM][ATTACH][WEB][OBSERVE]. Trust them. [PROJECT] is product bind (source + live). Handoff/docs map into those roots — never claim portal missing because only a handoff mirror was in SSH cwd.',
-        '[MEM] is compact thread state (open asks, delivered names) — not a rival document corpus. When [ATTACH]/===== FILE: is THIS turn, that file is PRIMARY. When open obligation source is web, [WEB]/[OBSERVE] is PRIMARY over [MEM] summaries.',
-        'When the user wants work done (do it / implement / just get it done): DO IT this turn. Zero permission theater. Secure defaults. Opaque outcomes are bugs: land apply/run/file or state the single hard blocker.'
+        'You are a capable engineering assistant in a continuous connected session (same feel as Grok Build / Claude / Cursor). Natural language only — no modes for the user.',
+        'BRAIN + HANDS: You are the brain (this API). PromptParle on the user PC is the hands: local workspace, SSH/remote product bind, web fetch, apply/run, document deliver. Prefer hands over guessing.',
+        'TOKEN DISCIPLINE (non-negotiable): minimize tokens. Do not restate large evidence. Do not dump full files unless required. Prefer short targeted hands requests over long essays. One clear plan, then act.',
+        'HANDS PROTOCOL: When you need evidence you do not have, emit ONLY compact blocks — no filler — then stop that step: a fenced hands block with lines tool: arg. Tools: web_search, web_page, ssh_list, ssh_read, ssh_run, workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Client runs them (0 AI tokens) and returns [HANDS] results. Then answer from results.',
+        'When evidence is enough: answer or implement. NEVER answer with the method (no run-ls homework, no search-yourself) when hands can do it. NEVER Generating-now without a file fence body for user documents.',
+        'MUTATE: apply path=rel full files under source_root (client writes, backups, never live /var/www). run allowlisted pipeline only (prisma/npm/git status-class). Client reports What changed.',
+        'DELIVER: user docs need file name=Report.md (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
+        'PLAN: for non-trivial mutate, brief plan + blast radius in few lines; on clear go-ahead implement same turn. Tags CONN PROJECT SSH MEM ATTACH WEB OBSERVE HANDS are live evidence — trust them over memory invention.',
+        'Opaque outcomes are bugs: hands result, apply/run/file, or one hard blocker.'
     ) -join ' '
 }
 
@@ -3000,9 +3002,536 @@ function Invoke-PromptParleLocalTool {
                 chars_in = $r.chars_in; chars_out = $r.chars_out
             }
         }
+        { $_ -in @('ssh_list', 'list', 'ls') } {
+            $path = if ($Arg) { $Arg } else { '' }
+            $r = Invoke-PromptParleSshDirListing -RemotePath $path -MaxChars 6000
+            return [pscustomobject]@{
+                ok = [bool]$r.ok; tool = 'ssh_list'; local = $true
+                text = $(if ($r.text) { $r.text } else { "ssh_list failed: $($r.notes -join ', ')" })
+                notes = @($r.notes); path = $r.path
+            }
+        }
+        { $_ -in @('ssh_read', 'read') } {
+            $path = if ($Arg) { $Arg.Trim() } else { '' }
+            if (-not $path) {
+                return [pscustomobject]@{ ok = $false; tool = 'ssh_read'; local = $true; text = 'ssh_read needs a path'; notes = @('no-path') }
+            }
+            $ev = Get-PromptParleSshPromptEvidence -Prompt ("read $path") -MaxFiles 1 -MaxChars 14000
+            if ($ev -and $ev.text) {
+                return [pscustomobject]@{ ok = $true; tool = 'ssh_read'; local = $true; text = $ev.text; notes = @($ev.notes); files = $ev.files }
+            }
+            return [pscustomobject]@{ ok = $false; tool = 'ssh_read'; local = $true; text = "ssh_read miss: $path"; notes = @($ev.notes) }
+        }
+        { $_ -in @('ssh_run', 'run_remote') } {
+            $cmd = if ($Arg) { $Arg.Trim() } else { '' }
+            if (-not $cmd) {
+                return [pscustomobject]@{ ok = $false; tool = 'ssh_run'; local = $true; text = 'ssh_run needs allowlisted command'; notes = @('no-cmd') }
+            }
+            try {
+                $rr = Invoke-PromptParleSshRunCommand -Command $cmd
+                $snip = [string]$rr.text
+                if ($snip.Length -gt 5000) { $snip = $snip.Substring(0, 5000) + "`n…[run budget]" }
+                return [pscustomobject]@{
+                    ok = [bool]$rr.ok; tool = 'ssh_run'; local = $true
+                    text = ("CMD {0}`nEXIT {1}`n{2}" -f $rr.command, $rr.exit_code, $snip)
+                    notes = @('ssh_run'); exit_code = $rr.exit_code
+                }
+            } catch {
+                return [pscustomobject]@{ ok = $false; tool = 'ssh_run'; local = $true; text = "$_"; notes = @('ssh_run-deny') }
+            }
+        }
+        { $_ -in @('web_page', 'page', 'fetch_url') } {
+            $u = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
+            $r = Invoke-PromptParleWebPageFetch -UrlOrDomain $u -MaxChars 5000
+            return [pscustomobject]@{
+                ok = [bool]$r.ok; tool = 'web_page'; local = $true
+                text = $(if ($r.ok) { "[WEB_PAGE] $($r.url)`n$($r.text)" } else { "web_page failed: $($r.notes -join ', ')" })
+                notes = @($r.notes); url = $r.url
+            }
+        }
+        { $_ -in @('workspace_find', 'find', 'glob') } {
+            $r = Invoke-PromptParleWorkspaceFind -Spec $Arg -MaxFiles 14 -MaxChars 8000
+            return [pscustomobject]@{
+                ok = [bool]$r.ok; tool = 'workspace_find'; local = $true
+                text = $r.text; notes = @($r.notes); files = $r.files
+            }
+        }
         default {
             throw "Unknown local tool: $ToolId"
         }
+    }
+}
+
+function Invoke-PromptParleWorkspaceFind {
+    <#
+    .SYNOPSIS
+      0.19 hands: find files under connected local workspace by type/glob + optional query.
+      Token-first: path list + short extracts only.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Spec = '',
+        [int]$MaxFiles = 14,
+        [int]$MaxChars = 8000
+    )
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
+    if (-not $ws -or -not $ws.exists) {
+        return [pscustomobject]@{ ok = $false; text = 'No local workspace. Browse/attach a folder first.'; notes = @('no-workspace'); files = 0 }
+    }
+    $root = [string]$ws.path
+    $spec = if ($null -eq $Spec) { '' } else { $Spec.Trim() }
+    $globs = New-Object System.Collections.Generic.List[string]
+    $query = ''
+    if ($spec -match '\|') {
+        $left = $spec.Substring(0, $spec.IndexOf('|')).Trim()
+        $query = $spec.Substring($spec.IndexOf('|') + 1).Trim()
+        $spec = $left
+    }
+    if ($spec -match '(?i)query\s*:\s*(.+)$') {
+        $query = $Matches[1].Trim()
+        $spec = ($spec -replace '(?i)query\s*:\s*.+$', '').Trim()
+    }
+    if (-not $spec -or $spec -eq '.' -or $spec -eq '*') {
+        [void]$globs.Add('*.*')
+    } else {
+        foreach ($part in ($spec -split '[,;\s]+')) {
+            $g = $part.Trim()
+            if (-not $g) { continue }
+            if ($g -match '^[a-zA-Z0-9]+$') { $g = '*.' + $g }
+            if ($g -notmatch '[\*\?]') { $g = '*' + $g + '*' }
+            [void]$globs.Add($g)
+        }
+    }
+    if ($globs.Count -eq 0) { [void]$globs.Add('*.*') }
+
+    $found = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    $skipDir = '(?i)([\\/](\.git|node_modules|vendor|\.next|dist|build|__pycache__|\.venv|venv)([\\/]|$))'
+    try {
+        foreach ($g in $globs) {
+            if ($found.Count -ge ($MaxFiles * 3)) { break }
+            Get-ChildItem -LiteralPath $root -Recurse -File -Filter $g -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notmatch $skipDir -and $_.Length -lt 2MB } |
+                Select-Object -First 80 |
+                ForEach-Object {
+                    $k = $_.FullName.ToLowerInvariant()
+                    if ($seen.ContainsKey($k)) { return }
+                    $seen[$k] = $true
+                    $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                    $found.Add([pscustomobject]@{
+                        path = $rel
+                        full = $_.FullName
+                        bytes = [int]$_.Length
+                        name = $_.Name
+                    })
+                }
+        }
+    } catch {
+        return [pscustomobject]@{ ok = $false; text = "workspace_find error: $_"; notes = @('find-fail'); files = 0 }
+    }
+
+    $q = $query.ToLowerInvariant()
+    $picked = New-Object System.Collections.Generic.List[object]
+    if ($q) {
+        foreach ($f in $found) {
+            if ($picked.Count -ge $MaxFiles) { break }
+            $hit = $false
+            if ($f.path.ToLowerInvariant().Contains($q) -or $f.name.ToLowerInvariant().Contains($q)) { $hit = $true }
+            if (-not $hit) {
+                try {
+                    $head = Get-Content -LiteralPath $f.full -TotalCount 40 -ErrorAction SilentlyContinue | Out-String
+                    if ($head -and $head.ToLowerInvariant().Contains($q)) { $hit = $true }
+                } catch { }
+            }
+            if ($hit) { [void]$picked.Add($f) }
+        }
+        if ($picked.Count -eq 0) {
+            foreach ($f in ($found | Select-Object -First $MaxFiles)) { [void]$picked.Add($f) }
+        }
+    } else {
+        foreach ($f in ($found | Select-Object -First $MaxFiles)) { [void]$picked.Add($f) }
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("[WORKSPACE_FIND] root=$root globs=$($globs -join ',') query=$query matches=$($picked.Count)/$($found.Count)")
+    $budget = $MaxChars - 200
+    $used = 0
+    $n = 0
+    foreach ($f in $picked) {
+        $n++
+        $header = "`n--- FILE: $($f.path) ($($f.bytes)b) ---`n"
+        $extract = ''
+        try {
+            $raw = Get-Content -LiteralPath $f.full -Raw -ErrorAction Stop
+            if ($null -eq $raw) { $raw = '' }
+            $cap = [Math]::Min(900, [Math]::Max(200, [int]($budget / [Math]::Max(1, $picked.Count - $n + 1))))
+            if ($raw.Length -gt $cap) { $extract = $raw.Substring(0, $cap) + "`n…[file budget]" }
+            else { $extract = $raw }
+        } catch {
+            $extract = "(unreadable: $_)"
+        }
+        $chunk = $header + $extract
+        if (($used + $chunk.Length) -gt $budget -and $n -gt 1) {
+            $lines.Add("…[workspace_find char budget; $($picked.Count - $n + 1) files omitted]")
+            break
+        }
+        $lines.Add($chunk)
+        $used += $chunk.Length
+    }
+    if ($picked.Count -eq 0) {
+        $lines.Add('(no files matched)')
+    }
+    $text = ($lines -join "`n")
+    if ($text.Length -gt $MaxChars) { $text = $text.Substring(0, $MaxChars) + "`n…[cap]" }
+    return [pscustomobject]@{
+        ok = ($picked.Count -gt 0)
+        text = $text
+        notes = @("workspace_find:$($picked.Count)")
+        files = $picked.Count
+    }
+}
+
+function Get-PromptParleHandsCatalogBrief {
+    return @(
+        '[HANDS] client tools (0 AI tokens). Request with a hands fence: lines tool: arg',
+        'web_search: q | web_page: url|domain | ssh_list: path | ssh_read: path | ssh_run: allowlisted-cmd',
+        'workspace_find: *.md,*.pdf | query | relevant_slice: q | file_index | git_diff | git | connections | tree_pack: depth',
+        'After [HANDS] results: answer or apply/run/file. Never teach the user the method.'
+    ) -join "`n"
+}
+
+function Parse-PromptParleHandsBlocks {
+    param([string]$Text = '')
+    $reqs = New-Object System.Collections.Generic.List[object]
+    if (-not $Text) { return @() }
+    $rx = [regex]::new('(?ms)```hands[^\n]*\r?\n(.*?)```')
+    foreach ($m in $rx.Matches($Text)) {
+        $body = $m.Groups[1].Value
+        foreach ($line in ($body -split '\r?\n')) {
+            $ln = $line.Trim()
+            if (-not $ln -or $ln.StartsWith('#')) { continue }
+            $tool = ''
+            $arg = ''
+            if ($ln -match '^(?i)([a-z_][a-z0-9_]*)\s*:\s*(.*)$') {
+                $tool = $Matches[1].Trim()
+                $arg = $Matches[2].Trim()
+            } elseif ($ln -match '^(?i)([a-z_][a-z0-9_]*)\s*\|\s*(.*)$') {
+                $tool = $Matches[1].Trim()
+                $arg = $Matches[2].Trim()
+            } elseif ($ln -match '^(?i)([a-z_][a-z0-9_]*)\s+(.+)$') {
+                $tool = $Matches[1].Trim()
+                $arg = $Matches[2].Trim()
+            } elseif ($ln -match '^(?i)([a-z_][a-z0-9_]*)$') {
+                $tool = $Matches[1].Trim()
+            } else { continue }
+            $reqs.Add([pscustomobject]@{ tool = $tool.ToLowerInvariant(); arg = $arg; index = $m.Index })
+        }
+    }
+    foreach ($m in [regex]::Matches($Text, '(?i)<<hands\s+([a-z_][a-z0-9_]*)\s*:\s*([^>]+)>>')) {
+        $reqs.Add([pscustomobject]@{
+            tool = $m.Groups[1].Value.ToLowerInvariant()
+            arg = $m.Groups[2].Value.Trim()
+            index = $m.Index
+        })
+    }
+    return @($reqs.ToArray())
+}
+
+function Invoke-PromptParleHandsRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Tool,
+        [string]$Arg = '',
+        [int]$MaxChars = 4500
+    )
+    $id = $Tool.ToLowerInvariant().Trim()
+    switch ($id) {
+        'ls' { $id = 'ssh_list' }
+        'list' { $id = 'ssh_list' }
+        'search' { $id = 'web_search' }
+        'web' { $id = 'web_search' }
+        'fetch' { $id = 'web_page' }
+        'page' { $id = 'web_page' }
+        'find' { $id = 'workspace_find' }
+        'glob' { $id = 'workspace_find' }
+        'read' { $id = 'ssh_read' }
+        'cat' { $id = 'ssh_read' }
+        'run' { $id = 'ssh_run' }
+        'slice' { $id = 'relevant_slice' }
+        'diff' { $id = 'git_diff' }
+        'index' { $id = 'file_index' }
+    }
+    try {
+        $r = Invoke-PromptParleLocalTool -ToolId $id -Arg $Arg -Text $Arg
+        $text = [string](Get-PromptParleProp $r 'text' '')
+        if ($text.Length -gt $MaxChars) {
+            $text = $text.Substring(0, $MaxChars) + "`n…[hands budget $MaxChars]"
+        }
+        $ok = $true
+        try { $ok = [bool](Get-PromptParleProp $r 'ok' $true) } catch { }
+        return [pscustomobject]@{
+            ok = $ok
+            tool = $id
+            arg = $Arg
+            text = $text
+            notes = @(Get-PromptParleProp $r 'notes' @())
+        }
+    } catch {
+        return [pscustomobject]@{
+            ok = $false
+            tool = $id
+            arg = $Arg
+            text = "hands error ($id): $_"
+            notes = @('hands-fail')
+        }
+    }
+}
+
+function Format-PromptParleHandsPack {
+    param(
+        [object[]]$Results,
+        [int]$MaxChars = 9000
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('[HANDS] client results (already executed — 0 model tokens for these tools). Answer from this. Request more hands only if essential.')
+    $i = 0
+    foreach ($r in @($Results)) {
+        $i++
+        $mark = if ($r.ok) { 'ok' } else { 'FAIL' }
+        $lines.Add("")
+        $lines.Add("### hands#$i $($r.tool) ($mark)")
+        if ($r.arg) { $lines.Add("arg: $($r.arg)") }
+        $lines.Add([string]$r.text)
+    }
+    $text = ($lines -join "`n")
+    if ($text.Length -gt $MaxChars) {
+        $text = $text.Substring(0, $MaxChars) + "`n…[hands pack budget]"
+    }
+    return $text
+}
+
+function Test-PromptParleResponseNeedsHands {
+    param([string]$Text = '')
+    if (-not $Text) { return $false }
+    if ($Text -match '(?ms)```hands') { return $true }
+    if ($Text -match '(?i)<<hands\s+') { return $true }
+    return $false
+}
+
+function Remove-PromptParleHandsBlocks {
+    param([string]$Text = '')
+    if (-not $Text) { return '' }
+    $t = [regex]::Replace($Text, '(?ms)```hands[^\n]*\r?\n.*?```', '')
+    $t = [regex]::Replace($t, '(?i)<<hands\s+[^>]+>>', '')
+    return $t.Trim()
+}
+
+function Invoke-PromptParleAgentTurn {
+    <#
+    .SYNOPSIS
+      0.19 token-first agent loop: brain (API) + hands (local/SSH/web).
+      Max rounds capped by dial. After hands, next round context is ONLY compact [HANDS] (token win).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$Context = '',
+        [string]$System = '',
+        [string]$Runtime = '',
+        [string]$Provider = 'openai',
+        [string]$Profile = 'general',
+        [int]$CompressionLevel = 3,
+        [string]$Model = '',
+        [object]$Images = $null,
+        [int]$MaxRounds = 0,
+        [switch]$OptimizeOnly
+    )
+    if ($MaxRounds -le 0) {
+        $MaxRounds = switch ($CompressionLevel) {
+            1 { 4 }
+            2 { 3 }
+            3 { 3 }
+            4 { 2 }
+            5 { 2 }
+            default { 3 }
+        }
+    }
+    if ($OptimizeOnly) {
+        $p = @{
+            Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+            Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+            Quiet = $true; Raw = $true; OptimizeOnly = $true
+        }
+        if ($Model) { $p.Model = $Model }
+        return Invoke-PromptParle @p
+    }
+
+    $handsCatalog = Get-PromptParleHandsCatalogBrief
+    $baseRuntime = if ($Runtime) { $Runtime.Trim() } else { '' }
+    $runtime = ($baseRuntime + ' AGENT 0.19 token-first: use hands fence (tool: arg) when you need client evidence; keep requests tiny; when done, final answer with apply/run/file — no method homework.').Trim()
+
+    $roundContext = $Context
+    if ($roundContext) {
+        if ($roundContext -notmatch '(?m)^\[HANDS\]') {
+            $roundContext = $handsCatalog + "`n`n" + $roundContext
+        }
+    } else {
+        $roundContext = $handsCatalog
+    }
+
+    $roundPrompt = $Prompt
+    $allHands = New-Object System.Collections.Generic.List[object]
+    $sumOrig = 0
+    $sumOpt = 0
+    $roundsUsed = 0
+    $seenKeys = @{}
+    $lastResp = ''
+    $lastResult = $null
+
+    for ($round = 1; $round -le $MaxRounds; $round++) {
+        $roundsUsed = $round
+        Write-Host ("  agent: round {0}/{1} (token-first hands loop)" -f $round, $MaxRounds) -ForegroundColor DarkCyan
+
+        $params = @{
+            Prompt           = $roundPrompt
+            Context          = $roundContext
+            System           = $System
+            Runtime          = $runtime
+            Provider         = $Provider
+            Profile          = $Profile
+            CompressionLevel = $CompressionLevel
+            Quiet            = $true
+            Raw              = $true
+        }
+        if ($Model) { $params.Model = $Model }
+        if ($Images -and $round -eq 1) { $params.Images = $Images }
+
+        $result = Invoke-PromptParle @params
+        $lastResult = $result
+        $meta = Get-PromptParleProp $result 'metadata'
+        if ($null -eq $meta) { $meta = Get-PromptParleProp $result 'Metadata' }
+        if ($meta) {
+            try { $sumOrig += [int](Get-PromptParleProp $meta 'original_tokens' 0) } catch { }
+            try { $sumOpt += [int](Get-PromptParleProp $meta 'optimized_tokens' 0) } catch { }
+        }
+        $resp = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+        $lastResp = $resp
+
+        if (-not (Test-PromptParleResponseNeedsHands -Text $resp)) {
+            break
+        }
+
+        $reqs = @(Parse-PromptParleHandsBlocks -Text $resp)
+        if ($reqs.Count -eq 0) { break }
+
+        $batch = New-Object System.Collections.Generic.List[object]
+        foreach ($req in $reqs) {
+            if ($batch.Count -ge 6) { break }
+            $key = ($req.tool + '|' + $req.arg).ToLowerInvariant()
+            if ($seenKeys.ContainsKey($key)) { continue }
+            $seenKeys[$key] = $true
+            $hr = Invoke-PromptParleHandsRequest -Tool $req.tool -Arg $req.arg -MaxChars 4500
+            [void]$batch.Add($hr)
+            [void]$allHands.Add($hr)
+            Write-Host ("  hands: {0} ({1}) {2}c" -f $hr.tool, $(if ($hr.ok) { 'ok' } else { 'FAIL' }), $hr.text.Length) -ForegroundColor Cyan
+        }
+        if ($batch.Count -eq 0) {
+            $roundPrompt = $Prompt + "`n`n[CLIENT] Hands already provided earlier this turn. Give the final answer now — no more hands requests."
+            $roundContext = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000
+            continue
+        }
+
+        $pack = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000
+        $roundContext = $handsCatalog + "`n`n" + $pack
+        $roundPrompt = @(
+            $Prompt.Trim()
+            ''
+            '[CLIENT DIRECTIVE — hands fulfilled · token-first 0.19]'
+            'Client already ran hands tools. Results are in [HANDS] context.'
+            'Produce the FINAL user-facing answer now (or apply/run/file).'
+            'Do not re-request the same tools. Do not dump methods. Be concise.'
+        ) -join "`n"
+
+        if ($round -ge $MaxRounds) {
+            Write-Host '  agent: max rounds — final synthesis call' -ForegroundColor DarkYellow
+            $params2 = @{
+                Prompt           = $roundPrompt
+                Context          = $roundContext
+                System           = $System
+                Runtime          = ($runtime + ' FINAL ROUND: answer now, no hands.')
+                Provider         = $Provider
+                Profile          = $Profile
+                CompressionLevel = $CompressionLevel
+                Quiet            = $true
+                Raw              = $true
+            }
+            if ($Model) { $params2.Model = $Model }
+            $result = Invoke-PromptParle @params2
+            $lastResult = $result
+            $meta = Get-PromptParleProp $result 'metadata'
+            if ($meta) {
+                try { $sumOrig += [int](Get-PromptParleProp $meta 'original_tokens' 0) } catch { }
+                try { $sumOpt += [int](Get-PromptParleProp $meta 'optimized_tokens' 0) } catch { }
+            }
+            $lastResp = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+            $roundsUsed++
+            break
+        }
+    }
+
+    if (Test-PromptParleResponseNeedsHands -Text $lastResp) {
+        $stripped = Remove-PromptParleHandsBlocks -Text $lastResp
+        if (-not $stripped -or $stripped.Length -lt 20) {
+            $lastResp = @(
+                '**Hands ran; model did not produce a final answer in round budget.**'
+                ''
+                Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 6000
+            ) -join "`n"
+        } else {
+            $lastResp = $stripped
+        }
+    }
+
+    $metaOut = $null
+    if ($lastResult) {
+        $metaOut = Get-PromptParleProp $lastResult 'metadata'
+        if ($null -eq $metaOut) { $metaOut = Get-PromptParleProp $lastResult 'Metadata' }
+    }
+    $agentMeta = [ordered]@{
+        agent_rounds         = $roundsUsed
+        hands_count          = $allHands.Count
+        hands_tools          = @($allHands | ForEach-Object { $_.tool } | Select-Object -Unique)
+        tokens_sum_original  = $sumOrig
+        tokens_sum_optimized = $sumOpt
+        token_first          = $true
+        architecture         = '0.19-brain-hands'
+    }
+
+    if ($null -ne $lastResult) {
+        try {
+            if ($lastResult.PSObject.Properties['response']) {
+                $lastResult.response = $lastResp
+            } elseif ($lastResult.PSObject.Properties['Response']) {
+                $lastResult.Response = $lastResp
+            } else {
+                $lastResult | Add-Member -NotePropertyName response -NotePropertyValue $lastResp -Force
+            }
+            $lastResult | Add-Member -NotePropertyName agent -NotePropertyValue ([pscustomobject]$agentMeta) -Force
+            return $lastResult
+        } catch {
+            return [pscustomobject]@{
+                response         = $lastResp
+                metadata         = $metaOut
+                agent            = [pscustomobject]$agentMeta
+                optimized_prompt = Get-PromptParleProp $lastResult 'optimized_prompt' $null
+            }
+        }
+    }
+    return [pscustomobject]@{
+        response = $lastResp
+        metadata = $metaOut
+        agent    = [pscustomobject]$agentMeta
     }
 }
 
@@ -10042,15 +10571,14 @@ function Start-PromptParleLocalServer {
                             Provider          = $provider
                             Profile           = $profile
                             CompressionLevel  = $dial
-                            Quiet             = $true
-                            Raw               = $true
                         }
                         # Pass as single string - never as char-unrolled array
                         if ($context) { $params.Context = [string]$context }
                         if ($optOnly) { $params.OptimizeOnly = $true }
                         if ($images.Count -gt 0) { $params.Images = $images }
 
-                        $result = Invoke-PromptParle @params
+                        # 0.19: token-first brain+hands agent loop
+                        $result = Invoke-PromptParleAgentTurn @params
                         # Normalize metadata keys for the browser UI (always snake_case numbers)
                         $metaIn = Get-PromptParleProp $result 'metadata'
                         if ($null -eq $metaIn) { $metaIn = Get-PromptParleProp $result 'Metadata' }
@@ -10097,6 +10625,29 @@ function Start-PromptParleLocalServer {
                                 foreach ($n in @($localNotes)) { if ($n) { $mergedNotes += [string]$n } }
                                 $metaOut.notes = $mergedNotes
                             }
+                            try {
+                                $ag = Get-PromptParleProp $result 'agent' $null
+                                if ($ag) {
+                                    $metaOut.agent_rounds = [int](Get-PromptParleProp $ag 'agent_rounds' 0)
+                                    $metaOut.hands_count = [int](Get-PromptParleProp $ag 'hands_count' 0)
+                                    $metaOut.hands_tools = @(Get-PromptParleProp $ag 'hands_tools' @())
+                                    $metaOut.architecture = [string](Get-PromptParleProp $ag 'architecture' '0.19-brain-hands')
+                                    $sumO = Get-PromptParleProp $ag 'tokens_sum_original' $null
+                                    $sumZ = Get-PromptParleProp $ag 'tokens_sum_optimized' $null
+                                    if ($null -ne $sumO) {
+                                        $metaOut.original_tokens = [int]$sumO
+                                        $metaOut.tokens_sum_original = [int]$sumO
+                                    }
+                                    if ($null -ne $sumZ) {
+                                        $metaOut.optimized_tokens = [int]$sumZ
+                                        $metaOut.tokens_sum_optimized = [int]$sumZ
+                                    }
+                                    if ($metaOut.original_tokens -gt 0) {
+                                        $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
+                                        $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
+                                    }
+                                }
+                            } catch { }
                         }
                         $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
                         # 0.16.1: always run implement pipeline post-pass when implement OR any apply/run/homework signal
@@ -10469,7 +11020,7 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliRt = 'Prep ran. [PROJECT][CONN][SSH][ATTACH] when present. Normal assistant: answer or implement from evidence.'
+            $cliRt = 'Prep ran. AGENT 0.19 token-first brain+hands. [PROJECT][CONN][SSH][HANDS] when present.'
             $cliFrame = Get-PromptParleChatFraming -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = [string]$cliFrame.Prompt
@@ -10478,7 +11029,6 @@ function Start-PromptParle {
                 Provider         = $sessionProvider
                 Profile          = $sessionProfile
                 CompressionLevel = $sessionDial
-                Quiet            = $false
             }
             if ($sessionModel) { $params.Model = $sessionModel }
             if ($cliCtx) { $params.Context = [string]$cliCtx }
@@ -10487,14 +11037,25 @@ function Start-PromptParle {
                 $optimizeOnlyNext = $false
             }
 
-            $result = Invoke-PromptParle @params
+            $result = Invoke-PromptParleAgentTurn @params
 
-            if ($result.OptimizeOnly) {
+            $isOpt = $false
+            try { $isOpt = [bool](Get-PromptParleProp $result 'OptimizeOnly' $false) } catch { }
+            if (-not $isOpt) {
+                try { $isOpt = [bool](Get-PromptParleProp (Get-PromptParleProp $result 'metadata' @{}) 'optimize_only' $false) } catch { }
+            }
+            if ($isOpt -or $params.ContainsKey('OptimizeOnly')) {
                 Write-Host 'optimized prompt>' -ForegroundColor Cyan
-                Write-Host $result.OptimizedPrompt
+                $op = Get-PromptParleProp $result 'OptimizedPrompt' (Get-PromptParleProp $result 'optimized_prompt' '')
+                Write-Host $op
             } else {
                 Write-Host ("{0}>" -f $sessionProvider) -ForegroundColor Magenta
-                Write-Host $result.Response
+                $txt = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+                Write-Host $txt
+                $ag = Get-PromptParleProp $result 'agent' $null
+                if ($ag) {
+                    Write-Host ("  agent: rounds={0} hands={1}" -f (Get-PromptParleProp $ag 'agent_rounds' 0), (Get-PromptParleProp $ag 'hands_count' 0)) -ForegroundColor DarkGray
+                }
             }
             Write-Host ''
         } catch {
