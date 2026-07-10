@@ -880,6 +880,49 @@
       padding: .35rem .5rem;
       border-top: 1px solid var(--border);
       background: #0a0e16;
+      position: relative;
+    }
+    .term-suggest {
+      position: absolute;
+      left: .5rem;
+      right: .5rem;
+      bottom: calc(100% - 2px);
+      z-index: 35;
+      max-height: 12rem;
+      overflow-y: auto;
+      background: #0a0e16;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 -10px 28px rgba(0,0,0,.5);
+      padding: .2rem;
+    }
+    .term-suggest[hidden] { display: none !important; }
+    .term-suggest .term-suggest-label {
+      font-size: .65rem;
+      color: var(--dim);
+      padding: .2rem .45rem .15rem;
+    }
+    .term-suggest button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      color: var(--text);
+      font: inherit;
+      font-size: .76rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      padding: .35rem .5rem;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .term-suggest button:hover,
+    .term-suggest button.active {
+      background: var(--accent-soft);
+      color: var(--accent-strong);
     }
     .term-prompt {
       flex: 0 0 auto;
@@ -912,14 +955,20 @@
       position: absolute;
       left: 0; right: 0;
       top: calc(100% - 2px);
-      z-index: 30;
-      max-height: 11rem;
+      z-index: 50;
+      max-height: 13rem;
       overflow-y: auto;
       background: #0a0e16;
-      border: 1px solid var(--border);
+      border: 1px solid rgba(91,140,255,.45);
       border-radius: 8px;
-      box-shadow: 0 10px 28px rgba(0,0,0,.45);
+      box-shadow: 0 12px 32px rgba(0,0,0,.55);
       padding: .2rem;
+    }
+    .ssh-suggest .ssh-suggest-label {
+      font-size: .65rem;
+      color: var(--dim);
+      padding: .25rem .5rem .15rem;
+      letter-spacing: .02em;
     }
     .ssh-suggest[hidden] { display: none !important; }
     .ssh-suggest button {
@@ -1111,8 +1160,9 @@
         </div>
         <div class="term-out" id="termOut" aria-live="polite"></div>
         <div class="term-in-row">
+          <div class="term-suggest" id="termSuggest" hidden role="listbox" aria-label="Remote directories"></div>
           <span class="term-prompt" id="termPrompt">$</span>
-          <input type="text" id="termInput" placeholder="command — Enter to run" spellcheck="false" autocomplete="off" />
+          <input type="text" id="termInput" placeholder="command — Enter to run · type a path or cd … for folder list" spellcheck="false" autocomplete="off" />
           <button type="button" class="secondary" id="termRunBtn">Run</button>
         </div>
       </div>
@@ -1293,8 +1343,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         <input type="text" id="sshTargetInput" placeholder="user@hostname  or  user@host:2222" spellcheck="false" />
       </div>
       <div class="field-row ssh-cwd-field">
-        <label for="sshCwdInput">Working directory (optional)</label>
-        <input type="text" id="sshCwdInput" placeholder="Start typing — e.g. /home or ~/pro — remote folders appear below" spellcheck="false" autocomplete="off" />
+        <label for="sshCwdInput">Working directory — folders list as you type</label>
+        <input type="text" id="sshCwdInput" placeholder="Type / or ~/ or /home/… — matching remote folders appear instantly" spellcheck="false" autocomplete="off" />
         <div class="ssh-suggest" id="sshCwdSuggest" hidden role="listbox" aria-label="Remote directories"></div>
         <div class="ssh-cwd-status" id="sshCwdStatus" hidden></div>
       </div>
@@ -1398,6 +1448,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     let sshSuggestSeq = 0;
     let sshSuggestItems = [];
     let sshSuggestIdx = -1;
+    const termSuggest = document.getElementById('termSuggest');
+    let termSuggestTimer = null;
+    let termSuggestSeq = 0;
+    let termSuggestItems = [];
+    let termSuggestIdx = -1;
+    /** When completing in terminal: { kind:'cd'|'path', prefix, partial } */
+    let termPathCtx = null;
     const gitRepoInput = document.getElementById('gitRepoInput');
     const gitDestInput = document.getElementById('gitDestInput');
     const helpBtn = document.getElementById('helpBtn');
@@ -2591,6 +2648,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       sshCwdStatus.textContent = text;
     }
 
+    /** Host for remote complete: session target, or typed Connect host field */
+    function resolveSshSuggestHost() {
+      var host = (currentSshTarget || '').trim();
+      var port = 22;
+      if (!host && sshTargetInput) {
+        host = (sshTargetInput.value || '').trim();
+      }
+      if (host && host.match(/^(.+):(\d+)$/)) {
+        port = parseInt(RegExp.$2, 10) || 22;
+        host = RegExp.$1;
+      }
+      return { host: host, port: port };
+    }
+
     function renderSshSuggest(dirs) {
       if (!sshCwdSuggest) return;
       sshSuggestItems = dirs || [];
@@ -2600,7 +2671,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return;
       }
       sshCwdSuggest.innerHTML = '';
-      sshSuggestItems.forEach(function (d, i) {
+      var lab = document.createElement('div');
+      lab.className = 'ssh-suggest-label';
+      lab.textContent = 'Remote folders (click / Tab / ↑↓ Enter)';
+      sshCwdSuggest.appendChild(lab);
+      sshSuggestItems.forEach(function (d) {
         const b = document.createElement('button');
         b.type = 'button';
         b.setAttribute('role', 'option');
@@ -2629,7 +2704,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     function highlightSshSuggest() {
       if (!sshCwdSuggest) return;
-      var buttons = sshCwdSuggest.querySelectorAll('button');
+      var buttons = sshCwdSuggest.querySelectorAll('button[role="option"]');
       for (var i = 0; i < buttons.length; i++) {
         if (i === sshSuggestIdx) buttons[i].classList.add('active');
         else buttons[i].classList.remove('active');
@@ -2641,34 +2716,34 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     function scheduleSshDirSuggest(immediate) {
       if (sshSuggestTimer) clearTimeout(sshSuggestTimer);
-      var hostOk = currentSshTarget || (sshTargetInput && sshTargetInput.value.trim());
-      if (!hostOk && sshModalMode !== 'cwd') {
-        // Still allow typing; complete needs an active SSH session
-        return;
-      }
-      if (!currentSshTarget && sshModalMode === 'connect') {
-        setSshCwdStatus('loading', 'Connect host first — then directory suggestions appear while typing.');
+      var h = resolveSshSuggestHost();
+      if (!h.host) {
+        setSshCwdStatus('loading', 'Enter host (user@host) above — folders list while you type.');
+        hideSshSuggest();
         return;
       }
       sshSuggestTimer = setTimeout(function () {
         fetchSshDirSuggest();
-      }, immediate ? 80 : 280);
+      }, immediate ? 60 : 160);
     }
 
     async function fetchSshDirSuggest() {
       if (!sshCwdInput) return;
-      if (!currentSshTarget) {
-        setSshCwdStatus('loading', 'SSH host not connected yet.');
+      var h = resolveSshSuggestHost();
+      if (!h.host) {
+        setSshCwdStatus('loading', 'Enter host (user@host) first.');
         hideSshSuggest();
         return;
       }
       var partial = sshCwdInput.value || '';
       var seq = ++sshSuggestSeq;
-      setSshCwdStatus('loading', 'Looking up remote folders…');
+      setSshCwdStatus('loading', 'Listing remote folders on ' + h.host + '…');
       try {
-        const res = await fetch('/api/ssh/complete?path=' + encodeURIComponent(partial) + '&t=' + Date.now(), {
-          cache: 'no-store'
-        });
+        var url = '/api/ssh/complete?path=' + encodeURIComponent(partial) +
+          '&target=' + encodeURIComponent(h.host) +
+          '&port=' + encodeURIComponent(String(h.port || 22)) +
+          '&t=' + Date.now();
+        const res = await fetch(url, { cache: 'no-store' });
         let data = {};
         try { data = await res.json(); } catch (e) { data = {}; }
         if (seq !== sshSuggestSeq) return; // stale
@@ -2681,16 +2756,148 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (!dirs.length) {
           hideSshSuggest();
           if (partial && data.error) setSshCwdStatus('err', data.error);
-          else if (partial) setSshCwdStatus('loading', 'No matching remote folders');
-          else setSshCwdStatus('', '');
+          else if (partial) setSshCwdStatus('loading', 'No matching remote folders — check spelling/case');
+          else setSshCwdStatus('loading', 'Type / or ~/ to browse remote folders');
           return;
         }
         renderSshSuggest(dirs);
-        setSshCwdStatus('ok', dirs.length + ' folder' + (dirs.length === 1 ? '' : 's') + ' — click or ↑↓ Enter');
+        setSshCwdStatus('ok', dirs.length + ' folder' + (dirs.length === 1 ? '' : 's') + ' on ' + h.host);
       } catch (e) {
         if (seq !== sshSuggestSeq) return;
         hideSshSuggest();
         setSshCwdStatus('err', 'Suggest failed: ' + (e.message || e));
+      }
+    }
+
+    // —— SSH terminal path autocomplete (cd … or absolute paths) ——
+    function hideTermSuggest() {
+      if (termSuggest) {
+        termSuggest.hidden = true;
+        termSuggest.innerHTML = '';
+      }
+      termSuggestItems = [];
+      termSuggestIdx = -1;
+      termPathCtx = null;
+    }
+
+    function parseTermPathContext(line) {
+      var s = String(line || '');
+      // cd /path or cd ~/x  (with optional args ignored — complete last token)
+      var m = s.match(/^(cd|chdir|pushd)\s+((?:~|\/|\.\/|\.\.\/)[^\s]*)$/i);
+      if (m) {
+        return { kind: 'cd', prefix: m[1] + ' ', partial: m[2] };
+      }
+      // bare path as whole command
+      m = s.match(/^((?:~|\/)[^\s]*)$/);
+      if (m) {
+        return { kind: 'path', prefix: '', partial: m[1] };
+      }
+      // command ending with absolute path token
+      m = s.match(/^(.*\s)((?:~|\/)[^\s]*)$/);
+      if (m) {
+        return { kind: 'path', prefix: m[1], partial: m[2] };
+      }
+      return null;
+    }
+
+    function scheduleTermDirSuggest(immediate) {
+      if (termTarget !== 'ssh') {
+        hideTermSuggest();
+        return;
+      }
+      if (termSuggestTimer) clearTimeout(termSuggestTimer);
+      termSuggestTimer = setTimeout(function () {
+        fetchTermDirSuggest();
+      }, immediate ? 60 : 160);
+    }
+
+    async function fetchTermDirSuggest() {
+      if (!termInput || termTarget !== 'ssh') {
+        hideTermSuggest();
+        return;
+      }
+      var ctx = parseTermPathContext(termInput.value || '');
+      if (!ctx) {
+        hideTermSuggest();
+        return;
+      }
+      termPathCtx = ctx;
+      var h = resolveSshSuggestHost();
+      if (!h.host) {
+        hideTermSuggest();
+        return;
+      }
+      var seq = ++termSuggestSeq;
+      try {
+        var url = '/api/ssh/complete?path=' + encodeURIComponent(ctx.partial) +
+          '&target=' + encodeURIComponent(h.host) +
+          '&port=' + encodeURIComponent(String(h.port || 22)) +
+          '&t=' + Date.now();
+        const res = await fetch(url, { cache: 'no-store' });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (seq !== termSuggestSeq) return;
+        const dirs = data.dirs || data.Dirs || [];
+        if (!dirs.length) {
+          hideTermSuggest();
+          termPathCtx = ctx;
+          return;
+        }
+        renderTermSuggest(dirs);
+      } catch (e) {
+        if (seq !== termSuggestSeq) return;
+        hideTermSuggest();
+      }
+    }
+
+    function renderTermSuggest(dirs) {
+      if (!termSuggest) return;
+      termSuggestItems = dirs || [];
+      termSuggestIdx = -1;
+      if (!termSuggestItems.length) {
+        hideTermSuggest();
+        return;
+      }
+      termSuggest.innerHTML = '';
+      var lab = document.createElement('div');
+      lab.className = 'term-suggest-label';
+      lab.textContent = 'Remote folders';
+      termSuggest.appendChild(lab);
+      termSuggestItems.forEach(function (d) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'option');
+        b.textContent = d;
+        b.title = d;
+        b.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          applyTermSuggest(d);
+        });
+        termSuggest.appendChild(b);
+      });
+      termSuggest.hidden = false;
+    }
+
+    function applyTermSuggest(path) {
+      if (!termInput || !termPathCtx) return;
+      var next = path;
+      if (!/\/$/.test(next) && termPathCtx.kind === 'cd') next = next + '/';
+      termInput.value = termPathCtx.prefix + next;
+      hideTermSuggest();
+      // Re-open children list if trailing slash
+      if (/\/$/.test(termInput.value)) scheduleTermDirSuggest(true);
+      termInput.focus();
+    }
+
+    function highlightTermSuggest() {
+      if (!termSuggest) return;
+      var buttons = termSuggest.querySelectorAll('button[role="option"]');
+      for (var i = 0; i < buttons.length; i++) {
+        if (i === termSuggestIdx) buttons[i].classList.add('active');
+        else buttons[i].classList.remove('active');
+      }
+      if (termSuggestIdx >= 0 && buttons[termSuggestIdx]) {
+        try { buttons[termSuggestIdx].scrollIntoView({ block: 'nearest' }); } catch (e) { /* ignore */ }
       }
     }
 
@@ -3179,7 +3386,22 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
     if (sshTargetInput) {
       sshTargetInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); connectSsh(); }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          // Prefer moving to directory field so user can type path with live list
+          if (sshCwdInput) {
+            sshCwdInput.focus();
+            scheduleSshDirSuggest(true);
+          } else {
+            connectSsh();
+          }
+        }
+      });
+      sshTargetInput.addEventListener('change', function () {
+        if (sshCwdInput && sshCwdInput.value) scheduleSshDirSuggest(true);
+      });
+      sshTargetInput.addEventListener('blur', function () {
+        if (sshCwdInput && document.activeElement === sshCwdInput) scheduleSshDirSuggest(true);
       });
     }
     if (sshCwdInput) {
@@ -3187,7 +3409,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         scheduleSshDirSuggest(false);
       });
       sshCwdInput.addEventListener('focus', function () {
-        if (currentSshTarget) scheduleSshDirSuggest(true);
+        // List folders as soon as the field is focused (host from session or Connect field)
+        scheduleSshDirSuggest(true);
       });
       sshCwdInput.addEventListener('blur', function () {
         // Delay so click on suggestion still registers
@@ -3252,16 +3475,53 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
     }
     if (termInput) {
+      termInput.addEventListener('input', function () {
+        if (termTarget === 'ssh') scheduleTermDirSuggest(false);
+        else hideTermSuggest();
+      });
+      termInput.addEventListener('blur', function () {
+        setTimeout(function () { hideTermSuggest(); }, 180);
+      });
       termInput.addEventListener('keydown', function (e) {
+        if (termTarget === 'ssh' && termSuggestItems.length) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            termSuggestIdx = Math.min(termSuggestItems.length - 1, termSuggestIdx + 1);
+            highlightTermSuggest();
+            return;
+          }
+          if (e.key === 'ArrowUp' && termSuggestIdx >= 0) {
+            e.preventDefault();
+            termSuggestIdx = Math.max(0, termSuggestIdx - 1);
+            highlightTermSuggest();
+            return;
+          }
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            var tp = termSuggestIdx >= 0 ? termSuggestItems[termSuggestIdx] : termSuggestItems[0];
+            applyTermSuggest(tp);
+            return;
+          }
+          if (e.key === 'Escape') {
+            hideTermSuggest();
+            return;
+          }
+          if (e.key === 'Enter' && termSuggestIdx >= 0 && termSuggestItems[termSuggestIdx]) {
+            e.preventDefault();
+            applyTermSuggest(termSuggestItems[termSuggestIdx]);
+            return;
+          }
+        }
         if (e.key === 'Enter') {
           e.preventDefault();
+          hideTermSuggest();
           runTerminalCommand(termInput.value);
-        } else if (e.key === 'ArrowUp') {
+        } else if (e.key === 'ArrowUp' && !(termTarget === 'ssh' && termSuggestItems.length)) {
           if (!termHistory.length) return;
           e.preventDefault();
           termHistIdx = Math.max(0, termHistIdx - 1);
           termInput.value = termHistory[termHistIdx] || '';
-        } else if (e.key === 'ArrowDown') {
+        } else if (e.key === 'ArrowDown' && !(termTarget === 'ssh' && termSuggestItems.length)) {
           e.preventDefault();
           termHistIdx = Math.min(termHistory.length, termHistIdx + 1);
           termInput.value = termHistIdx >= termHistory.length ? '' : (termHistory[termHistIdx] || '');

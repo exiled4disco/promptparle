@@ -4847,15 +4847,26 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                     continue
                 }
 
-                # SSH remote directory autocomplete (for working-dir field)
+                # SSH remote directory autocomplete (working-dir field + terminal)
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/ssh/complete') {
                     try {
                         $q = [string]$req.Url.Query
                         $partial = ''
+                        $tgtQ = ''
+                        $portQ = 0
                         if ($q -and $q -match '(?:^|[?&])path=([^&]*)') {
                             $partial = [Uri]::UnescapeDataString(($Matches[1] -replace '\+', ' '))
                         }
-                        $resultC = Get-PromptParleSshDirCompletions -Partial $partial
+                        if ($q -and $q -match '(?:^|[?&])target=([^&]*)') {
+                            $tgtQ = [Uri]::UnescapeDataString(($Matches[1] -replace '\+', ' '))
+                        }
+                        if ($q -and $q -match '(?:^|[?&])port=(\d+)') {
+                            try { $portQ = [int]$Matches[1] } catch { $portQ = 0 }
+                        }
+                        $paramsC = @{ Partial = $partial }
+                        if ($tgtQ) { $paramsC.Target = $tgtQ }
+                        if ($portQ -gt 0) { $paramsC.Port = $portQ }
+                        $resultC = Get-PromptParleSshDirCompletions @paramsC
                         $jsonC = ($resultC | ConvertTo-Json -Depth 5 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $jsonC
                     } catch {
