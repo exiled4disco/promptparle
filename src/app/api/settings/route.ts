@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AuthError, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { listActiveDesktopClients } from "@/lib/desktop-clients";
+import { parseAllowedIpsInput } from "@/lib/ip-allowlist";
 import { getPlanLimits } from "@/lib/plans";
 
 const schema = z.object({
@@ -12,6 +13,8 @@ const schema = z.object({
   featProjectPc: z.boolean().optional(),
   featProjectSsh: z.boolean().optional(),
   featProjectGit: z.boolean().optional(),
+  /** Free-text IPv4/CIDR list; empty string clears restriction */
+  allowedIps: z.string().max(4000).nullable().optional(),
 });
 
 export async function GET() {
@@ -30,6 +33,7 @@ export async function GET() {
         featProjectPc: user.featProjectPc,
         featProjectSsh: user.featProjectSsh,
         featProjectGit: user.featProjectGit,
+        allowedIps: user.allowedIps,
       },
       desktop: {
         max_desktop_clients: limits.maxDesktopClients,
@@ -60,6 +64,15 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Invalid input" }, { status: 400 });
     }
 
+    let allowedIpsValue: string | null | undefined = undefined;
+    if (parsed.data.allowedIps !== undefined) {
+      const ipParse = parseAllowedIpsInput(parsed.data.allowedIps ?? "");
+      if (!ipParse.ok) {
+        return NextResponse.json({ error: ipParse.error }, { status: 400 });
+      }
+      allowedIpsValue = ipParse.normalized;
+    }
+
     const updated = await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -81,6 +94,7 @@ export async function PATCH(req: NextRequest) {
         ...(parsed.data.featProjectGit !== undefined
           ? { featProjectGit: parsed.data.featProjectGit }
           : {}),
+        ...(allowedIpsValue !== undefined ? { allowedIps: allowedIpsValue } : {}),
       },
       select: {
         id: true,
@@ -92,6 +106,7 @@ export async function PATCH(req: NextRequest) {
         featProjectPc: true,
         featProjectSsh: true,
         featProjectGit: true,
+        allowedIps: true,
       },
     });
 

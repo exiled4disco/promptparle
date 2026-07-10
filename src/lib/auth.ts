@@ -15,6 +15,8 @@ export type SessionUser = {
   featProjectPc: boolean;
   featProjectSsh: boolean;
   featProjectGit: boolean;
+  /** API key allowlist (IPv4/CIDR text). Empty/null = unrestricted. */
+  allowedIps: string | null;
 };
 
 export async function hashPassword(password: string): Promise<string> {
@@ -92,6 +94,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
           featProjectPc: true,
           featProjectSsh: true,
           featProjectGit: true,
+          allowedIps: true,
         },
       },
     },

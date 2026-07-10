@@ -17,7 +17,8 @@ export default async function SettingsPage() {
         <div>
           <h1 className="page-title !mb-0.5">Settings</h1>
           <p className="page-sub !mt-0 text-sm">
-            Profile, desktop features, and client seats — one screen.
+            Profile, API IP allowlist, desktop features, and client seats — one
+            screen.
           </p>
         </div>
       </div>

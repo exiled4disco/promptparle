@@ -28,6 +28,13 @@ model User {
   featProjectSsh Boolean @default(true) @map("feat_project_ssh")
   featProjectGit Boolean @default(true) @map("feat_project_git")
 
+  /**
+   * Optional API IP/CIDR allowlist for desktop API keys (v1/*).
+   * Empty/null = no restriction. Newline or comma separated IPv4 or CIDR.
+   * Does NOT gate browser session / Settings (avoids lockout).
+   */
+  allowedIps String? @map("allowed_ips") @db.Text
+
   providerCredentials  ProviderCredential[]
   apiKeys              ApiKey[]
   promptRequests       PromptRequest[]

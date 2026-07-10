@@ -1141,7 +1141,7 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      0.15 architecture: normal AI assistant system brief (cacheable role:system).
+      0.16 architecture: normal AI assistant + implement pipeline (read→apply→run→report).
       Differentiator is token optimize + local evidence tags — not agent theater or ban lists.
     #>
     return @(
@@ -1151,9 +1151,9 @@ function Get-PromptParleChatSystemPrompt {
         '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
         'Normal client behavior: answer questions directly. When the user wants work done (do it / implement / lets go / just get it done / stop asking and do it): DO IT in this turn — zero clarifying questions unless a single fact is blocking and cannot be chosen safely.',
         'Default to the most secure reasonable choice yourself when options exist. Do not interview the user.',
-        'File changes: ```apply path=rel``` with FULL file contents only (never "// ... rest"). Client writes ONLY under [PROJECT] source_root, auto-backups prior file, refuses stubs/destructive shrinks, NEVER writes live /var/www.',
-        'After work: plain English what changed + paths. Client prefixes ## What changed. Do not claim live-deployed/migrated/committed unless evidence. local-ui is vanilla HTML/CSS/JS when in evidence.',
-        'Never dump multi-step homework instead of apply blocks when implement is requested.'
+        'Implement pipeline (client executes, in order): (1) ```apply path=rel``` FULL file under source_root only — client reads existing file first, backups to *.pp-bak, refuses stubs/destructive shrinks, NEVER writes live /var/www. (2) Optional ```run``` one safe command under source_root (prisma migrate/generate, npm run build/test, git status/diff/log). Client allowlists commands; no rm/drop/curl|sh. (3) Client prefixes ## What changed with landed paths + cmd results.',
+        'Do not claim live-deployed/migrated/committed unless a run block succeeded or evidence shows it. local-ui is vanilla HTML/CSS/JS when in evidence.',
+        'Never dump multi-step homework instead of apply/run blocks when implement is requested.'
     ) -join ' '
 }
 
@@ -3280,13 +3280,14 @@ function Invoke-PromptParleAgentLocalPrep {
     try { $turnKind = Get-PromptParleTurnKind -Prompt $pr -History $History } catch { $turnKind = 'chat' }
     $notes.Add("turn:$turnKind")
 
-    # Hard implement directive — model understands "do it"; this forces the *channel* (apply blocks) not the English
+    # Hard implement directive — forces the *channel* (apply + optional run), not English understanding
     if ($turnKind -eq 'implement') {
         $directive = @(
             '[CLIENT DIRECTIVE — implement turn]',
             'The user is speaking plain English to get work done (same as any normal AI client).',
             'Do NOT ask questions or permission. Do NOT re-plan. Do NOT dump homework.',
-            'Land changes now: ```apply path=relative/from/source_root with FULL file contents; desktop writes over SSH.',
+            'Land now via pipeline: (1) ```apply path=relative/from/source_root``` FULL file contents — client reads-before-write, backups, SSH-writes source only.',
+            '(2) If migrate/build/test is required after edits, emit ```run``` with ONE allowlisted command (e.g. npx prisma migrate deploy).',
             'If something is already decided in [MEM]/prior turns, proceed with the secure default.'
         ) -join ' '
         if ($pr -notmatch '\[CLIENT DIRECTIVE') {
@@ -4784,10 +4785,205 @@ function Invoke-PromptParleSsh {
 }
 
 
+function Get-PromptParleSshFileContent {
+    <#
+    .SYNOPSIS
+      Read a file under product source_root over SSH (0.16 read-before-write).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RemotePath,
+        [int]$MaxBytes = 400000,
+        [int]$TimeoutSec = 45
+    )
+    $bind = Resolve-PromptParleProductBind
+    $root = ([string]$bind.root).TrimEnd('/\')
+    $rp = $RemotePath.Trim()
+    if (-not $rp) { throw 'Empty remote path' }
+    if ($rp -notmatch '^(?:/|[A-Za-z]:)') {
+        $rp = ($root + '/' + $rp.TrimStart('/\'))
+    }
+    $rp = ($rp -replace '/+', '/')
+    if (-not $rp.StartsWith($root + '/') -and $rp -ne $root) {
+        throw "Refuse read outside product source_root: $rp"
+    }
+    if ($rp -match '(?i)/(?:\.env|id_rsa|id_ed25519|\.ssh/|shadow|passwd)$') {
+        throw "Refuse read of sensitive path: $rp"
+    }
+    $rpQ = $rp -replace "'", "'\''"
+    $rootQ = $root -replace "'", "'\''"
+    $remote = @"
+set -euo pipefail
+path='$rpQ'
+root='$rootQ'
+case "`$path" in
+  "`$root"/*) ;;
+  *) echo "REFUSE outside root"; exit 9 ;;
+esac
+if [ ! -f "`$path" ]; then
+  echo "MISSING"
+  exit 0
+fi
+sz=`$(wc -c < "`$path" | tr -d ' ')
+echo "SIZE `$sz"
+if [ "`$sz" -gt $MaxBytes ]; then
+  echo "TOO_LARGE"
+  exit 11
+fi
+echo "BEGIN_B64"
+base64 -w0 "`$path" 2>/dev/null || base64 "`$path"
+echo
+echo "END_B64"
+"@
+    $r = Invoke-PromptParleSsh -RemoteCommand $remote -TimeoutSec $TimeoutSec -SkipSessionCwd
+    $out = [string]$r.text
+    if ($r.exit_code -ne 0) {
+        if ($out -match 'TOO_LARGE') { throw "Remote file too large to read: $rp" }
+        throw "SSH read failed ($($r.exit_code)): $out"
+    }
+    if ($out -match '(?m)^MISSING\s*$') {
+        return [pscustomobject]@{ ok = $true; path = $rp; exists = $false; bytes = 0; content = $null }
+    }
+    $size = 0
+    if ($out -match '(?m)^SIZE\s+(\d+)') { $size = [int]$Matches[1] }
+    $b64 = $null
+    if ($out -match '(?s)BEGIN_B64\r?\n(.*?)\r?\nEND_B64') {
+        $b64 = ($Matches[1] -replace '\s', '')
+    }
+    if (-not $b64) {
+        return [pscustomobject]@{ ok = $true; path = $rp; exists = $true; bytes = $size; content = $null; note = 'no-body' }
+    }
+    try {
+        $bytes = [Convert]::FromBase64String($b64)
+        $content = [System.Text.Encoding]::UTF8.GetString($bytes)
+    } catch {
+        throw "Failed to decode remote file $rp : $_"
+    }
+    return [pscustomobject]@{
+        ok      = $true
+        path    = $rp
+        exists  = $true
+        bytes   = $bytes.Length
+        content = $content
+    }
+}
+
+function Test-PromptParleRunCommandAllowed {
+    <#
+    .SYNOPSIS
+      Allowlist for ```run``` implement-pipeline commands (0.16).
+      Deny destructive shells; allow prisma/npm/git status-class ops.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Command)
+    $c = ($Command -replace '[\r\n]+', ' ').Trim()
+    if (-not $c) { return [pscustomobject]@{ ok = $false; reason = 'empty command' } }
+    if ($c.Length -gt 500) { return [pscustomobject]@{ ok = $false; reason = 'command too long' } }
+
+    # Hard denylist (anything resembling shell bombs / data loss)
+    $deny = @(
+        '(?i)\brm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r)',
+        '(?i)\b(mkfs|dd\s+if=|shutdown|reboot|halt|poweroff)\b',
+        '(?i)\b(drop\s+(database|table|schema)|truncate\s+table|delete\s+from)\b',
+        '(?i)\b(curl|wget|fetch)\b.*\|\s*(ba)?sh',
+        '(?i)\b(>|>>)\s*/',
+        '(?i)\bchmod\s+777\b',
+        '(?i)\b(sudo|su\s)',
+        '(?i)\b(kill\s+-9|pkill|killall)\b',
+        '(?i)\b(nc\s+-|ncat\s+|bash\s+-i|python\s+-c\s+.*socket)',
+        '(?i)`|\$\(|\$\{',
+        '(?i);\s*(rm|dd|drop|curl|wget)',
+        '(?i)&&\s*(rm|dd|drop)',
+        '(?i)\|\s*(ba)?sh\b'
+    )
+    foreach ($d in $deny) {
+        if ($c -match $d) {
+            return [pscustomobject]@{ ok = $false; reason = "denied pattern: $d" }
+        }
+    }
+
+    # Allowlist — single logical command (optional leading cd handled by runner)
+    $allow = @(
+        '^(?i)npx\s+prisma\s+(migrate\s+(deploy|status|diff)|generate|validate|format|db\s+pull)(\s|$)',
+        '^(?i)npx\s+prisma\s+migrate\s+dev(\s+--name\s+[A-Za-z0-9_\-]+)?(\s+--skip-seed)?(\s+--create-only)?(\s|$)',
+        '^(?i)npm\s+(run\s+)?(build|test|lint|typecheck|ci)(\s|$)',
+        '^(?i)npm\s+ci(\s|$)',
+        '^(?i)npm\s+install(\s+--(legacy-peer-deps|omit=dev|no-save|prefer-offline))*(\s|$)',
+        '^(?i)npx\s+tsc(\s+--noEmit)?(\s|$)',
+        '^(?i)git\s+(status|diff|log|show|branch|rev-parse)(\s|$)',
+        '^(?i)node\s+-v(\s|$)',
+        '^(?i)npm\s+-v(\s|$)',
+        '^(?i)ls(\s+-[a-zA-Z]+)?(\s+\S+)*$',
+        '^(?i)pwd(\s|$)',
+        '^(?i)cat\s+[A-Za-z0-9_./\-]+$',
+        '^(?i)head(\s+-n\s+\d+)?\s+[A-Za-z0-9_./\-]+$',
+        '^(?i)wc\s+(-[a-zA-Z]+\s+)*[A-Za-z0-9_./\-]+$'
+    )
+    foreach ($a in $allow) {
+        if ($c -match $a) {
+            return [pscustomobject]@{ ok = $true; reason = 'allowlisted'; command = $c }
+        }
+    }
+    return [pscustomobject]@{
+        ok     = $false
+        reason = 'not on allowlist (prisma migrate/generate, npm build/test, git status/diff/log, …)'
+    }
+}
+
+function Invoke-PromptParleSshRunCommand {
+    <#
+    .SYNOPSIS
+      Run one allowlisted command under product source_root over SSH (0.16).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [int]$TimeoutSec = 180
+    )
+    $check = Test-PromptParleRunCommandAllowed -Command $Command
+    if (-not $check.ok) {
+        throw "Refuse run: $($check.reason) — cmd: $Command"
+    }
+    $bind = Resolve-PromptParleProductBind
+    $root = ([string]$bind.root).TrimEnd('/\')
+    $rootQ = $root -replace "'", "'\''"
+    $cmdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$check.command))
+    $remote = @"
+set -euo pipefail
+cd '$rootQ'
+cmd=`$(printf '%s' '$cmdB64' | base64 -d)
+echo "CWD `$(pwd)"
+echo "CMD `$cmd"
+set +e
+bash -lc "`$cmd"
+ec=`$?
+set -e
+echo "EXIT `$ec"
+exit 0
+"@
+    $r = Invoke-PromptParleSsh -RemoteCommand $remote -TimeoutSec $TimeoutSec -SkipSessionCwd
+    $out = [string]$r.text
+    $exitCode = 1
+    if ($out -match '(?m)^EXIT\s+(\d+)\s*$') { $exitCode = [int]$Matches[1] }
+    # Trim noise; keep last ~8k for report
+    $clip = $out
+    if ($clip.Length -gt 8000) {
+        $clip = '…(truncated)…' + $clip.Substring($clip.Length - 7800)
+    }
+    return [pscustomobject]@{
+        ok        = ($exitCode -eq 0)
+        command   = [string]$check.command
+        cwd       = $root
+        exit_code = $exitCode
+        text      = $clip
+    }
+}
+
 function Set-PromptParleSshFileContent {
     <#
     .SYNOPSIS
       Safe write under product SOURCE root only (never live /var/www deploy root).
+      0.16: read-before-write (existing size/content snapshot for report + guards)
       - Backup existing file to *.pp-bak-<utc> before overwrite
       - Refuse stubs / destructive shrinks
       - Refuse paths outside product_root (no "trash the server" path)
@@ -4796,7 +4992,8 @@ function Set-PromptParleSshFileContent {
     param(
         [Parameter(Mandatory)][string]$RemotePath,
         [Parameter(Mandatory)][string]$Content,
-        [int]$TimeoutSec = 90
+        [int]$TimeoutSec = 90,
+        [switch]$SkipReadBefore
     )
     $bind = Resolve-PromptParleProductBind
     $root = ([string]$bind.root).TrimEnd('/\')
@@ -4806,7 +5003,7 @@ function Set-PromptParleSshFileContent {
     if ($rp -notmatch '^(?:/|[A-Za-z]:)') {
         $rp = ($root + '/' + $rp.TrimStart('/\'))
     }
-    # Normalize // 
+    # Normalize //
     $rp = ($rp -replace '/+', '/')
 
     # HARD: never write live deploy tree via apply (source only; deploy is explicit later)
@@ -4832,6 +5029,39 @@ function Set-PromptParleSshFileContent {
     # Truncated prisma / config smell
     if ($rp -match '(?i)schema\.prisma$' -and $bodyTrim -notmatch 'generator\s+client' -and $bodyTrim -notmatch 'datasource\s+') {
         throw "Refuse incomplete prisma schema (missing generator/datasource): $rp"
+    }
+
+    # 0.16 read-before-write: snapshot existing file (also feeds local shrink guard)
+    $prior = $null
+    $priorBytes = 0
+    $priorExists = $false
+    if (-not $SkipReadBefore) {
+        try {
+            $prior = Get-PromptParleSshFileContent -RemotePath $rp -TimeoutSec ([Math]::Min(45, $TimeoutSec))
+            if ($prior.exists) {
+                $priorExists = $true
+                $priorBytes = [int]$prior.bytes
+                if ($priorBytes -gt 400 -and $bytes.Length -lt [int]($priorBytes * 0.35)) {
+                    throw "Refuse destructive shrink of $rp (read-before: old=$priorBytes new=$($bytes.Length)). Emit FULL file contents."
+                }
+                # Identical content — skip write (idempotent)
+                if ($null -ne $prior.content -and $prior.content -eq $Content) {
+                    return [pscustomobject]@{
+                        ok       = $true
+                        path     = $rp
+                        bytes    = $bytes.Length
+                        backup   = $null
+                        prior    = $priorBytes
+                        skipped  = $true
+                        text     = 'UNCHANGED (read-before-write)'
+                    }
+                }
+            }
+        } catch {
+            if ("$_" -match 'Refuse destructive') { throw }
+            # Non-fatal read failure — remote write still has size guard
+            $prior = $null
+        }
     }
 
     $rpQ = $rp -replace "'", "'\''"
@@ -4889,6 +5119,9 @@ echo "WROTE `$path `$(wc -c < "`$path" | tr -d ' ')"
         path    = $rp
         bytes   = $bytes.Length
         backup  = $bakPath
+        prior   = $priorBytes
+        exists  = $priorExists
+        skipped = $false
         text    = $out
     }
 }
@@ -4896,7 +5129,9 @@ echo "WROTE `$path `$(wc -c < "`$path" | tr -d ' ')"
 function Invoke-PromptParleApplyResponseBlocks {
     <#
     .SYNOPSIS
-      Parse ```apply path=... blocks, safe-write under source_root only, clear WHAT-CHANGED header.
+      0.16 implement pipeline: ordered apply + run blocks under source_root, ## What changed report.
+      - ```apply path=...``` → read-before-write, backup, SSH write
+      - ```run``` → one allowlisted command under source_root
     #>
     [CmdletBinding()]
     param(
@@ -4906,58 +5141,131 @@ function Invoke-PromptParleApplyResponseBlocks {
     $applied = New-Object System.Collections.Generic.List[string]
     $backups = New-Object System.Collections.Generic.List[string]
     $errors = New-Object System.Collections.Generic.List[string]
+    $runs = New-Object System.Collections.Generic.List[object]
+    $skipped = New-Object System.Collections.Generic.List[string]
     if (-not $text) {
-        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); count = 0 }
+        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); runs = @(); count = 0; run_count = 0 }
     }
-    $rx = [regex]::new('(?ms)```apply\s+path\s*[=:]\s*([^\s\r\n`]+)[ \t]*\r?\n(.*?)```')
-    $ms = $rx.Matches($text)
-    if ($ms.Count -eq 0) {
-        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); count = 0 }
+
+    # Collect apply + run blocks with document order
+    $steps = New-Object System.Collections.Generic.List[object]
+    $rxApply = [regex]::new('(?ms)```apply\s+path\s*[=:]\s*([^\s\r\n`]+)[ \t]*\r?\n(.*?)```')
+    foreach ($m in $rxApply.Matches($text)) {
+        $steps.Add([pscustomobject]@{
+            kind   = 'apply'
+            index  = $m.Index
+            path   = $m.Groups[1].Value.Trim().Trim('"').Trim("'")
+            body   = $m.Groups[2].Value
+        })
     }
-    foreach ($m in $ms) {
-        $rel = $m.Groups[1].Value.Trim().Trim('"').Trim("'")
-        $body = $m.Groups[2].Value
-        if ($body -notmatch '\r?\n$') { $body = $body + "`n" }
-        try {
-            $w = Set-PromptParleSshFileContent -RemotePath $rel -Content $body
-            $applied.Add([string]$w.path)
-            if ($w.backup) { $backups.Add([string]$w.backup) }
-        } catch {
-            $errors.Add(("$rel : $_"))
+    # ```run``` or ```run cwd=...``` — body is the command (single line preferred)
+    $rxRun = [regex]::new('(?ms)```run(?:\s+[^\r\n`]*)?[ \t]*\r?\n(.*?)```')
+    foreach ($m in $rxRun.Matches($text)) {
+        $body = ($m.Groups[1].Value -replace '^\s+|\s+$', '')
+        # first non-empty line is the command; ignore trailing commentary lines
+        $cmdLine = ($body -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+        if (-not $cmdLine) { continue }
+        $steps.Add([pscustomobject]@{
+            kind    = 'run'
+            index   = $m.Index
+            command = $cmdLine.Trim()
+        })
+    }
+
+    if ($steps.Count -eq 0) {
+        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); runs = @(); count = 0; run_count = 0 }
+    }
+
+    $ordered = $steps | Sort-Object index
+    foreach ($step in $ordered) {
+        if ($step.kind -eq 'apply') {
+            $rel = [string]$step.path
+            $body = [string]$step.body
+            if ($body -notmatch '\r?\n$') { $body = $body + "`n" }
+            try {
+                $w = Set-PromptParleSshFileContent -RemotePath $rel -Content $body
+                if ($w.skipped) {
+                    $skipped.Add([string]$w.path)
+                } else {
+                    $applied.Add([string]$w.path)
+                    if ($w.backup) { $backups.Add([string]$w.backup) }
+                }
+            } catch {
+                $errors.Add(("$rel : $_"))
+            }
+        }
+        elseif ($step.kind -eq 'run') {
+            $cmd = [string]$step.command
+            try {
+                $rr = Invoke-PromptParleSshRunCommand -Command $cmd
+                $runs.Add($rr)
+                if (-not $rr.ok) {
+                    $errors.Add(("run ``$cmd`` exit $($rr.exit_code)"))
+                }
+            } catch {
+                $errors.Add(("run ``$cmd`` : $_"))
+                $runs.Add([pscustomobject]@{
+                    ok = $false; command = $cmd; exit_code = -1; text = "$_"; cwd = $null
+                })
+            }
         }
     }
 
     $headerLines = New-Object System.Collections.Generic.List[string]
     $headerLines.Add('## What changed')
+    $headerLines.Add('_Implement pipeline 0.16: read→apply→run→report (source_root only)._')
+    $headerLines.Add('')
     if ($applied.Count -gt 0) {
-        $headerLines.Add("**Landed on SOURCE tree only (not live deploy): $($applied.Count) file(s)**")
+        $headerLines.Add("**Landed on SOURCE tree (not live deploy): $($applied.Count) file(s)**")
         foreach ($p in $applied) { $headerLines.Add("- ``$p``") }
-        if ($backups.Count -gt 0) {
-            $headerLines.Add('')
-            $headerLines.Add("**Backups (auto, before overwrite):**")
-            foreach ($b in $backups) { $headerLines.Add("- ``$b``") }
-        }
+    } elseif ($skipped.Count -eq 0) {
+        $headerLines.Add('**No files landed** from apply blocks (none, refused, or failed).')
+    }
+    if ($skipped.Count -gt 0) {
         $headerLines.Add('')
-        $headerLines.Add('_Source only under product_root. Not git commit, not /var/www deploy, not DB migrate — unless you do those next._')
-    } else {
-        $headerLines.Add('**No files landed.** Apply blocks were refused or failed (your tree was left unchanged for those paths).')
+        $headerLines.Add("**Unchanged (read-before-write identical): $($skipped.Count)**")
+        foreach ($p in $skipped) { $headerLines.Add("- ``$p``") }
+    }
+    if ($backups.Count -gt 0) {
+        $headerLines.Add('')
+        $headerLines.Add('**Backups (auto, before overwrite):**')
+        foreach ($b in $backups) { $headerLines.Add("- ``$b``") }
+    }
+    if ($runs.Count -gt 0) {
+        $headerLines.Add('')
+        $headerLines.Add("**Remote commands ($($runs.Count)):**")
+        foreach ($rr in $runs) {
+            $mark = if ($rr.ok) { 'ok' } else { 'FAIL' }
+            $headerLines.Add("- ``$($rr.command)`` → exit $($rr.exit_code) ($mark)")
+            if ($rr.text) {
+                $snip = [string]$rr.text
+                if ($snip.Length -gt 600) { $snip = $snip.Substring(0, 600) + '…' }
+                $snip = ($snip -replace '\r?\n', ' | ')
+                $headerLines.Add("  - $snip")
+            }
+        }
     }
     if ($errors.Count -gt 0) {
         $headerLines.Add('')
-        $headerLines.Add('**Apply errors (refused — no silent trash):**')
+        $headerLines.Add('**Pipeline errors (refused — no silent trash):**')
         foreach ($e in $errors) { $headerLines.Add("- $e") }
     }
+    $headerLines.Add('')
+    $headerLines.Add('_Not git commit, not /var/www live deploy — unless a successful run/deploy step shows it._')
     $headerLines.Add('')
     $headerLines.Add('---')
     $headerLines.Add('')
     $header = ($headerLines -join "`n")
 
     return [pscustomobject]@{
-        text    = $header + $text
-        applied = @($applied.ToArray())
-        backups = @($backups.ToArray())
-        errors  = @($errors.ToArray())
-        count   = $applied.Count
+        text      = $header + $text
+        applied   = @($applied.ToArray())
+        backups   = @($backups.ToArray())
+        skipped   = @($skipped.ToArray())
+        runs      = @($runs.ToArray())
+        errors    = @($errors.ToArray())
+        count     = $applied.Count
+        run_count = $runs.Count
     }
 }
 
@@ -8400,9 +8708,9 @@ function Start-PromptParleLocalServer {
                             }
                         }
                         $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
-                        # 0.15.1: land ```apply path=...``` blocks over SSH (implement path)
+                        # 0.16: implement pipeline — apply path= + run blocks (read→write→cmd→report)
                         $applyInfo = $null
-                        if ($respText -and $respText -match '(?m)```apply\s+path') {
+                        if ($respText -and ($respText -match '(?m)```apply\s+path' -or $respText -match '(?m)```run\b')) {
                             try {
                                 $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText
                                 if ($applyInfo -and $applyInfo.text) { $respText = [string]$applyInfo.text }
@@ -8413,12 +8721,21 @@ function Start-PromptParleLocalServer {
                                         $metaOut.applied_count = [int]$applyInfo.count
                                     }
                                 }
+                                if ($applyInfo -and $applyInfo.run_count -gt 0) {
+                                    Write-Host ("  chat: ran {0} remote command(s)" -f $applyInfo.run_count) -ForegroundColor Cyan
+                                    if ($metaOut) {
+                                        $metaOut.run_count = [int]$applyInfo.run_count
+                                        $metaOut.runs = @($applyInfo.runs | ForEach-Object {
+                                            [ordered]@{ command = $_.command; exit_code = $_.exit_code; ok = [bool]$_.ok }
+                                        })
+                                    }
+                                }
                                 if ($applyInfo -and $applyInfo.errors -and $applyInfo.errors.Count -gt 0) {
-                                    Write-Host ("  chat: apply errors: {0}" -f ($applyInfo.errors -join '; ')) -ForegroundColor Yellow
+                                    Write-Host ("  chat: pipeline errors: {0}" -f ($applyInfo.errors -join '; ')) -ForegroundColor Yellow
                                 }
                             } catch {
-                                Write-Host ("  chat: apply failed: {0}" -f $_) -ForegroundColor Yellow
-                                $respText = $respText + "`n`n**Apply failed:** $_"
+                                Write-Host ("  chat: implement pipeline failed: {0}" -f $_) -ForegroundColor Yellow
+                                $respText = $respText + "`n`n**Implement pipeline failed:** $_"
                             }
                         }
                         $payload = [ordered]@{

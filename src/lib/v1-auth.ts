@@ -1,5 +1,9 @@
 import { authenticateApiKey } from "./api-keys";
 import { prisma } from "./db";
+import {
+  getClientIpFromHeaders,
+  isIpAllowed,
+} from "./ip-allowlist";
 
 export type V1User = {
   id: string;
@@ -13,6 +17,7 @@ export type V1User = {
 export type V1Auth = {
   user: V1User;
   apiKeyId: string;
+  clientIp: string | null;
 };
 
 type HeaderSource = { headers: Headers };
@@ -20,6 +25,8 @@ type HeaderSource = { headers: Headers };
 /**
  * Authenticate desktop API key from Authorization: Bearer pp_live_...
  * or X-PromptParle-Key header.
+ * Enforces user.allowedIps when set (empty = unrestricted).
+ * Browser session/Settings are NOT gated here (lockout-safe).
  */
 export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
   const header =
@@ -47,7 +54,7 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
     throw new V1AuthError("Invalid or revoked API key");
   }
 
-  // Ensure user is email-verified
+  // Ensure user is email-verified + load allowlist
   const user = await prisma.user.findUnique({
     where: { id: auth.user.id },
     select: {
@@ -57,6 +64,7 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
       retentionPolicy: true,
       storePrompts: true,
       emailVerifiedAt: true,
+      allowedIps: true,
     },
   });
 
@@ -64,9 +72,25 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
     throw new V1AuthError("Account email is not verified", 403);
   }
 
+  const clientIp = getClientIpFromHeaders(req.headers);
+  if (!isIpAllowed(clientIp, user.allowedIps)) {
+    throw new V1AuthError(
+      `API key blocked: your IP (${clientIp || "unknown"}) is not on this account's allowlist. Update Settings → API IP allowlist from the portal (browser session is not gated).`,
+      403
+    );
+  }
+
   return {
-    user,
+    user: {
+      id: user.id,
+      email: user.email,
+      plan: user.plan,
+      retentionPolicy: user.retentionPolicy,
+      storePrompts: user.storePrompts,
+      emailVerifiedAt: user.emailVerifiedAt,
+    },
     apiKeyId: auth.key.id,
+    clientIp,
   };
 }
 

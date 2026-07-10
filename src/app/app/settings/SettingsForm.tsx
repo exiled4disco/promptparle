@@ -33,6 +33,7 @@ export function SettingsForm({
   const [featProjectGit, setFeatProjectGit] = useState(
     user.featProjectGit !== false
   );
+  const [allowedIps, setAllowedIps] = useState(user.allowedIps || "");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -53,6 +54,7 @@ export function SettingsForm({
           featProjectPc,
           featProjectSsh,
           featProjectGit,
+          allowedIps,
         }),
       });
       const data = await res.json();
@@ -159,6 +161,35 @@ export function SettingsForm({
             />
             <span className="font-medium">Git / GitHub</span>
           </label>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-[var(--border)] px-3 py-2.5">
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold">API IP allowlist</h2>
+          <span className="text-xs text-[var(--text-muted)]">
+            Desktop API keys only · empty = any IP
+          </span>
+        </div>
+        <div className="field !mb-0">
+          <label className="label !mb-1 text-xs" htmlFor="allowedIps">
+            Allowed IPv4 / CIDR (one per line)
+          </label>
+          <textarea
+            id="allowedIps"
+            className="input !py-2 font-mono text-xs"
+            rows={3}
+            value={allowedIps}
+            onChange={(e) => setAllowedIps(e.target.value)}
+            placeholder={"203.0.113.10\n198.51.100.0/24"}
+            spellCheck={false}
+          />
+          <p className="mt-1.5 text-[11px] leading-snug text-[var(--text-muted)]">
+            When set, only listed addresses may call{" "}
+            <code className="text-[10px]">/api/v1/*</code> with your API key.
+            Portal login and Settings stay open so you can fix mistakes. Max 32
+            entries.
+          </p>
         </div>
       </div>
 
