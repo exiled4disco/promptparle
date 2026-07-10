@@ -123,6 +123,8 @@ export async function getUsageSummary(
       originalChars: limits.originalChars,
       optimizedChars: limits.optimizedChars,
       historyLimit: limits.historyLimit,
+      dailyRequests: limits.dailyRequests,
+      maxProviders: limits.maxProviders,
     },
     storePrompts: user?.storePrompts ?? true,
     retentionPolicy: user?.retentionPolicy ?? "7d",

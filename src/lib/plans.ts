@@ -14,6 +14,10 @@ export type PlanLimits = {
   optimizedChars: number;
   /** Recent request rows returned in portal usage */
   historyLimit: number;
+  /** Max completed API / chat requests allowed per UTC day */
+  dailyRequests: number;
+  /** Max AI provider credentials (carriers) the account may attach */
+  maxProviders: number;
 };
 
 export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
@@ -23,6 +27,8 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     originalChars: 2_000,
     optimizedChars: 2_000,
     historyLimit: 25,
+    dailyRequests: 25,
+    maxProviders: 1,
   },
   pro: {
     id: "pro",
@@ -30,6 +36,8 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     originalChars: 50_000,
     optimizedChars: 50_000,
     historyLimit: 100,
+    dailyRequests: 500,
+    maxProviders: 4,
   },
   team: {
     id: "team",
@@ -37,6 +45,8 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     originalChars: 200_000,
     optimizedChars: 200_000,
     historyLimit: 200,
+    dailyRequests: 5_000,
+    maxProviders: 4,
   },
 };
 
