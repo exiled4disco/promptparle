@@ -826,6 +826,170 @@
     body.term-popout .term-in-row input {
       font-size: .88rem;
     }
+    /* Activity log pop-out (ops stream — not chat) */
+    body.log-popout {
+      overflow: hidden;
+      background: #070b12;
+    }
+    body.log-popout .sidebar,
+    body.log-popout .main-top,
+    body.log-popout .savings-strip,
+    body.log-popout #chat,
+    body.log-popout .composer,
+    body.log-popout .client-limit-banner,
+    body.log-popout .modal-backdrop,
+    body.log-popout .side-toggle,
+    body.log-popout .term-panel {
+      display: none !important;
+    }
+    body.log-popout .shell {
+      display: block !important;
+      grid-template-columns: none !important;
+      max-width: none !important;
+      width: 100% !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      margin: 0 !important;
+      overflow: hidden;
+    }
+    body.log-popout .main {
+      display: flex !important;
+      flex-direction: column !important;
+      padding: 0 !important;
+      gap: 0 !important;
+      width: 100% !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      min-height: 0 !important;
+    }
+    body.log-popout .ops-log-shell {
+      display: flex !important;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+      width: 100%;
+      background: #070b12;
+    }
+    .ops-log-shell {
+      display: none;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .ops-log-head {
+      flex: 0 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .45rem .7rem;
+      padding: .55rem .75rem;
+      border-bottom: 1px solid var(--border);
+      background: #0a0e16;
+    }
+    .ops-log-head strong {
+      font-size: .9rem;
+      letter-spacing: .01em;
+    }
+    .ops-log-sub {
+      font-size: .72rem;
+      color: var(--muted);
+      flex: 1 1 auto;
+    }
+    .ops-log-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .35rem;
+    }
+    .ops-log-actions label {
+      font-size: .72rem;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: .3rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    .ops-log-actions button {
+      font-size: .72rem;
+      padding: .28rem .55rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .ops-log-actions button:hover {
+      border-color: var(--accent);
+      color: var(--accent-strong, var(--accent));
+    }
+    .ops-log-out {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: .55rem .75rem .85rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .78rem;
+      line-height: 1.45;
+      scrollbar-width: thin;
+      scrollbar-color: #2a3a55 #0a0e16;
+    }
+    .ops-log-line {
+      display: grid;
+      grid-template-columns: 5.6rem 3.4rem 1fr;
+      gap: .45rem;
+      padding: .22rem 0;
+      border-bottom: 1px solid rgba(30, 42, 61, 0.45);
+      align-items: start;
+    }
+    .ops-log-line:last-child { border-bottom: 0; }
+    .ops-log-ts { color: var(--dim); white-space: nowrap; }
+    .ops-log-lvl {
+      font-weight: 700;
+      font-size: .68rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      padding-top: .12rem;
+    }
+    .ops-log-lvl.info { color: var(--accent); }
+    .ops-log-lvl.ok { color: var(--success); }
+    .ops-log-lvl.warn { color: var(--warn); }
+    .ops-log-lvl.error { color: var(--danger); }
+    .ops-log-msg { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+    .ops-log-foot {
+      flex: 0 0 auto;
+      padding: .35rem .75rem;
+      border-top: 1px solid var(--border);
+      font-size: .7rem;
+      color: var(--muted);
+      background: #0a0e16;
+      display: flex;
+      justify-content: space-between;
+      gap: .5rem;
+    }
+    #menuBtn.has-ops {
+      border-color: rgba(91, 140, 255, 0.55) !important;
+      color: var(--accent) !important;
+      box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.2);
+    }
+    #menuBtn .ops-badge {
+      display: none;
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      min-width: 1rem;
+      height: 1rem;
+      padding: 0 .22rem;
+      border-radius: 999px;
+      background: #ff2d2d;
+      color: #fff;
+      font-size: .62rem;
+      font-weight: 700;
+      line-height: 1rem;
+      text-align: center;
+    }
+    #menuBtn.has-ops .ops-badge { display: inline-block; }
+    #menuBtn { position: relative; }
     .term-head {
       flex: 0 0 auto;
       display: flex;
@@ -1135,6 +1299,7 @@
           <div class="menu" id="appMenu" role="menu">
             <button type="button" id="menuNewChat">New chat</button>
             <button type="button" id="menuHelp">Help &amp; slash commands</button>
+            <button type="button" id="menuActivityLog" title="Operational messages (updates, SSH, workspace) — not chat">Activity log</button>
             <button type="button" id="menuProviders" data-info="providers">Providers</button>
             <button type="button" id="menuUsage" data-info="usage">Usage / savings</button>
             <button type="button" id="menuApiKeys" data-info="api-keys">API keys</button>
@@ -1149,6 +1314,24 @@
       <div class="savings-strip" id="savingsStrip" aria-live="polite"></div>
 
       <div id="chat" class="chat" role="log" aria-relevant="additions"></div>
+
+      <!-- Activity log streamer (shown full-page when ?log=1 pop-out) -->
+      <div class="ops-log-shell" id="opsLogShell" hidden>
+        <div class="ops-log-head">
+          <strong>Activity log</strong>
+          <span class="ops-log-sub">Operational messages only — updates, SSH, workspace, tools (not chat)</span>
+          <div class="ops-log-actions">
+            <label title="Stop auto-scroll / live append focus"><input type="checkbox" id="opsLogPause" /> Pause</label>
+            <button type="button" id="opsLogClear" title="Clear log buffer">Clear</button>
+            <button type="button" id="opsLogCopy" title="Copy all lines">Copy</button>
+          </div>
+        </div>
+        <div class="ops-log-out" id="opsLogOut" role="log" aria-live="polite" aria-relevant="additions"></div>
+        <div class="ops-log-foot">
+          <span id="opsLogCount">0 events</span>
+          <span>⋯ → Activity log · live stream between windows</span>
+        </div>
+      </div>
 
       <div class="term-panel" id="termPanel" hidden>
         <div class="term-head">
@@ -1221,6 +1404,10 @@ Also: /workspace · /git · /github · /ssh [cwd]   (paths &amp; keys stay on th
       <h3>Tools ON = brief first</h3>
       <pre>Local shrink before tokens: mask → brief → dial budget. At most one small pack if empty.
 Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</pre>
+
+      <h3>Activity log</h3>
+      <pre>⋯ menu → Activity log  — opens a separate window for operational messages
+(updates, SSH, workspace, attach, tools). Chat stays for conversation only.</pre>
       </div>
       </div>
 
@@ -1480,6 +1667,21 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     /** @type {Record<string, Window|null>} */
     const termPopouts = { local: null, ssh: null };
     const termPopoutBtn = document.getElementById('termPopoutBtn');
+    /** True when this page is the Activity log streamer (?log=1) */
+    let opsLogPopoutMode = false;
+    /** @type {Window|null} */
+    let opsLogPopoutWin = null;
+    const OPS_LOG_KEY = 'pp_ops_log_v1';
+    const OPS_LOG_UNREAD_KEY = 'pp_ops_log_unread_v1';
+    const OPS_LOG_MAX = 500;
+    let opsLogPaused = false;
+    /** @type {BroadcastChannel|null} */
+    let opsLogChannel = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        opsLogChannel = new BroadcastChannel('promptparle-ops-log');
+      }
+    } catch (e) { opsLogChannel = null; }
     /** @type {{ project_pc?: boolean, project_ssh?: boolean, project_git?: boolean, max_desktop_clients?: number, plan?: string, allowed?: boolean, message?: string }|null} */
     let entitlements = null;
     const menuBtn = document.getElementById('menuBtn');
@@ -1628,7 +1830,268 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
     }
 
+    /* ---- Activity log (ops stream) — not chat history ---- */
+    function loadOpsLog() {
+      const rows = lsGet(OPS_LOG_KEY, []);
+      return Array.isArray(rows) ? rows : [];
+    }
+    function saveOpsLog(rows) {
+      lsSet(OPS_LOG_KEY, (rows || []).slice(-OPS_LOG_MAX));
+    }
+    function formatOpsTime(ts) {
+      try {
+        const d = new Date(ts);
+        return d.toLocaleTimeString(undefined, { hour12: false }) +
+          '.' + String(d.getMilliseconds()).padStart(3, '0');
+      } catch (e) {
+        return '--:--:--';
+      }
+    }
+    function renderOpsLogLine(entry) {
+      const line = document.createElement('div');
+      const lvl = (entry.level || 'info').toLowerCase();
+      line.className = 'ops-log-line';
+      line.innerHTML =
+        '<span class="ops-log-ts">' + formatOpsTime(entry.ts) + '</span>' +
+        '<span class="ops-log-lvl ' + lvl + '">' + lvl + '</span>' +
+        '<span class="ops-log-msg"></span>';
+      line.querySelector('.ops-log-msg').textContent = entry.text || '';
+      return line;
+    }
+    function updateOpsLogCount(n) {
+      const el = document.getElementById('opsLogCount');
+      if (el) el.textContent = n + ' event' + (n === 1 ? '' : 's');
+    }
+    function paintOpsLogFull() {
+      const out = document.getElementById('opsLogOut');
+      if (!out) return;
+      const rows = loadOpsLog();
+      out.innerHTML = '';
+      rows.forEach(function (e) { out.appendChild(renderOpsLogLine(e)); });
+      updateOpsLogCount(rows.length);
+      if (!opsLogPaused) {
+        out.scrollTop = out.scrollHeight;
+      }
+    }
+    function appendOpsLogLine(entry) {
+      const out = document.getElementById('opsLogOut');
+      if (!out || !opsLogPopoutMode) return;
+      out.appendChild(renderOpsLogLine(entry));
+      // Cap DOM nodes
+      while (out.children.length > OPS_LOG_MAX) {
+        out.removeChild(out.firstChild);
+      }
+      updateOpsLogCount(out.children.length);
+      if (!opsLogPaused) {
+        out.scrollTop = out.scrollHeight;
+      }
+    }
+    function setOpsUnread(n) {
+      try { localStorage.setItem(OPS_LOG_UNREAD_KEY, String(Math.max(0, n | 0))); } catch (e) {}
+      updateOpsMenuBadge();
+    }
+    function getOpsUnread() {
+      try {
+        const n = parseInt(localStorage.getItem(OPS_LOG_UNREAD_KEY) || '0', 10);
+        return isNaN(n) ? 0 : n;
+      } catch (e) { return 0; }
+    }
+    function updateOpsMenuBadge() {
+      if (!menuBtn || opsLogPopoutMode) return;
+      const n = getOpsUnread();
+      let badge = menuBtn.querySelector('.ops-badge');
+      if (n > 0) {
+        menuBtn.classList.add('has-ops');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'ops-badge';
+          menuBtn.appendChild(badge);
+        }
+        badge.textContent = n > 99 ? '99+' : String(n);
+        menuBtn.title = 'Menu · ' + n + ' new activity log event' + (n === 1 ? '' : 's');
+      } else {
+        menuBtn.classList.remove('has-ops');
+        if (badge) badge.remove();
+        menuBtn.title = 'Menu';
+      }
+    }
+    /**
+     * Operational message → Activity log stream (not chat).
+     * @param {string} text
+     * @param {{level?: 'info'|'ok'|'warn'|'error', source?: string}} [opts]
+     */
+    function logOps(text, opts) {
+      opts = opts || {};
+      const entry = {
+        ts: Date.now(),
+        level: opts.level || 'info',
+        text: String(text == null ? '' : text),
+        source: opts.source || 'ui'
+      };
+      if (!entry.text) return entry;
+      const rows = loadOpsLog();
+      rows.push(entry);
+      saveOpsLog(rows);
+      // Live fan-out to other windows (activity log pop-out)
+      try {
+        if (opsLogChannel) opsLogChannel.postMessage({ type: 'ops', entry: entry });
+      } catch (e) { /* ignore */ }
+      try {
+        localStorage.setItem('pp_ops_log_ping', String(entry.ts));
+      } catch (e) { /* ignore */ }
+
+      if (opsLogPopoutMode) {
+        appendOpsLogLine(entry);
+      } else {
+        // Main chat window: badge unread (unless log pop-out is focused)
+        let popOpen = false;
+        try { popOpen = opsLogPopoutWin && !opsLogPopoutWin.closed; } catch (e) { popOpen = false; }
+        if (!popOpen) {
+          setOpsUnread(getOpsUnread() + 1);
+        }
+      }
+      return entry;
+    }
+    function clearOpsLog() {
+      saveOpsLog([]);
+      setOpsUnread(0);
+      try {
+        if (opsLogChannel) opsLogChannel.postMessage({ type: 'clear' });
+      } catch (e) { /* ignore */ }
+      paintOpsLogFull();
+      // Seed one line after clear (same window only; others repaint empty then get this via channel)
+      logOps('Activity log cleared.', { level: 'info', source: 'ui' });
+    }
+    function copyOpsLog() {
+      const rows = loadOpsLog();
+      const text = rows.map(function (e) {
+        return formatOpsTime(e.ts) + '\t' + (e.level || 'info') + '\t' + (e.text || '');
+      }).join('\n');
+      function ok() { logOps('Copied ' + rows.length + ' log line(s) to clipboard.', { level: 'ok' }); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok).catch(function () {
+          // fallback
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            ok();
+          } catch (e) {
+            logOps('Copy failed: ' + (e.message || e), { level: 'error' });
+          }
+        });
+      }
+    }
+    function openActivityLogWindow() {
+      closeMenu();
+      closeHelp();
+      if (opsLogPopoutMode) return;
+      try {
+        if (opsLogPopoutWin && !opsLogPopoutWin.closed) {
+          opsLogPopoutWin.focus();
+          setOpsUnread(0);
+          return;
+        }
+      } catch (e) { /* ignore */ }
+      let w = 820, h = 560, left = 60, top = 60;
+      try {
+        w = Math.min(960, Math.max(640, Math.floor((screen.availWidth || 1200) * 0.48)));
+        h = Math.min(720, Math.max(400, Math.floor((screen.availHeight || 800) * 0.58)));
+        left = Math.max(20, Math.floor(((screen.availWidth || 1200) - w) / 2));
+        top = Math.max(20, Math.floor(((screen.availHeight || 800) - h) / 5));
+      } catch (e) { /* ignore */ }
+      const features = [
+        'popup=yes',
+        'width=' + w,
+        'height=' + h,
+        'left=' + left,
+        'top=' + top,
+        'menubar=no',
+        'toolbar=no',
+        'location=no',
+        'status=no',
+        'resizable=yes',
+        'scrollbars=yes'
+      ].join(',');
+      const win = window.open(location.origin + '/?log=1', 'pp-activity-log', features);
+      if (!win) {
+        logOps('Activity log pop-out blocked by the browser. Allow pop-ups for this site.', { level: 'error' });
+        // Fallback: still show messages are in the log buffer
+        alert('Pop-up blocked. Allow pop-ups, then open ⋯ → Activity log again.\n\nOperational messages are stored — they no longer fill the chat.');
+        return;
+      }
+      opsLogPopoutWin = win;
+      setOpsUnread(0);
+      try { win.focus(); } catch (e) { /* ignore */ }
+      const poll = setInterval(function () {
+        if (!win || win.closed) {
+          clearInterval(poll);
+          opsLogPopoutWin = null;
+        }
+      }, 900);
+    }
+    function enterOpsLogPopoutMode() {
+      opsLogPopoutMode = true;
+      document.body.classList.add('log-popout');
+      document.title = 'PromptParle · Activity log';
+      const shell = document.getElementById('opsLogShell');
+      if (shell) {
+        shell.hidden = false;
+        shell.style.display = 'flex';
+      }
+      setOpsUnread(0);
+      paintOpsLogFull();
+      const pauseEl = document.getElementById('opsLogPause');
+      const clearEl = document.getElementById('opsLogClear');
+      const copyEl = document.getElementById('opsLogCopy');
+      if (pauseEl) {
+        pauseEl.addEventListener('change', function () {
+          opsLogPaused = !!pauseEl.checked;
+          if (!opsLogPaused) {
+            const out = document.getElementById('opsLogOut');
+            if (out) out.scrollTop = out.scrollHeight;
+          }
+        });
+      }
+      if (clearEl) clearEl.addEventListener('click', function () { clearOpsLog(); });
+      if (copyEl) copyEl.addEventListener('click', function () { copyOpsLog(); });
+      // Seed a header line if empty
+      if (loadOpsLog().length === 0) {
+        logOps('Activity log ready — operational messages stream here (updates, SSH, workspace, tools).', { level: 'ok' });
+      } else {
+        logOps('Activity log window opened · streaming live.', { level: 'ok' });
+      }
+    }
+    /** Sys messages that stay in chat (conversation UX). Everything else → activity log. */
+    function shouldKeepSysInChat(text) {
+      const t = String(text || '');
+      if (!t) return false;
+      if (t === WELCOME_MSG) return true;
+      if (t === 'Chat cleared.') return true;
+      if (/^Using default prompt/i.test(t)) return true;
+      if (/^Type a prompt/i.test(t)) return true;
+      if (/^No AI provider selected/i.test(t)) return true;
+      if (/token savings metadata|0% reduction on a large attach/i.test(t)) return true;
+      return false;
+    }
+    function sysLevelFromText(text, isError) {
+      if (isError) return 'error';
+      const t = String(text || '');
+      if (/\bfailed\b|\berror\b|\bblocked\b|\bdisabled\b/i.test(t)) return 'error';
+      if (/\bwarn|retry|could not|missing/i.test(t)) return 'warn';
+      if (/\bok\b|updated|saved|attached|connected|ready|success/i.test(t)) return 'ok';
+      return 'info';
+    }
+
     function addMsg(role, text, meta, isError, thumbs) {
+      // Operational sys → Activity log (keeps chat for conversation only)
+      if ((role === 'sys' || role === 'system') && !shouldKeepSysInChat(text)) {
+        logOps(text, { level: sysLevelFromText(text, isError) });
+        return null;
+      }
       const div = document.createElement('div');
       div.className = 'msg ' + role + (isError ? ' error' : '');
       div.textContent = text;
@@ -2380,7 +2843,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return out;
     }
 
-    initChatHistory();
+    // Detect ?log=1 early so we skip chat history bootstrap in the log window
+    try {
+      const _lp = new URLSearchParams(location.search || '');
+      const _lv = (_lp.get('log') || '').toLowerCase();
+      if (_lv === '1' || _lv === 'true' || _lv === 'yes' || _lv === 'ops') {
+        opsLogPopoutMode = true;
+      }
+    } catch (e) { /* ignore */ }
+
+    if (!opsLogPopoutMode) {
+      initChatHistory();
+    }
 
     if (newChatBtn) {
       newChatBtn.addEventListener('click', function () { startNewChat(); });
@@ -4427,8 +4901,22 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
     }
 
+    // Activity log streamer: /?log=1
+    (function initOpsLogPopoutFromUrl() {
+      try {
+        const params = new URLSearchParams(location.search || '');
+        const log = (params.get('log') || '').toLowerCase();
+        if (log === '1' || log === 'true' || log === 'yes' || log === 'ops') {
+          enterOpsLogPopoutMode();
+          return true;
+        }
+      } catch (e) { /* ignore */ }
+      return false;
+    })();
+
     // Pop-out terminal window: /?term=local or /?term=ssh
     (function initTermPopoutFromUrl() {
+      if (opsLogPopoutMode) return false;
       try {
         const params = new URLSearchParams(location.search || '');
         let t = (params.get('term') || '').toLowerCase();
@@ -4444,12 +4932,51 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return false;
     })();
 
-    if (!termPopoutMode) {
+    // Live ops log fan-out (main ↔ activity log window)
+    if (opsLogChannel) {
+      opsLogChannel.onmessage = function (ev) {
+        try {
+          const data = ev.data || {};
+          if (data.type === 'clear') {
+            if (opsLogPopoutMode) paintOpsLogFull();
+            return;
+          }
+          if (data.type === 'ops' && data.entry) {
+            if (opsLogPopoutMode) {
+              // Writer already persisted; just paint the new line
+              appendOpsLogLine(data.entry);
+            }
+          }
+        } catch (e) { /* ignore */ }
+      };
+    }
+    window.addEventListener('storage', function (e) {
+      if (!e) return;
+      // Only use storage ping when BroadcastChannel is unavailable (avoid double-append)
+      if (e.key === 'pp_ops_log_ping' && opsLogPopoutMode && !opsLogChannel) {
+        paintOpsLogFull();
+      }
+      if (e.key === OPS_LOG_UNREAD_KEY && !opsLogPopoutMode) {
+        updateOpsMenuBadge();
+      }
+    });
+
+    const menuActivityLog = document.getElementById('menuActivityLog');
+    if (menuActivityLog) {
+      menuActivityLog.addEventListener('click', function () {
+        openActivityLogWindow();
+      });
+    }
+    updateOpsMenuBadge();
+
+    if (!termPopoutMode && !opsLogPopoutMode) {
       checkVersion();
       loadEntitlements();
       setInterval(function () { loadEntitlements(); }, 60000);
       loadAgents().then(loadSession);
       refreshAttachHint();
+      // One startup breadcrumb in the ops stream (not chat)
+      logOps('PromptParle local UI ready · operational messages go to ⋯ → Activity log.', { level: 'ok' });
     }
 
     async function loadProviders() {

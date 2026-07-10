@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.13.2'
+    ModuleVersion     = '0.13.3'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.13.3: Activity log window (⋯ menu) — ops messages stream there, chat stays conversation-only
 0.13.2: Safe Update — validate/backup/install/re-check; on failure keep previous + message, no restart
 0.13.1: Fix module parse error ($tag:) that blocked Import-Module after Update
 0.13.0: Fidelity-first token cut — error_brief, relevant_slice, chat [MEM], prompt-hot keep, head+tail budget
