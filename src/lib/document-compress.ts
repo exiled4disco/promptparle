@@ -297,47 +297,158 @@ function scoreText(text: string, query: Set<string>): number {
   return coverage * 0.7 + density * 0.3;
 }
 
+function isVagueAsk(prompt: string): boolean {
+  const p = (prompt || "").trim().toLowerCase();
+  if (p.length < 48) return true;
+  return /^(please\s+)?(review|summarize|summary|analyse|analyze|read|look at|go through|findings|most useful|overview|explain this|what is this|tl;?dr)\b/.test(
+    p
+  ) || /\b(the )?(document|doc|file|attachment|material|paper)\b/.test(p) && p.split(/\s+/).length < 16;
+}
+
+/**
+ * hybrid = near-full task quality at high compression
+ *   - every major section gets a lead sentence (coverage guarantee)
+ *   - top sections keep full densified body (deep keep)
+ * brief = executive density (map + obligations + thin evidence)
+ */
 function profileAggressiveness(profile: string): {
+  mode: "hybrid" | "brief";
   maxObligations: number;
   maxEvidence: number;
   maxNumbers: number;
   evidenceSentences: number;
+  deepKeepSections: number;
+  leadAllSections: boolean;
   keepCode: boolean;
+  /** soft char budget as fraction of cleaned context */
+  targetRatio: number;
 } {
   switch (profile) {
     case "executive-summary":
       return {
+        mode: "brief",
         maxObligations: 12,
-        maxEvidence: 4,
-        maxNumbers: 10,
+        maxEvidence: 5,
+        maxNumbers: 12,
         evidenceSentences: 1,
+        deepKeepSections: 1,
+        leadAllSections: false,
         keepCode: false,
+        targetRatio: 0.22,
       };
     case "documentation":
       return {
-        maxObligations: 20,
-        maxEvidence: 8,
-        maxNumbers: 16,
-        evidenceSentences: 2,
+        mode: "hybrid",
+        maxObligations: 22,
+        maxEvidence: 10,
+        maxNumbers: 18,
+        evidenceSentences: 3,
+        deepKeepSections: 4,
+        leadAllSections: true,
         keepCode: true,
+        targetRatio: 0.38,
       };
     case "security-review":
       return {
+        mode: "hybrid",
         maxObligations: 24,
         maxEvidence: 10,
         maxNumbers: 18,
         evidenceSentences: 2,
+        deepKeepSections: 3,
+        leadAllSections: true,
         keepCode: true,
+        targetRatio: 0.35,
       };
     default:
+      // general / developer — hybrid so "review this doc" still covers all chapters
       return {
-        maxObligations: 16,
-        maxEvidence: 6,
-        maxNumbers: 14,
+        mode: "hybrid",
+        maxObligations: 18,
+        maxEvidence: 8,
+        maxNumbers: 16,
         evidenceSentences: 2,
+        deepKeepSections: 3,
+        leadAllSections: true,
         keepCode: true,
+        targetRatio: 0.34,
       };
   }
+}
+
+/** When the ask is vague, seed query terms from headings so every chapter can score. */
+function expandQueryFromHeadings(
+  query: Set<string>,
+  sections: { heading?: { text: string } }[]
+): Set<string> {
+  const out = new Set(query);
+  for (const s of sections) {
+    if (!s.heading) continue;
+    for (const t of tokenize(s.heading.text)) {
+      out.add(t);
+    }
+  }
+  return out;
+}
+
+function sectionBodyText(s: { body: Block[] }): string {
+  return s.body
+    .filter((b) => b.kind === "para")
+    .map((b) => b.text)
+    .join("\n\n");
+}
+
+function densifiedSectionBody(s: { body: Block[] }, maxChars: number): string {
+  const parts: string[] = [];
+  let used = 0;
+  for (const b of s.body) {
+    if (b.kind === "code") {
+      if (b.text.length < 3000) {
+        parts.push(b.text);
+        used += b.text.length;
+      }
+      continue;
+    }
+    if (b.kind !== "para") continue;
+    const d = densifyProse(b.text);
+    if (!d) continue;
+    if (used + d.length > maxChars && parts.length > 0) {
+      // keep a short remainder
+      const room = maxChars - used;
+      if (room > 80) parts.push(d.slice(0, room).trim() + " …");
+      break;
+    }
+    parts.push(d);
+    used += d.length;
+  }
+  return parts.join("\n\n").trim();
+}
+
+/** Lead that prefers first sentence + high-signal follow-ons (tools, numbers, must/shall). */
+function bestLead(body: string, query: Set<string>, n = 3): string {
+  const sents = splitSentences(body);
+  if (!sents.length) return "";
+  if (sents.length <= n) return densifyProse(sents.join(" "));
+  const ranked = sents.map((s, i) => ({
+    s,
+    i,
+    score:
+      scoreText(s, query) +
+      (i === 0 ? 0.35 : 0) +
+      (i === 1 ? 0.1 : 0) +
+      (/\b(nmap|masscan|shodan|zmap|must|shall|required|MFA|VPN|SOC|NIST|RTO|RPO)\b/i.test(
+        s
+      )
+        ? 0.25
+        : 0) +
+      (/\d+/.test(s) ? 0.05 : 0),
+  }));
+  ranked.sort((a, b) => b.score - a.score);
+  const pick = ranked
+    .slice(0, n)
+    .sort((a, b) => a.i - b.i)
+    .map((x) => x.s);
+  return densifyProse(pick.join(" "));
 }
 
 function splitSentences(text: string): string[] {
@@ -440,6 +551,10 @@ type Section = {
 
 /**
  * Rebuild a well-formed document as a SIGNAL BRIEF.
+ *
+ * Hybrid mode aims for *task-equivalent* answers to the full doc:
+ * coverage leads for every chapter + deep-keep of top sections +
+ * obligations/numbers — without shipping the whole essay.
  */
 export function compressDocument(
   context: string,
@@ -487,11 +602,12 @@ export function compressDocument(
     notes.push(`Stripped ${chrome.removed} chrome/TOC/banner lines`);
   }
 
-  const query = keywordSet(opts.prompt || "");
+  let query = keywordSet(opts.prompt || "");
+  const vague = isVagueAsk(opts.prompt || "");
   const blocks = splitBlocks(text);
   const paragraphsIn = blocks.filter((b) => b.kind === "para").length;
 
-  // Sections
+  // Sections (first pass structure, score later after query expand)
   const sections: Section[] = [];
   let cur: { heading?: { text: string; level: number }; body: Block[] } = {
     body: [],
@@ -500,13 +616,11 @@ export function compressDocument(
   const close = () => {
     if (!cur.heading && cur.body.length === 0) return;
     const blob = cur.body.map((b) => b.text).join("\n");
-    const hScore = cur.heading ? scoreText(cur.heading.text, query) * 1.25 : 0;
-    const bScore = scoreText(blob, query);
     sections.push({
       heading: cur.heading,
       body: cur.body,
       blob,
-      score: Math.max(hScore, bScore),
+      score: 0,
     });
     cur = { body: [] };
   };
@@ -525,121 +639,173 @@ export function compressDocument(
     const only = sections[0];
     const expanded: Section[] = [];
     for (const b of only.body) {
-      if (b.kind === "code") {
-        expanded.push({ body: [b], blob: b.text, score: 0.45 });
-      } else {
-        expanded.push({
-          body: [b],
-          blob: b.text,
-          score: scoreText(b.text, query),
-        });
-      }
+      expanded.push({
+        body: [b],
+        blob: b.text,
+        score: 0,
+      });
     }
     sections.length = 0;
     sections.push(...expanded);
   }
 
-  // Full-doc mines
+  // Vague "review this doc" → expand query with heading terms so every
+  // chapter can win a lead (coverage), not just the thesis paragraph.
+  if (vague || query.size < 3) {
+    query = expandQueryFromHeadings(query, sections);
+    notes.push(
+      vague
+        ? "Vague ask — expanded focus from document headings (coverage mode)"
+        : "Thin ask — seeded keywords from section titles"
+    );
+  }
+
+  // Score sections
+  for (const s of sections) {
+    const hScore = s.heading ? scoreText(s.heading.text, query) * 1.3 : 0;
+    const bScore = scoreText(s.blob, query);
+    // slight boost for early substantive sections (intro/problem framing)
+    const posBoost = 0;
+    s.score = Math.max(hScore, bScore) + posBoost;
+  }
+
   const allBlob = sections.map((s) => s.blob).join("\n");
-  const obligations = extractObligations(
-    allBlob,
-    query,
-    aggro.maxObligations
-  );
-  // Prefer obligations from high-score sections if we have many
+  const obligations = extractObligations(allBlob, query, aggro.maxObligations);
   const numbers = extractNumbers(allBlob, aggro.maxNumbers);
 
-  // Evidence from top sections
-  const evidence: { title: string; quotes: string[]; score: number }[] = [];
   const rankedSections = [...sections].sort((a, b) => b.score - a.score);
+
+  // Deep-keep: full densified bodies for top N sections
+  const deepIdx = new Set<number>();
+  for (const s of rankedSections) {
+    if (deepIdx.size >= aggro.deepKeepSections) break;
+    const idx = sections.indexOf(s);
+    if (sectionBodyText(s).length < 40 && !s.body.some((b) => b.kind === "code"))
+      continue;
+    deepIdx.add(idx);
+  }
+  // Always deep-keep highest score even if short
+  if (rankedSections[0]) deepIdx.add(sections.indexOf(rankedSections[0]));
+
+  // Evidence quotes (extra color beyond deep keep)
+  const evidence: { title: string; quotes: string[]; score: number }[] = [];
   for (const s of rankedSections) {
     if (evidence.length >= aggro.maxEvidence) break;
-    if (s.score < 0.1 && evidence.length >= 2) continue;
+    const idx = sections.indexOf(s);
+    if (deepIdx.has(idx) && aggro.mode === "hybrid") continue; // body already full
     const title = s.heading?.text || "Passage";
-    const paras = s.body
-      .filter((b) => b.kind === "para")
-      .map((b) => b.text)
-      .join(" ");
+    const paras = sectionBodyText(s);
     if (!paras.trim()) continue;
     const ev = evidenceQuotes(
       title,
       paras,
       query,
-      3,
+      4,
       aggro.evidenceSentences
     );
     if (ev) evidence.push(ev);
   }
 
-  // Code blocks from relevant sections
   const codeKeep: string[] = [];
   if (aggro.keepCode) {
-    for (const s of rankedSections.slice(0, 4)) {
+    for (const s of rankedSections.slice(0, 5)) {
       for (const b of s.body) {
-        if (b.kind === "code" && b.text.length < 4000) {
-          codeKeep.push(b.text);
-        }
+        if (b.kind === "code" && b.text.length < 4000) codeKeep.push(b.text);
       }
       if (codeKeep.length >= 2) break;
     }
   }
 
-  // Map line
-  const mapParts = rankedSections.map((s) => {
+  // Map
+  const mapParts = sections.map((s, idx) => {
     const name = s.heading?.text || "body";
-    let tag = "skip";
-    if (s.score >= 0.35) tag = "keep";
-    else if (s.score >= 0.15) tag = "lead";
-    else if (s.heading) tag = "outline";
-    const icon = tag === "keep" ? "✓" : tag === "lead" ? "~" : "·";
+    let icon = "·";
+    if (deepIdx.has(idx)) icon = "✓";
+    else if (s.score >= 0.12 || aggro.leadAllSections) icon = "~";
     return `${icon} ${name}`;
   });
 
-  const skipped = sections.filter((s) => s.score < 0.15 && s.heading).length;
-  const keptHigh = sections.filter((s) => s.score >= 0.35).length;
-
-  // Build SIGNAL BRIEF
   const ask = (opts.prompt || "").trim().replace(/\s+/g, " ").slice(0, 200);
-  const parts: string[] = [];
+  const strategyLabel =
+    aggro.mode === "hybrid"
+      ? "signal-brief-hybrid (coverage leads · deep-keep · obligations)"
+      : "signal-brief (map · obligations · thin evidence)";
 
+  const parts: string[] = [];
   parts.push("# SIGNAL BRIEF");
   parts.push(
     [
       `Ask: ${ask || "(general review)"}`,
       `Profile: ${profile}`,
-      `Strategy: signal-brief (structure · obligations · numbers · evidence)`,
+      `Strategy: ${strategyLabel}`,
+      `Fidelity: ${aggro.mode === "hybrid" ? "task-equivalent target (not verbatim)" : "executive density"}`,
     ].join("\n")
   );
 
   if (mapParts.length) {
     parts.push(
       "## Map\n" +
-        mapParts.slice(0, 24).join(" · ") +
-        (mapParts.length > 24 ? " · …" : "")
+        mapParts.slice(0, 28).join(" · ") +
+        (mapParts.length > 28 ? " · …" : "") +
+        "\n_(✓ deep-keep body · ~ lead sentence · · title only)_"
     );
   }
 
   if (obligations.length) {
     parts.push(
-      "## Hard requirements\n" +
-        obligations.map((o) => `- ${o}`).join("\n")
+      "## Hard requirements\n" + obligations.map((o) => `- ${o}`).join("\n")
     );
   }
 
   if (numbers.length) {
     parts.push(
-      "## Numbers & deadlines\n" +
-        numbers.map((n) => `\`${n}\``).join(" · ")
+      "## Numbers & deadlines\n" + numbers.map((n) => `\`${n}\``).join(" · ")
     );
   }
 
+  // Coverage leads — every headed section gets ≥1 sentence (hybrid)
+  if (aggro.leadAllSections) {
+    const leadLines: string[] = ["## Section coverage (lead from every chapter)"];
+    let leads = 0;
+    for (const s of sections) {
+      if (!s.heading) continue;
+      // skip pure TOC-ish titles with no body
+      const body = sectionBodyText(s);
+      if (!body || body.length < 30) continue;
+      if (deepIdx.has(sections.indexOf(s))) continue; // full body later
+      const lead = bestLead(body, query, 3);
+      if (!lead) continue;
+      leadLines.push(`### ${s.heading.text}`);
+      leadLines.push(lead);
+      leads++;
+    }
+    if (leads > 0) {
+      parts.push(leadLines.join("\n"));
+      notes.push(`Coverage: lead text for ${leads} sections (nothing silent-dropped)`);
+    }
+  }
+
+  // Deep-keep full bodies
+  if (deepIdx.size) {
+    const deepLines: string[] = ["## Deep dive (full densified sections)"];
+    // preserve document order
+    for (let i = 0; i < sections.length; i++) {
+      if (!deepIdx.has(i)) continue;
+      const s = sections[i];
+      if (s.heading) deepLines.push(`### ${s.heading.text}`);
+      const maxChars = aggro.mode === "brief" ? 900 : 2200;
+      const body = densifiedSectionBody(s, maxChars);
+      if (body) deepLines.push(body);
+    }
+    parts.push(deepLines.join("\n\n"));
+    notes.push(`Deep-keep: ${deepIdx.size} sections at full densified body`);
+  }
+
   if (evidence.length) {
-    const evLines: string[] = ["## Evidence (query-matched)"];
+    const evLines: string[] = ["## Extra evidence"];
     for (const e of evidence) {
       evLines.push(`### ${e.title}`);
-      for (const q of e.quotes) {
-        evLines.push(`> ${q}`);
-      }
+      for (const q of e.quotes) evLines.push(`> ${q}`);
     }
     parts.push(evLines.join("\n"));
   }
@@ -648,40 +814,59 @@ export function compressDocument(
     parts.push("## Code\n" + codeKeep.join("\n\n"));
   }
 
-  // Low-relevance inventory (builds trust — show what we dropped)
+  // Only list truly empty / chrome sections as deferred
   const skippedNames = sections
-    .filter((s) => s.score < 0.15 && s.heading)
+    .filter((s, i) => {
+      if (deepIdx.has(i)) return false;
+      if (!s.heading) return false;
+      const body = sectionBodyText(s);
+      return body.length < 30;
+    })
     .map((s) => s.heading!.text);
   if (skippedNames.length) {
     parts.push(
-      "## Deferred (low relevance to ask)\n" +
-        skippedNames.slice(0, 16).map((n) => `- ${n}`).join("\n") +
-        (skippedNames.length > 16
-          ? `\n- …+${skippedNames.length - 16} more`
-          : "")
+      "## Deferred (empty/chrome)\n" +
+        skippedNames.slice(0, 12).map((n) => `- ${n}`).join("\n")
     );
   }
 
-  // Safety net: if almost no signal mined, fall back to densified top sections
-  if (obligations.length < 2 && evidence.length < 2) {
+  if (obligations.length < 1 && deepIdx.size < 1) {
     const fallback: string[] = ["## Key passages"];
-    for (const s of rankedSections.slice(0, 5)) {
+    for (const s of rankedSections.slice(0, 6)) {
       if (s.heading) fallback.push(`### ${s.heading.text}`);
-      const para = s.body.find((b) => b.kind === "para");
-      if (para) {
-        const d = densifyProse(
-          splitSentences(para.text).slice(0, 3).join(" ")
-        );
-        if (d) fallback.push(d);
-      }
+      const d = densifyProse(splitSentences(sectionBodyText(s)).slice(0, 3).join(" "));
+      if (d) fallback.push(d);
     }
     parts.push(fallback.join("\n"));
-    notes.push("Sparse obligation language — kept densified key passages");
   }
 
   let brief = parts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 
-  // Never expand
+  // Soft budget: if hybrid overshoots target ratio, trim deep-keep tails first
+  const targetRatio = opts.targetKeepRatio ?? aggro.targetRatio;
+  const budget = Math.max(800, Math.floor(text.length * targetRatio));
+  if (brief.length > budget * 1.35 && aggro.mode === "hybrid") {
+    // rebuild deep sections with tighter cap
+    const tight: string[] = [];
+    for (const part of parts) {
+      if (!part.startsWith("## Deep dive")) {
+        tight.push(part);
+        continue;
+      }
+      const deepLines: string[] = ["## Deep dive (full densified sections)"];
+      for (let i = 0; i < sections.length; i++) {
+        if (!deepIdx.has(i)) continue;
+        const s = sections[i];
+        if (s.heading) deepLines.push(`### ${s.heading.text}`);
+        const body = densifiedSectionBody(s, 1100);
+        if (body) deepLines.push(body);
+      }
+      tight.push(deepLines.join("\n\n"));
+    }
+    brief = tight.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+    notes.push("Packed deep-keep to target budget (still hybrid coverage)");
+  }
+
   if (brief.length >= context.length) {
     return {
       text: context,
@@ -693,27 +878,26 @@ export function compressDocument(
   }
 
   const savedPct = Math.round((1 - brief.length / context.length) * 100);
+  const strategy =
+    aggro.mode === "hybrid" ? "signal-brief-hybrid" : "signal-brief";
   notes.push(
-    `SIGNAL BRIEF −${savedPct}% chars · ${obligations.length} requirements · ${numbers.length} numbers · ${evidence.length} evidence blocks · ${skipped} sections deferred`
-  );
-  notes.push(
-    `Kept ${keptHigh} high-relevance sections; deferred low-relevance appendix/filler`
+    `SIGNAL BRIEF (${aggro.mode}) −${savedPct}% chars · ${obligations.length} requirements · ${numbers.length} numbers · deep-keep ${deepIdx.size} · leads-on`
   );
 
   return {
     text: brief,
     notes,
     applied: true,
-    strategy: "signal-brief",
+    strategy,
     stats: {
       sections: sections.length,
       paragraphsIn,
-      paragraphsKept: evidence.length,
-      outlineOnly: skipped,
+      paragraphsKept: deepIdx.size + evidence.length,
+      outlineOnly: skippedNames.length,
       obligations: obligations.length,
       numbers: numbers.length,
       evidenceQuotes: evidence.reduce((n, e) => n + e.quotes.length, 0),
-      skippedSections: skipped,
+      skippedSections: skippedNames.length,
     },
   };
 }
