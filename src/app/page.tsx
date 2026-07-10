@@ -1,7 +1,56 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
+import { CountUpStats } from "@/components/CountUpStats";
 import { getSessionUser } from "@/lib/auth";
 import { TAGLINE } from "@/lib/constants";
+
+const CAPABILITIES = [
+  {
+    title: "Context optimization dial",
+    body: "Dial 1–5 trades fidelity for savings. Typical balanced runs cut ~45–60% of tokens; max savings can crush 85%+ on noisy logs and docs.",
+  },
+  {
+    title: "Secret masking",
+    body: "Scan and mask API keys, tokens, and credentials before context leaves your machine toward a provider.",
+  },
+  {
+    title: "Profiles that match the job",
+    body: "General, developer, security-review, log-analysis, documentation, and executive-summary — each tuned for what to keep.",
+  },
+  {
+    title: "Your keys, your spend",
+    body: "Bring OpenAI, Claude, Gemini, or Grok. Provider keys stay encrypted in the portal; AI token cost stays on your account.",
+  },
+  {
+    title: "Local desktop chat",
+    body: "Free PowerShell UI on 127.0.0.1 — chat history, agents, self-update, and Help — without putting the full chat SPA on the cloud.",
+  },
+  {
+    title: "Workspace · Git · SSH",
+    body: "Attach any folder on this PC, clone GitHub repos, and run SSH. Keys and credentials never leave your machine.",
+  },
+];
+
+const LANDING_STATS = [
+  {
+    value: 66,
+    suffix: "%",
+    label: "Example token reduction",
+  },
+  {
+    value: 12220,
+    suffix: "+",
+    label: "Tokens saved in demo pass",
+  },
+  {
+    value: 4,
+    label: "AI providers routed",
+  },
+  {
+    value: 6,
+    label: "Optimization profiles",
+  },
+];
 
 export default async function LandingPage() {
   const user = await getSessionUser();
@@ -22,7 +71,7 @@ export default async function LandingPage() {
                   Sign in
                 </Link>
                 <Link href="/register" className="btn btn-primary">
-                  Get started
+                  Create free account
                 </Link>
               </>
             )}
@@ -31,18 +80,9 @@ export default async function LandingPage() {
       </header>
 
       <main className="flex-1">
+        {/* Hero — no large logo above the message */}
         <section className="container py-16 md:py-24">
           <div className="mx-auto max-w-3xl text-center">
-            <div className="mb-7 flex justify-center">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo.png"
-                alt="PromptParle"
-                width={88}
-                height={88}
-                className="h-[4.5rem] w-[4.5rem] rounded-[22%] shadow-[0_16px_40px_rgba(91,140,255,0.35)] md:h-24 md:w-24"
-              />
-            </div>
             <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-soft)] px-3 py-1 text-sm text-[var(--text-muted)]">
               <span className="h-1.5 w-1.5 rounded-full bg-[var(--success)]" />
               AI context optimization gateway
@@ -52,151 +92,158 @@ export default async function LandingPage() {
             </h1>
             <p className="mx-auto mt-5 max-w-2xl text-lg text-[var(--text-muted)] md:text-xl">
               PromptParle sits between your desktop tools and AI providers.
-              It thins bloated context, keeps the signal, and routes cleaner
-              prompts to OpenAI, Claude, and more — so you pay for less noise.
+              It thins bloated context, keeps the signal, masks secrets, and
+              routes cleaner prompts to OpenAI, Claude, Gemini, and Grok — so
+              you pay for less noise.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-              <Link href={user ? "/app" : "/register"} className="btn btn-primary">
-                {user ? "Go to dashboard" : "Create free account"}
-              </Link>
-              <a href="#how-it-works" className="btn btn-secondary">
-                How it works
-              </a>
-              <a
-                href="#install"
-                className="btn btn-ghost text-sm text-[var(--accent-strong)]"
-              >
+              {user ? (
+                <Link href="/app" className="btn btn-primary">
+                  Go to dashboard
+                </Link>
+              ) : (
+                <Link href="/register" className="btn btn-primary">
+                  Create free account
+                </Link>
+              )}
+              <a href="#install" className="btn btn-secondary">
                 Install desktop client
               </a>
             </div>
+            <p className="mt-4 text-sm text-[var(--text-dim)]">
+              Registration unlocks encrypted provider keys and a desktop{" "}
+              <span className="mono text-[var(--accent-strong)]">pp_live_…</span>{" "}
+              API key. The local chat UI is free on your PC.
+            </p>
           </div>
 
-          <div className="mx-auto mt-14 grid max-w-4xl gap-4 md:grid-cols-3">
-            {[
-              {
-                title: "Optimize before send",
-                body: "Strip filler, dedupe logs, preserve errors, code, and security indicators.",
-              },
-              {
-                title: "Your provider keys",
-                body: "Store OpenAI and Claude keys encrypted. Use one PromptParle desktop key locally.",
-              },
-              {
-                title: "Desktop-first",
-                body: "PowerShell and VS Code clients talk to one API. Portal manages accounts and usage.",
-              },
-            ].map((item) => (
-              <div key={item.title} className="card p-5 text-left">
-                <h3 className="font-semibold">{item.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
-                  {item.body}
-                </p>
-              </div>
-            ))}
+          <CountUpStats stats={LANDING_STATS} />
+        </section>
+
+        {/* Capabilities */}
+        <section id="capabilities" className="border-t border-[var(--border)] py-16">
+          <div className="container">
+            <h2 className="page-title text-center">Capabilities</h2>
+            <p className="page-sub mx-auto max-w-2xl text-center">
+              Built for real workflows: noisy logs, code reviews, security
+              packs, docs, and multi-provider routing — with savings you can see.
+            </p>
+            <div className="mx-auto mt-10 grid max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {CAPABILITIES.map((item) => (
+                <div key={item.title} className="card p-5 text-left">
+                  <h3 className="font-semibold text-[var(--text)]">{item.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
+                    {item.body}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
+        {/* How it works */}
         <section id="how-it-works" className="border-t border-[var(--border)] py-16">
           <div className="container">
             <h2 className="page-title text-center">The flow</h2>
             <p className="page-sub mx-auto max-w-xl text-center">
-              One path from your terminal to any AI provider — with optimization in the middle.
+              One path from your terminal to any AI provider — with optimization
+              and secret masking in the middle.
             </p>
             <div className="mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)]">
               <pre className="overflow-x-auto p-6 text-sm leading-7 text-[var(--text-muted)] mono">
-{`User
+{`You (local PowerShell UI or script)
+  ↓  desktop key pp_live_…
+PromptParle API  →  auth · secret scan · optimize (dial 1–5)
   ↓
-PowerShell / VS Code
+Your provider     →  OpenAI / Claude / Gemini / Grok
   ↓
-PromptParle API  →  auth · policy · secret scan · optimize
-  ↓
-Provider adapter  →  OpenAI / Claude / Gemini / Grok
-  ↓
-Response + token reduction metadata`}
+Response + original → optimized token savings`}
               </pre>
             </div>
 
             <div className="mx-auto mt-8 max-w-3xl card p-6">
-              <p className="text-sm font-medium text-[var(--text-dim)]">Example</p>
+              <p className="text-sm font-medium text-[var(--text-dim)]">Example savings</p>
               <pre className="mt-3 overflow-x-auto text-sm leading-7 mono text-[#c7d7f5]">
 {`Set-PromptParleApiKey -ApiKey "pp_live_xxxxx"
 
-Get-Content .\\firewall-rules.txt | Invoke-PromptParle \`
-  -Provider "openai" \`
-  -Profile "security-review" \`
-  -Prompt "Find risky firewall rules"`}
+Get-Content .\\firewall-rules.txt -Raw |
+  Invoke-PromptParle \`
+    -Provider "openai" \`
+    -Profile "security-review" \`
+    -Prompt "Find risky firewall rules"`}
               </pre>
               <div className="mt-4 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[var(--success-soft)] p-4 text-sm text-[#a7f3d0]">
-                Original tokens: 18,450 → Optimized: 6,230 · Reduction: 66%
+                Original tokens: 18,450 → Optimized: 6,230 · Reduction:{" "}
+                <strong>66%</strong> · Saved <strong>12,220</strong> tokens
               </div>
             </div>
           </div>
         </section>
 
+        {/* Install + registration path */}
         <section id="install" className="border-t border-[var(--border)] py-16">
           <div className="container">
-            <h2 className="page-title text-center">Install desktop client</h2>
+            <h2 className="page-title text-center">Get started</h2>
             <p className="page-sub mx-auto max-w-xl text-center">
-              Free local chat on your PC. Provider keys stay in the portal; the UI runs at 127.0.0.1.
+              Register for free, then install the desktop client. Two steps —
+              portal for keys, local UI for daily chat.
             </p>
-            <div className="mx-auto mt-8 max-w-3xl card p-6">
-              <ol className="space-y-4 text-sm text-[var(--text-muted)]">
-                <li>
-                  <span className="font-semibold text-[var(--text)]">1. Account</span>
-                  {" — "}
-                  Register, verify email, add a provider key, create a desktop{" "}
-                  <span className="mono text-[var(--accent-strong)]">pp_live_…</span> key.
-                </li>
-                <li>
-                  <span className="font-semibold text-[var(--text)]">2. Install</span>
-                  {" — "}PowerShell:
-                  <pre className="mt-2 overflow-x-auto rounded-xl border border-[var(--border)] bg-black/30 p-4 mono text-[#c7d7f5]">
-{`irm https://promptparle.com/install.ps1 | iex`}
-                  </pre>
-                </li>
-                <li>
-                  <span className="font-semibold text-[var(--text)]">3. Chat</span>
-                  {" — "}
-                  <span className="mono text-[var(--accent-strong)]">pp</span>
-                  {" "}opens local chat at http://127.0.0.1:7788/
-                </li>
-              </ol>
-              <p className="mt-4 text-xs text-[var(--text-dim)]">
-                Full install + troubleshooting:{" "}
+
+            <div className="mx-auto mt-10 grid max-w-4xl gap-4 md:grid-cols-2">
+              <div className="card flex flex-col p-6">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-strong)]">
+                  Step 1 · Portal
+                </div>
+                <h3 className="mt-2 text-lg font-semibold">Create free account</h3>
+                <ul className="mt-4 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
+                  <li>• Register and verify email</li>
+                  <li>• Add OpenAI / Claude / Gemini / Grok keys (encrypted)</li>
+                  <li>• Create a desktop API key (<span className="mono">pp_live_…</span>)</li>
+                  <li>• Track usage and token savings</li>
+                </ul>
+                <Link
+                  href={user ? "/app" : "/register"}
+                  className="btn btn-primary mt-6 w-full"
+                >
+                  {user ? "Open dashboard" : "Create free account"}
+                </Link>
+              </div>
+
+              <div className="card flex flex-col p-6">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--success)]">
+                  Step 2 · Desktop
+                </div>
+                <h3 className="mt-2 text-lg font-semibold">Install desktop client</h3>
+                <p className="mt-3 text-sm text-[var(--text-muted)]">
+                  Windows PowerShell (requires{" "}
+                  <a
+                    className="text-[var(--accent-strong)] hover:underline"
+                    href="https://git-scm.com/download/win"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Git for Windows
+                  </a>
+                  ):
+                </p>
+                <pre className="mt-3 overflow-x-auto rounded-xl border border-[var(--border)] bg-black/30 p-4 mono text-sm text-[#c7d7f5]">
+{`irm https://promptparle.com/install.ps1 | iex
+pp`}
+                </pre>
+                <ul className="mt-4 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
+                  <li>• Local chat at http://127.0.0.1:7788/</li>
+                  <li>• Chat history, agents, dial, workspace / SSH / Git</li>
+                  <li>• Self-update when a new client ships</li>
+                </ul>
                 <a
-                  className="text-[var(--accent-strong)] hover:underline"
                   href="https://github.com/exiled4disco/promptparle/blob/main/powershell/PromptParle/README.md"
                   target="_blank"
                   rel="noreferrer"
+                  className="btn btn-secondary mt-6 w-full"
                 >
-                  GitHub module docs
+                  Full install + troubleshooting
                 </a>
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="border-t border-[var(--border)] py-16">
-          <div className="container grid gap-6 md:grid-cols-2">
-            <div className="card p-6">
-              <h3 className="text-lg font-semibold">Portal</h3>
-              <ul className="mt-4 space-y-2 text-sm text-[var(--text-muted)]">
-                <li>• Account registration and login</li>
-                <li>• Encrypted AI provider key storage</li>
-                <li>• Desktop API key generation</li>
-                <li>• Usage history and token savings</li>
-                <li>• Retention and prompt storage controls</li>
-              </ul>
-            </div>
-            <div className="card p-6">
-              <h3 className="text-lg font-semibold">Desktop client (shipped)</h3>
-              <ul className="mt-4 space-y-2 text-sm text-[var(--text-muted)]">
-                <li>• Local PowerShell chat UI + logo brand</li>
-                <li>• Context optimizer with dial + profiles</li>
-                <li>• OpenAI / Claude / Gemini / Grok routing</li>
-                <li>• Workspace, GitHub clone, SSH (keys stay local)</li>
-                <li>• Chat history · self-update · agents</li>
-              </ul>
+              </div>
             </div>
           </div>
         </section>
