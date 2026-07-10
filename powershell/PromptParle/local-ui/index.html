@@ -216,6 +216,62 @@
     }
     .field-compact { margin-bottom: .3rem; }
     .field-compact:last-child { margin-bottom: 0; }
+    .agent-row {
+      display: grid; grid-template-columns: 1fr auto; gap: .3rem; align-items: center;
+    }
+    .agent-row select { min-width: 0; }
+    .agent-row .mini-primary { white-space: nowrap; padding: .3rem .5rem; font-size: .72rem; }
+    .agent-modal { width: min(720px, 100%); max-height: min(90vh, 900px); overflow: auto; }
+    .agent-layout {
+      display: grid; gap: .75rem;
+      grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+    }
+    @media (max-width: 640px) {
+      .agent-layout { grid-template-columns: 1fr; }
+    }
+    .agent-list {
+      border: 1px solid var(--border); border-radius: 8px; background: #0a0e16;
+      max-height: 22rem; overflow: auto; padding: .25rem;
+    }
+    .agent-list button {
+      display: block; width: 100%; text-align: left; background: transparent;
+      border: 0; color: var(--text); padding: .45rem .5rem; border-radius: 6px;
+      cursor: pointer; font: inherit; font-size: .8rem;
+    }
+    .agent-list button:hover { background: rgba(91,140,255,.1); }
+    .agent-list button.active { background: var(--accent-soft); color: #c7d7f5; }
+    .agent-list .ag-meta { display: block; font-size: .65rem; color: var(--dim); margin-top: .1rem; }
+    .tool-grid {
+      display: grid; gap: .35rem;
+      grid-template-columns: 1fr;
+      max-height: 12rem; overflow: auto;
+      border: 1px solid var(--border); border-radius: 8px; padding: .4rem .5rem;
+      background: #0a0e16;
+    }
+    .tool-grid label {
+      display: grid; grid-template-columns: auto 1fr; gap: .15rem .45rem;
+      align-items: start; margin: 0; font-size: .75rem; color: var(--text); cursor: pointer;
+    }
+    .tool-grid label input { margin-top: .15rem; }
+    .tool-grid .tool-desc { font-size: .68rem; color: var(--dim); grid-column: 2; line-height: 1.3; }
+    .tool-grid .tool-tag {
+      display: inline-block; font-size: .58rem; font-weight: 700; letter-spacing: .04em;
+      text-transform: uppercase; color: var(--success); margin-left: .25rem;
+    }
+    .opt-reasons {
+      margin: .4rem 0 0; padding: .5rem .6rem; border-radius: 8px;
+      border: 1px solid rgba(91,140,255,.25); background: rgba(91,140,255,.08);
+      font-size: .75rem; color: var(--muted); line-height: 1.4; white-space: pre-wrap;
+    }
+    .agent-form .row2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: .5rem;
+    }
+    @media (max-width: 520px) {
+      .agent-form .row2 { grid-template-columns: 1fr; }
+    }
+    .agent-form textarea {
+      min-height: 5.5rem; resize: vertical; font-size: .8rem; line-height: 1.4;
+    }
     .dial-row {
       display: grid; grid-template-columns: 1fr auto; gap: .25rem .4rem; align-items: center;
       margin-top: .15rem;
@@ -596,7 +652,10 @@
           <h2>Chat</h2>
           <div class="field-compact">
             <label for="agentSelect">Agent</label>
-            <select id="agentSelect"></select>
+            <div class="agent-row">
+              <select id="agentSelect"></select>
+              <button type="button" class="secondary mini-primary" id="manageAgentsBtn" title="Create and optimize local agents">Manage</button>
+            </div>
           </div>
           <div class="field-compact">
             <label for="provider">Provider</label>
@@ -715,7 +774,11 @@
       <pre>/help                 this help
 /status               agent, workspace, ssh, dial
 /agents · /agent &lt;name&gt;
-/dial 1-5 · /provider · /optimize · /usage · /clear</pre>
+/agent new Name | system brief…
+/agent optimize [name]
+/tools · /tool file_index|deps|git_diff|code_brief
+/dial 1-5 · /provider · /optimize · /usage · /clear
+UI: Agent → Manage — create agents + pick local tools</pre>
 
       <h3>Chat history</h3>
       <pre>Sidebar → History: switch past chats, New chat, delete (×)
@@ -749,6 +812,78 @@ code:      /review  /explain</pre>
       <div class="help-legal" aria-label="Copyright and trademark">
         <p>© 2026 PromptParle. All rights reserved.</p>
         <p>PromptParle™ and the PromptParle logo are trademarks of PromptParle.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local agents: create / edit / optimize (tools run on this PC first) -->
+  <div class="modal-backdrop" id="agentModal" role="dialog" aria-modal="true" aria-labelledby="agentTitle">
+    <div class="modal agent-modal">
+      <h2 id="agentTitle">Local agents</h2>
+      <div class="sub">Create agents on this PC. Local-first tools (code brief, secret scan, git diff, file index…) run before AI tokens are spent.</div>
+      <div class="agent-layout">
+        <div>
+          <div class="hist-head" style="margin-bottom:.35rem">
+            <h2 style="margin:0;text-transform:none;letter-spacing:0;font-size:.8rem;color:var(--muted)">Your agents</h2>
+            <button type="button" class="secondary mini-primary" id="agentNewBtn">New</button>
+          </div>
+          <div class="agent-list" id="agentList"></div>
+        </div>
+        <div class="agent-form" id="agentForm">
+          <input type="hidden" id="agentEditId" value="" />
+          <div class="field-compact">
+            <label for="agentName">Name</label>
+            <input type="text" id="agentName" placeholder="e.g. Firewall analyst" maxlength="80" />
+          </div>
+          <div class="field-compact">
+            <label for="agentDesc">Description</label>
+            <input type="text" id="agentDesc" placeholder="Short purpose" maxlength="160" />
+          </div>
+          <div class="field-compact">
+            <label for="agentSystem">System brief</label>
+            <textarea id="agentSystem" placeholder="How this agent should behave…"></textarea>
+          </div>
+          <div class="row2">
+            <div class="field-compact">
+              <label for="agentProfile">Profile</label>
+              <select id="agentProfile">
+                <option value="general">General</option>
+                <option value="developer">Developer</option>
+                <option value="security-review">Security review</option>
+                <option value="log-analysis">Log analysis</option>
+                <option value="documentation">Documentation</option>
+                <option value="executive-summary">Executive summary</option>
+              </select>
+            </div>
+            <div class="field-compact">
+              <label for="agentDial">Dial (1–5)</label>
+              <select id="agentDial">
+                <option value="1">1 · Max fidelity</option>
+                <option value="2">2 · High fidelity</option>
+                <option value="3" selected>3 · Balanced</option>
+                <option value="4">4 · Lean</option>
+                <option value="5">5 · Max savings</option>
+              </select>
+            </div>
+          </div>
+          <div class="field-compact">
+            <label>Local-first tools <span class="hint" style="display:inline;font-weight:400">— run on this PC</span></label>
+            <div class="tool-grid" id="agentToolGrid"></div>
+          </div>
+          <div class="field-compact">
+            <label for="agentCommands">Shortcuts (optional)</label>
+            <input type="text" id="agentCommands" placeholder="review=Review code; explain=Explain structure" />
+            <div class="hint" style="margin-top:.2rem">name=prompt pairs, separated by ; — become /review, /explain</div>
+          </div>
+          <div id="agentOptBox" class="opt-reasons" hidden></div>
+          <div class="row-actions" style="margin-top:.6rem;flex-wrap:wrap">
+            <button type="button" class="primary" id="agentSaveBtn" style="border-radius:999px;padding:.5rem 1rem">Save agent</button>
+            <button type="button" class="secondary" id="agentOptimizeBtn">Optimize agent</button>
+            <button type="button" class="secondary" id="agentActivateBtn">Use this agent</button>
+            <button type="button" class="stop-btn" id="agentDeleteBtn" style="width:auto">Delete</button>
+            <button type="button" class="secondary" id="agentCloseBtn">Close</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -2182,16 +2317,25 @@ code:      /review  /explain</pre>
       applyWorkspaceUi(s);
     }
 
+    var agentCatalog = [];
+    var toolCatalog = [];
+    var agentEditId = '';
+
     async function loadAgents() {
       try {
         const res = await fetch('/api/agents');
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'agents failed');
+        agentCatalog = data.agents || [];
+        if (data.tools && data.tools.length) toolCatalog = data.tools;
         agentSelect.innerHTML = '';
-        (data.agents || []).forEach(function (a) {
+        agentCatalog.forEach(function (a) {
           const opt = document.createElement('option');
           opt.value = a.id;
-          opt.textContent = a.name + (a.commands && a.commands.length ? ' (/' + a.commands.join(', /') + ')' : '');
+          var extra = '';
+          if (a.tools && a.tools.length) extra = ' · ' + a.tools.length + ' tools';
+          else if (a.commands && a.commands.length) extra = ' (/' + a.commands.join(', /') + ')';
+          opt.textContent = a.name + extra;
           agentSelect.appendChild(opt);
         });
         if (data.active_agent) agentSelect.value = data.active_agent;
@@ -2203,8 +2347,249 @@ code:      /review  /explain</pre>
           delete agentSelect.dataset.pendingAgent;
         }
         updateAgentMeta({ active_agent: agentSelect.value, profile: profileEl.value, dial: parseInt(dialEl.value, 10) || 3 });
+        if (document.getElementById('agentModal').classList.contains('open')) {
+          renderAgentList();
+        }
       } catch (e) {
         agentSelect.innerHTML = '<option value="default">Default</option>';
+      }
+    }
+
+    function parseAgentCommands(str) {
+      var map = {};
+      if (!str || !String(str).trim()) return map;
+      String(str).split(';').forEach(function (part) {
+        var p = part.trim();
+        if (!p) return;
+        var eq = p.indexOf('=');
+        if (eq < 1) return;
+        var name = p.slice(0, eq).trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+        var prompt = p.slice(eq + 1).trim();
+        if (name && prompt) map[name] = prompt;
+      });
+      return map;
+    }
+
+    function formatAgentCommands(map) {
+      if (!map) return '';
+      var parts = [];
+      if (Array.isArray(map)) return '';
+      Object.keys(map).forEach(function (k) {
+        parts.push(k + '=' + map[k]);
+      });
+      return parts.join('; ');
+    }
+
+    function renderToolGrid(selected) {
+      var grid = document.getElementById('agentToolGrid');
+      if (!grid) return;
+      var sel = {};
+      (selected || []).forEach(function (id) { sel[id] = true; });
+      if (!toolCatalog.length) {
+        grid.innerHTML = '<div class="hint">Loading tools…</div>';
+        return;
+      }
+      grid.innerHTML = '';
+      var hasSel = selected && selected.length > 0;
+      toolCatalog.forEach(function (t) {
+        var lab = document.createElement('label');
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = t.id;
+        if (hasSel) {
+          cb.checked = !!sel[t.id];
+        } else {
+          cb.checked = (t.id === 'files' || t.id === 'workspace' || t.id === 'secret_scan');
+        }
+        var title = document.createElement('span');
+        title.innerHTML = (t.name || t.id) +
+          (t.auto ? ' <span class="tool-tag">auto</span>' : ' <span class="tool-tag" style="color:var(--muted)">manual</span>');
+        var desc = document.createElement('span');
+        desc.className = 'tool-desc';
+        desc.textContent = t.description || '';
+        lab.appendChild(cb);
+        lab.appendChild(title);
+        lab.appendChild(desc);
+        grid.appendChild(lab);
+      });
+    }
+
+    function selectedToolsFromGrid() {
+      var out = [];
+      document.querySelectorAll('#agentToolGrid input[type=checkbox]').forEach(function (cb) {
+        if (cb.checked) out.push(cb.value);
+      });
+      return out;
+    }
+
+    function renderAgentList() {
+      var list = document.getElementById('agentList');
+      if (!list) return;
+      list.innerHTML = '';
+      agentCatalog.forEach(function (a) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.dataset.id = a.id;
+        if (a.id === agentEditId) btn.classList.add('active');
+        btn.innerHTML = '<strong>' + escapeHtml(a.name) + '</strong>' +
+          '<span class="ag-meta">' + escapeHtml(a.profile || 'general') +
+          ' · dial ' + (a.dial || 3) +
+          (a.tools && a.tools.length ? ' · ' + a.tools.length + ' tools' : '') +
+          (a.builtin ? ' · built-in' : '') + '</span>';
+        btn.addEventListener('click', function () { fillAgentForm(a); });
+        list.appendChild(btn);
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function fillAgentForm(a) {
+      agentEditId = a && a.id ? a.id : '';
+      document.getElementById('agentEditId').value = agentEditId;
+      document.getElementById('agentName').value = a && a.name ? a.name : '';
+      document.getElementById('agentDesc').value = a && a.description ? a.description : '';
+      document.getElementById('agentSystem').value = a && a.system ? a.system : '';
+      document.getElementById('agentProfile').value = (a && a.profile) || 'general';
+      document.getElementById('agentDial').value = String((a && a.dial) || 3);
+      var cmdMap = (a && a.command_map) || {};
+      if (a && a.commands && !Object.keys(cmdMap).length && typeof a.commands === 'object' && !Array.isArray(a.commands)) {
+        cmdMap = a.commands;
+      }
+      document.getElementById('agentCommands').value = formatAgentCommands(cmdMap);
+      renderToolGrid(a && a.tools ? a.tools : ['files', 'workspace', 'secret_scan']);
+      document.getElementById('agentOptBox').hidden = true;
+      document.getElementById('agentDeleteBtn').style.display =
+        (a && a.builtin) || agentEditId === 'default' ? 'none' : '';
+      renderAgentList();
+    }
+
+    function blankAgentForm() {
+      fillAgentForm({
+        id: '',
+        name: '',
+        description: '',
+        system: '',
+        profile: profileEl.value || 'general',
+        dial: parseInt(dialEl.value, 10) || 3,
+        tools: ['files', 'workspace', 'secret_scan', 'code_brief'],
+        command_map: {}
+      });
+      agentEditId = '';
+      document.getElementById('agentEditId').value = '';
+      document.getElementById('agentDeleteBtn').style.display = 'none';
+      document.getElementById('agentName').focus();
+    }
+
+    async function ensureToolCatalog() {
+      if (toolCatalog.length) return;
+      try {
+        const res = await fetch('/api/tools');
+        const data = await res.json();
+        if (res.ok && data.tools) toolCatalog = data.tools;
+      } catch (e) { /* ignore */ }
+    }
+
+    async function openAgentModal() {
+      await ensureToolCatalog();
+      await loadAgents();
+      var cur = agentCatalog.find(function (a) { return a.id === agentSelect.value; });
+      if (cur) fillAgentForm(cur); else blankAgentForm();
+      document.getElementById('agentModal').classList.add('open');
+    }
+
+    function closeAgentModal() {
+      document.getElementById('agentModal').classList.remove('open');
+    }
+
+    async function saveAgentFromForm(activate) {
+      var name = document.getElementById('agentName').value.trim();
+      if (!name) {
+        addMsg('sys', 'Agent name is required.', null, true);
+        return;
+      }
+      var body = {
+        id: document.getElementById('agentEditId').value || undefined,
+        name: name,
+        description: document.getElementById('agentDesc').value.trim(),
+        system: document.getElementById('agentSystem').value,
+        profile: document.getElementById('agentProfile').value,
+        dial: parseInt(document.getElementById('agentDial').value, 10) || 3,
+        tools: selectedToolsFromGrid(),
+        commands: parseAgentCommands(document.getElementById('agentCommands').value),
+        activate: !!activate
+      };
+      try {
+        const res = await fetch('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'save failed');
+        addMsg('sys', data.message || ('Saved agent ' + name));
+        await loadAgents();
+        if (data.agent && data.agent.id) {
+          agentSelect.value = data.agent.id;
+          var saved = agentCatalog.find(function (a) { return a.id === data.agent.id; });
+          if (saved) fillAgentForm(saved);
+        }
+        if (activate && data.active_agent) {
+          agentSelect.value = data.active_agent;
+        }
+      } catch (e) {
+        addMsg('sys', 'Save agent failed: ' + (e.message || e), null, true);
+      }
+    }
+
+    async function optimizeAgentFromForm() {
+      var body = {
+        name: document.getElementById('agentName').value.trim() || 'Custom agent',
+        description: document.getElementById('agentDesc').value.trim(),
+        system: document.getElementById('agentSystem').value,
+        profile: document.getElementById('agentProfile').value,
+        dial: parseInt(document.getElementById('agentDial').value, 10) || 3,
+        tools: selectedToolsFromGrid()
+      };
+      try {
+        const res = await fetch('/api/agents/optimize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'optimize failed');
+        if (data.system) document.getElementById('agentSystem').value = data.system;
+        if (data.profile) document.getElementById('agentProfile').value = data.profile;
+        if (data.dial) document.getElementById('agentDial').value = String(data.dial);
+        if (data.tools) renderToolGrid(data.tools);
+        var box = document.getElementById('agentOptBox');
+        var lines = [(data.tip || 'Local tools suggested — 0 AI tokens used.'), ''];
+        (data.reasons || []).forEach(function (r) { lines.push('• ' + r); });
+        box.textContent = lines.join('\n');
+        box.hidden = false;
+        addMsg('sys', 'Agent optimize applied suggestions (local). Review tools + system, then Save.');
+      } catch (e) {
+        addMsg('sys', 'Optimize failed: ' + (e.message || e), null, true);
+      }
+    }
+
+    async function deleteAgentFromForm() {
+      var id = document.getElementById('agentEditId').value;
+      if (!id || id === 'default') return;
+      if (!confirm('Delete local agent "' + id + '"?')) return;
+      try {
+        const res = await fetch('/api/agents?id=' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'delete failed');
+        addMsg('sys', data.message || 'Deleted');
+        await loadAgents();
+        blankAgentForm();
+      } catch (e) {
+        addMsg('sys', 'Delete failed: ' + (e.message || e), null, true);
       }
     }
 
@@ -2236,6 +2621,17 @@ code:      /review  /explain</pre>
       } catch (e) {
         addMsg('sys', 'Could not switch agent: ' + (e.message || e), null, true);
       }
+    });
+
+    document.getElementById('manageAgentsBtn').addEventListener('click', openAgentModal);
+    document.getElementById('agentCloseBtn').addEventListener('click', closeAgentModal);
+    document.getElementById('agentNewBtn').addEventListener('click', blankAgentForm);
+    document.getElementById('agentSaveBtn').addEventListener('click', function () { saveAgentFromForm(false); });
+    document.getElementById('agentActivateBtn').addEventListener('click', function () { saveAgentFromForm(true); });
+    document.getElementById('agentOptimizeBtn').addEventListener('click', optimizeAgentFromForm);
+    document.getElementById('agentDeleteBtn').addEventListener('click', deleteAgentFromForm);
+    document.getElementById('agentModal').addEventListener('click', function (e) {
+      if (e.target === document.getElementById('agentModal')) closeAgentModal();
     });
 
     async function runSlash(line) {

@@ -395,11 +395,15 @@ function New-PromptParleAgentObject {
         [string]$Profile = 'general',
         [int]$Dial = 3,
         [hashtable]$Commands = $null,
-        [string]$Description = ''
+        [string]$Description = '',
+        [string[]]$Tools = $null
     )
     if ($Dial -lt 1) { $Dial = 1 }
     if ($Dial -gt 5) { $Dial = 5 }
     if (-not $Commands) { $Commands = @{} }
+    if (-not $Tools -or $Tools.Count -eq 0) {
+        $Tools = @('files', 'workspace', 'secret_scan')
+    }
     return [pscustomobject]@{
         id          = $Id
         name        = $Name
@@ -408,7 +412,7 @@ function New-PromptParleAgentObject {
         profile     = $Profile
         dial        = $Dial
         commands    = $Commands
-        tools       = @('files', 'workspace', 'git', 'ssh')
+        tools       = @($Tools)
         updated_at  = (Get-Date).ToString('o')
     }
 }
@@ -416,21 +420,73 @@ function New-PromptParleAgentObject {
 function Initialize-PromptParleDefaultAgents {
     $dir = Get-PromptParleAgentsDir
     $defaults = @(
-        (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 -System ''),
+        (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 -System '' `
+            -Tools @('files', 'workspace', 'secret_scan')),
         (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Hostile security review' -Profile 'security-review' -Dial 3 `
             -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. Prefer evidence from the attached material. Do not invent findings.' `
-            -Commands @{ audit = 'Find the highest risk items and recommend actions with severity.'; threats = 'Map attack surface and threat scenarios from the material.' }),
+            -Commands @{ audit = 'Find the highest risk items and recommend actions with severity.'; threats = 'Map attack surface and threat scenarios from the material.' } `
+            -Tools @('files', 'workspace', 'git', 'secret_scan', 'code_brief', 'git_diff', 'file_index')),
         (New-PromptParleAgentObject -Id 'docs' -Name 'Doc analyst' -Description 'Document coverage + obligations' -Profile 'documentation' -Dial 3 `
             -System 'You are a careful document analyst. Preserve structure and obligations. Lead with the most useful findings, then cover gaps.' `
-            -Commands @{ summary = 'Summarize with section coverage and hard requirements.'; risks = 'Extract risks, must/shall obligations, and deadlines.' }),
+            -Commands @{ summary = 'Summarize with section coverage and hard requirements.'; risks = 'Extract risks, must/shall obligations, and deadlines.' } `
+            -Tools @('files', 'workspace', 'secret_scan', 'tree_pack')),
         (New-PromptParleAgentObject -Id 'code' -Name 'Code reviewer' -Description 'Code-focused review' -Profile 'developer' -Dial 2 `
             -System 'You are a senior code reviewer. Focus on bugs, security, and maintainability. Cite symbols and files when possible.' `
-            -Commands @{ review = 'Review the attached code for bugs, risks, and improvements.'; explain = 'Explain the attached code structure and control flow.' })
+            -Commands @{ review = 'Review the attached code for bugs, risks, and improvements.'; explain = 'Explain the attached code structure and control flow.' } `
+            -Tools @('files', 'workspace', 'git', 'code_brief', 'secret_scan', 'file_index', 'deps', 'git_diff', 'tree_pack'))
     )
     foreach ($a in $defaults) {
         $path = Join-Path $dir ($a.id + '.json')
         if (-not (Test-Path -LiteralPath $path)) {
-            ($a | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
+            $cmdObj = [ordered]@{}
+            if ($a.commands) {
+                foreach ($k in $a.commands.Keys) { $cmdObj[[string]$k] = [string]$a.commands[$k] }
+            }
+            $out = [ordered]@{
+                id          = $a.id
+                name        = $a.name
+                description = $a.description
+                system      = $a.system
+                profile     = $a.profile
+                dial        = $a.dial
+                commands    = $cmdObj
+                tools       = @($a.tools)
+                updated_at  = (Get-Date).ToString('o')
+            }
+            ($out | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
+        } else {
+            # Migrate older built-ins that only had tools=@('files') — write JSON directly (no Save re-entry)
+            try {
+                $existing = Read-PromptParleAgentFile -Path $path
+                if ($existing -and $existing.tools) {
+                    $need = @($a.tools)
+                    $have = @($existing.tools)
+                    if ($have.Count -le 1 -and ($have.Count -eq 0 -or $have -contains 'files')) {
+                        $merged = @($have)
+                        foreach ($t in $need) {
+                            if ($merged -notcontains $t) { $merged += $t }
+                        }
+                        $cmdObj = [ordered]@{}
+                        if ($existing.commands) {
+                            foreach ($k in $existing.commands.Keys) {
+                                $cmdObj[[string]$k] = [string]$existing.commands[$k]
+                            }
+                        }
+                        $out = [ordered]@{
+                            id          = $existing.id
+                            name        = $existing.name
+                            description = $existing.description
+                            system      = $existing.system
+                            profile     = $existing.profile
+                            dial        = [int]$existing.dial
+                            commands    = $cmdObj
+                            tools       = @($merged)
+                            updated_at  = (Get-Date).ToString('o')
+                        }
+                        ($out | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
+                    }
+                }
+            } catch { }
         }
     }
 }
@@ -451,6 +507,12 @@ function Read-PromptParleAgentFile {
         $dial = 3
         $d = Get-PromptParleProp $obj 'dial'
         if ($null -ne $d) { try { $dial = [int]$d } catch { $dial = 3 } }
+        $toolsRaw = Get-PromptParleProp $obj 'tools' @('files', 'workspace', 'secret_scan')
+        $tools = @()
+        foreach ($t in @($toolsRaw)) {
+            if ($t -and "$t".Trim()) { $tools += [string]$t }
+        }
+        if ($tools.Count -eq 0) { $tools = @('files', 'workspace', 'secret_scan') }
         return [pscustomobject]@{
             id          = $id
             name        = [string](Get-PromptParleProp $obj 'name' $id)
@@ -459,8 +521,9 @@ function Read-PromptParleAgentFile {
             profile     = [string](Get-PromptParleProp $obj 'profile' 'general')
             dial        = $dial
             commands    = $cmds
-            tools       = @(Get-PromptParleProp $obj 'tools' @('files'))
+            tools       = $tools
             path        = $Path
+            builtin     = @('default', 'security', 'docs', 'code') -contains $id
         }
     } catch {
         return $null
@@ -511,7 +574,7 @@ function Get-PromptParleAgentList {
 function Save-PromptParleAgent {
     <#
     .SYNOPSIS
-      Create or update a local agent definition.
+      Create or update a local agent definition (tools run on this PC first).
     #>
     [CmdletBinding()]
     param(
@@ -521,14 +584,26 @@ function Save-PromptParleAgent {
         [ValidateRange(1, 5)][int]$Dial = 3,
         [hashtable]$Commands,
         [string]$Description = '',
-        [string]$Id
+        [string]$Id,
+        [string[]]$Tools
     )
     Initialize-PromptParleDefaultAgents
     if (-not $Id) { $Id = ConvertTo-PromptParleAgentId $Name }
     if (-not $Commands) { $Commands = @{} }
-    $agent = New-PromptParleAgentObject -Id $Id -Name $Name -System $System -Profile $Profile -Dial $Dial -Commands $Commands -Description $Description
+    if (-not $Tools -or $Tools.Count -eq 0) {
+        $Tools = @('files', 'workspace', 'secret_scan')
+    }
+    # Keep only known tool ids
+    $known = @{}
+    foreach ($t in @(Get-PromptParleToolCatalog)) { $known[[string]$t.id] = $true }
+    $cleanTools = @()
+    foreach ($t in @($Tools)) {
+        $tid = [string]$t
+        if ($tid -and $known.ContainsKey($tid)) { $cleanTools += $tid }
+    }
+    if ($cleanTools.Count -eq 0) { $cleanTools = @('files', 'workspace', 'secret_scan') }
+
     $path = Join-Path (Get-PromptParleAgentsDir) ($Id + '.json')
-    # Convert commands hashtable cleanly
     $cmdObj = [ordered]@{}
     foreach ($k in $Commands.Keys) { $cmdObj[[string]$k] = [string]$Commands[$k] }
     $out = [ordered]@{
@@ -539,7 +614,7 @@ function Save-PromptParleAgent {
         profile     = $Profile
         dial        = $Dial
         commands    = $cmdObj
-        tools       = @('files')
+        tools       = @($cleanTools)
         updated_at  = (Get-Date).ToString('o')
     }
     ($out | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
@@ -736,6 +811,600 @@ function Format-PromptParleAgentPrompt {
     $sys = $sys.Trim()
     return ("[AGENT: {0}]`n{1}`n`n[USER]`n{2}" -f $agent.name, $sys, $Prompt)
 }
+
+#region Local-first tools (run on this PC before AI tokens are spent)
+
+function Get-PromptParleToolCatalog {
+    <#
+    .SYNOPSIS
+      Base tools available to local agents. All run on the user's machine first.
+    #>
+    [CmdletBinding()]
+    param()
+    return @(
+        [pscustomobject]@{
+            id = 'files'; name = 'Files / attach'
+            category = 'project'; local = $true
+            description = 'Attach files from this PC into chat context.'
+            auto = $false
+        },
+        [pscustomobject]@{
+            id = 'workspace'; name = 'Workspace'
+            category = 'project'; local = $true
+            description = 'Attach a project folder; ls / tree / cat / pack stay local.'
+            auto = $false
+        },
+        [pscustomobject]@{
+            id = 'git'; name = 'Git / GitHub'
+            category = 'project'; local = $true
+            description = 'status, diff, log, clone using YOUR local git credentials.'
+            auto = $false
+        },
+        [pscustomobject]@{
+            id = 'ssh'; name = 'SSH'
+            category = 'project'; local = $true
+            description = 'Remote ls/cat/run; private keys never leave this machine.'
+            auto = $false
+        },
+        [pscustomobject]@{
+            id = 'secret_scan'; name = 'Secret scan'
+            category = 'security'; local = $true
+            description = 'Mask API keys, tokens, and passwords in context before send.'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'code_brief'; name = 'Code brief'
+            category = 'optimize'; local = $true
+            description = 'Strip comment noise and blank runs from code attachments (local).'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'file_index'; name = 'File index'
+            category = 'optimize'; local = $true
+            description = 'Language / size map of the workspace instead of dumping every file.'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'deps'; name = 'Deps map'
+            category = 'optimize'; local = $true
+            description = 'Summarize package.json, requirements, go.mod, etc. locally.'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'git_diff'; name = 'Git diff pack'
+            category = 'optimize'; local = $true
+            description = 'Prefer staged/unstaged diff as context (cheaper than whole files).'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'tree_pack'; name = 'Tree pack'
+            category = 'optimize'; local = $true
+            description = 'Attach a shallow workspace tree for structure without full sources.'
+            auto = $true
+        }
+    )
+}
+
+function Invoke-PromptParleSecretScanLocal {
+    param([string]$Text)
+    if (-not $Text) {
+        return [pscustomobject]@{ text = ''; masked = 0 }
+    }
+    $masked = 0
+    $out = $Text
+    $patterns = @(
+        @{ re = '(?i)(sk-[A-Za-z0-9]{20,})'; rep = 'sk-***MASKED***' },
+        @{ re = '(?i)(sk-ant-[A-Za-z0-9\-_]{20,})'; rep = 'sk-ant-***MASKED***' },
+        @{ re = '(?i)(xai-[A-Za-z0-9]{20,})'; rep = 'xai-***MASKED***' },
+        @{ re = '(?i)(AIza[0-9A-Za-z\-_]{20,})'; rep = 'AIza***MASKED***' },
+        @{ re = '(?i)(ghp_[A-Za-z0-9]{20,})'; rep = 'ghp_***MASKED***' },
+        @{ re = '(?i)(github_pat_[A-Za-z0-9_]{20,})'; rep = 'github_pat_***MASKED***' },
+        @{ re = '(?i)(pp_live_[A-Za-z0-9]{16,})'; rep = 'pp_live_***MASKED***' },
+        @{ re = '(?i)(-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----)'; rep = '-----BEGIN PRIVATE KEY-----***MASKED***-----END PRIVATE KEY-----' },
+        @{ re = '(?i)((?:api[_-]?key|secret|password|token|passwd)\s*[=:]\s*)(["'']?)([^\s"'';]{8,})\2'; rep = '${1}${2}***MASKED***${2}' }
+    )
+    foreach ($p in $patterns) {
+        $before = $out
+        try {
+            $out = [regex]::Replace($out, $p.re, $p.rep)
+        } catch { }
+        if ($out -ne $before) {
+            # rough count of replacements
+            $masked += [Math]::Max(1, [int](($before.Length - $out.Length) / 8))
+        }
+    }
+    return [pscustomobject]@{ text = $out; masked = $masked }
+}
+
+function Invoke-PromptParleCodeBriefLocal {
+    <#
+    .SYNOPSIS
+      Local code thinning: drop comment blocks / blank runs; keep structure. $0 tokens.
+    #>
+    param(
+        [string]$Text,
+        [int]$MaxChars = 120000
+    )
+    if (-not $Text) {
+        return [pscustomobject]@{ text = ''; notes = @(); chars_in = 0; chars_out = 0 }
+    }
+    $charsIn = $Text.Length
+    $lines = $Text -split "`r?`n", -1
+    $outLines = New-Object System.Collections.Generic.List[string]
+    $inBlock = $false
+    $blankRun = 0
+    $commentsDropped = 0
+    foreach ($line in $lines) {
+        $trim = $line.Trim()
+        if ($inBlock) {
+            if ($trim -match '\*/') { $inBlock = $false }
+            $commentsDropped++
+            continue
+        }
+        if ($trim -match '^/\*' -and $trim -notmatch '\*/') {
+            if ($trim -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
+                $inBlock = $true
+                $commentsDropped++
+                continue
+            }
+        }
+        if ($trim -match '^/\*.*\*/$' -and $trim -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
+            $commentsDropped++
+            continue
+        }
+        # line comments (keep TODO/FIXME/SECURITY)
+        if ($trim -match '^\s*//' -or $trim -match '^\s*#(?!!)' -or $trim -match '^\s*;\s' -or $trim -match "^\s*--\s") {
+            if ($trim -notmatch 'TODO|FIXME|HACK|SECURITY|XXX|BUG') {
+                $commentsDropped++
+                continue
+            }
+        }
+        if ($trim -eq '') {
+            $blankRun++
+            if ($blankRun -gt 1) { continue }
+            $outLines.Add('')
+            continue
+        }
+        $blankRun = 0
+        $outLines.Add($line)
+    }
+    $out = ($outLines -join "`n")
+    if ($out.Length -gt $MaxChars) {
+        $out = $out.Substring(0, $MaxChars) + "`n… [code_brief truncated locally]"
+    }
+    $notes = @("code_brief: $charsIn → $($out.Length) chars (dropped ~$commentsDropped comment/blank lines)")
+    return [pscustomobject]@{
+        text      = $out
+        notes     = $notes
+        chars_in  = $charsIn
+        chars_out = $out.Length
+    }
+}
+
+function Get-PromptParleWorkspaceFileIndex {
+    param([int]$MaxFiles = 400)
+    $ws = Get-PromptParleWorkspace
+    if (-not $ws.exists) { throw 'No workspace attached. /workspace <path> first.' }
+    $root = [string]$ws.path
+    $extCount = @{}
+    $total = 0
+    $bytes = [long]0
+    $samples = New-Object System.Collections.Generic.List[string]
+    Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+            $skip = $false
+            foreach ($d in $script:PromptParleSkipDirNames) {
+                if ($rel -match [regex]::Escape([IO.Path]::DirectorySeparatorChar + $d + [IO.Path]::DirectorySeparatorChar) -or
+                    $rel.StartsWith($d + [IO.Path]::DirectorySeparatorChar) -or
+                    $rel.StartsWith($d + '/') -or $rel.StartsWith($d + '\')) {
+                    $skip = $true; break
+                }
+            }
+            -not $skip
+        } |
+        Select-Object -First $MaxFiles |
+        ForEach-Object {
+            $total++
+            $bytes += $_.Length
+            $ext = if ($_.Extension) { $_.Extension.ToLowerInvariant() } else { '(none)' }
+            if (-not $extCount.ContainsKey($ext)) { $extCount[$ext] = 0 }
+            $extCount[$ext]++
+            if ($samples.Count -lt 40) {
+                $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                $samples.Add(("{0}  ({1:N0} B)" -f $rel, $_.Length))
+            }
+        }
+    $lines = @(
+        "FILE INDEX (local) — $root",
+        "Files scanned: $total · ~$([Math]::Round($bytes/1KB, 1)) KB",
+        'By extension:'
+    )
+    foreach ($k in ($extCount.Keys | Sort-Object { -$extCount[$_] })) {
+        $lines += ("  {0,-12} {1}" -f $k, $extCount[$k])
+    }
+    if ($samples.Count) {
+        $lines += 'Sample paths:'
+        foreach ($s in $samples) { $lines += "  $s" }
+    }
+    return ($lines -join "`n")
+}
+
+function Get-PromptParleWorkspaceDepsMap {
+    $ws = Get-PromptParleWorkspace
+    if (-not $ws.exists) { throw 'No workspace attached. /workspace <path> first.' }
+    $root = [string]$ws.path
+    $names = @(
+        'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock',
+        'requirements.txt', 'pyproject.toml', 'Pipfile', 'go.mod', 'Cargo.toml',
+        'composer.json', 'Gemfile', 'pom.xml', 'build.gradle', 'build.gradle.kts',
+        '*.csproj', '*.fsproj', 'Directory.Packages.props'
+    )
+    $chunks = New-Object System.Collections.Generic.List[string]
+    $chunks.Add("DEPS MAP (local) — $root")
+    $found = 0
+    foreach ($pat in $names) {
+        Get-ChildItem -LiteralPath $root -Recurse -File -Filter $pat -ErrorAction SilentlyContinue |
+            Where-Object {
+                $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                $skip = $false
+                foreach ($d in $script:PromptParleSkipDirNames) {
+                    if ($rel -like "*$([IO.Path]::DirectorySeparatorChar)$d$([IO.Path]::DirectorySeparatorChar)*" -or
+                        $rel -like "$d$([IO.Path]::DirectorySeparatorChar)*" -or
+                        $rel -like "$d/*" -or $rel -like "$d\*") { $skip = $true; break }
+                }
+                -not $skip
+            } |
+            Select-Object -First 8 |
+            ForEach-Object {
+                $found++
+                $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                $raw = ''
+                try {
+                    $raw = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop
+                } catch { $raw = '(unreadable)' }
+                if ($raw.Length -gt 6000) {
+                    $raw = $raw.Substring(0, 6000) + "`n… [truncated]"
+                }
+                $chunks.Add("===== $rel =====`n$raw")
+            }
+    }
+    if ($found -eq 0) {
+        $chunks.Add('(no common dependency manifests found)')
+    }
+    return ($chunks -join "`n`n")
+}
+
+function Get-PromptParleGitDiffPack {
+    param([int]$MaxChars = 80000)
+    $ws = Get-PromptParleWorkspace
+    if (-not $ws.exists) { throw 'No workspace attached.' }
+    if (-not $ws.is_git) { throw 'Workspace is not a git repo.' }
+    if (-not (Test-PromptParleCommandAvailable 'git')) { throw 'git not found on PATH' }
+    $root = [string]$ws.path
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add("GIT DIFF PACK (local) — $root")
+    try {
+        $status = & git -C $root status -sb 2>&1 | Out-String
+        $parts.Add("## status`n$status".TrimEnd())
+    } catch { }
+    try {
+        $staged = & git -C $root diff --cached 2>&1 | Out-String
+        if ($staged.Trim()) { $parts.Add("## staged`n$staged".TrimEnd()) }
+    } catch { }
+    try {
+        $unstaged = & git -C $root diff 2>&1 | Out-String
+        if ($unstaged.Trim()) { $parts.Add("## unstaged`n$unstaged".TrimEnd()) }
+    } catch { }
+    $text = ($parts -join "`n`n")
+    if ($text.Length -gt $MaxChars) {
+        $text = $text.Substring(0, $MaxChars) + "`n… [git_diff truncated locally]"
+    }
+    return $text
+}
+
+function Invoke-PromptParleLocalTool {
+    <#
+    .SYNOPSIS
+      Run a local-first tool on this PC (no AI tokens).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ToolId,
+        [string]$Text = '',
+        [string]$Arg = ''
+    )
+    $id = $ToolId.ToLowerInvariant().Trim()
+    switch ($id) {
+        'secret_scan' {
+            $r = Invoke-PromptParleSecretScanLocal -Text $Text
+            return [pscustomobject]@{
+                ok = $true; tool = $id; local = $true
+                text = $r.text; notes = @("secret_scan: masked ~$($r.masked) candidates")
+            }
+        }
+        'code_brief' {
+            $r = Invoke-PromptParleCodeBriefLocal -Text $Text
+            return [pscustomobject]@{
+                ok = $true; tool = $id; local = $true
+                text = $r.text; notes = @($r.notes)
+                chars_in = $r.chars_in; chars_out = $r.chars_out
+            }
+        }
+        'file_index' {
+            $t = Get-PromptParleWorkspaceFileIndex
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('file_index: built on this PC') }
+        }
+        'deps' {
+            $t = Get-PromptParleWorkspaceDepsMap
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('deps: read manifests on this PC') }
+        }
+        'git_diff' {
+            $t = Get-PromptParleGitDiffPack
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('git_diff: local git only') }
+        }
+        'tree_pack' {
+            $depth = 3
+            if ($Arg -match '^\d+$') { $depth = [Math]::Min(5, [Math]::Max(1, [int]$Arg)) }
+            # Reuse slash workspace tree if available via command path
+            $ws = Get-PromptParleWorkspace
+            if (-not $ws.exists) { throw 'No workspace attached.' }
+            $result = Invoke-PromptParleSlashCommand -Line "/workspace tree $depth"
+            $msg = [string](Get-PromptParleProp $result 'message' '')
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $msg; notes = @("tree_pack: depth $depth") }
+        }
+        'workspace' {
+            $ws = Get-PromptParleWorkspace
+            $msg = if ($ws.path) { "Workspace: $($ws.path) ($($ws.kind))" } else { 'No workspace. /workspace <path> or Browse folders.' }
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $msg; notes = @() }
+        }
+        'git' {
+            $t = Get-PromptParleGitStatusText
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @() }
+        }
+        'ssh' {
+            $st = Get-PromptParleSessionState
+            $tgt = [string](Get-PromptParleProp $st 'ssh_target' '')
+            $msg = if ($tgt) { "SSH target: $tgt" } else { 'No SSH target. /ssh user@host' }
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $msg; notes = @() }
+        }
+        'files' {
+            return [pscustomobject]@{
+                ok = $true; tool = $id; local = $true
+                text = 'Use Attach files in the UI or /workspace cat|pack.'
+                notes = @()
+            }
+        }
+        default {
+            throw "Unknown local tool: $ToolId"
+        }
+    }
+}
+
+function Invoke-PromptParleAgentLocalPrep {
+    <#
+    .SYNOPSIS
+      Apply the active agent's local-first tools to context before AI spend.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [string]$Context = '',
+        [string]$AgentId
+    )
+    if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
+    $agent = Get-PromptParleAgent -Name $AgentId
+    $notes = New-Object System.Collections.Generic.List[string]
+    $extra = New-Object System.Collections.Generic.List[string]
+    $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
+    $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
+    $tools = @()
+    if ($agent -and $agent.tools) { $tools = @($agent.tools) }
+
+    $has = {
+        param([string]$Id)
+        return ($tools -contains $Id)
+    }
+
+    # Auto tools that mutate context
+    if (& $has 'secret_scan') {
+        $r1 = Invoke-PromptParleSecretScanLocal -Text $pr
+        $r2 = Invoke-PromptParleSecretScanLocal -Text $ctx
+        $pr = $r1.text
+        $ctx = $r2.text
+        $m = $r1.masked + $r2.masked
+        if ($m -gt 0) { $notes.Add("secret_scan: masked ~$m candidates (local)") }
+    }
+    if ((& $has 'code_brief') -and $ctx -and $ctx.Length -gt 400) {
+        # Only brief when context looks code-like
+        if ($ctx -match '(function |class |def |import |package |using |#include|=>|\{)') {
+            $br = Invoke-PromptParleCodeBriefLocal -Text $ctx
+            $ctx = $br.text
+            foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n) } }
+        }
+    }
+
+    # Auto packs that append structure (cheap) when workspace is set
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
+    if ($ws -and $ws.exists) {
+        if ((& $has 'tree_pack') -and $ctx.Length -lt 2000) {
+            try {
+                $tr = Invoke-PromptParleLocalTool -ToolId 'tree_pack' -Arg '2'
+                if ($tr.text) {
+                    $extra.Add($tr.text)
+                    $notes.Add('tree_pack: attached shallow tree (local)')
+                }
+            } catch { }
+        }
+        if ((& $has 'file_index') -and ($pr -match '(?i)\b(codebase|repo|project|structure|files?|where)\b')) {
+            try {
+                $fi = Invoke-PromptParleLocalTool -ToolId 'file_index'
+                if ($fi.text) {
+                    $extra.Add($fi.text)
+                    $notes.Add('file_index: attached (local)')
+                }
+            } catch { }
+        }
+        if ((& $has 'deps') -and ($pr -match '(?i)\b(dependenc|package\.json|npm|pip|module|import|require)\b')) {
+            try {
+                $dp = Invoke-PromptParleLocalTool -ToolId 'deps'
+                if ($dp.text) {
+                    $extra.Add($dp.text)
+                    $notes.Add('deps: attached manifests (local)')
+                }
+            } catch { }
+        }
+        if ((& $has 'git_diff') -and ($pr -match '(?i)\b(diff|change|pr\b|pull request|review|commit|patch)\b')) {
+            try {
+                $gd = Invoke-PromptParleLocalTool -ToolId 'git_diff'
+                if ($gd.text) {
+                    $extra.Add($gd.text)
+                    $notes.Add('git_diff: attached local diff')
+                }
+            } catch { }
+        }
+    }
+
+    if ($extra.Count -gt 0) {
+        $block = ($extra -join "`n`n")
+        if ($ctx) { $ctx = $ctx + "`n`n" + $block } else { $ctx = $block }
+    }
+
+    return [pscustomobject]@{
+        prompt  = $pr
+        context = $ctx
+        notes   = @($notes.ToArray())
+        tools   = $tools
+        agent   = if ($agent) { $agent.id } else { $AgentId }
+    }
+}
+
+function Optimize-PromptParleAgent {
+    <#
+    .SYNOPSIS
+      Suggest local tools, profile, dial, and a tighter system prompt for an agent.
+      Runs fully on this PC — no AI tokens.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Name = 'Custom agent',
+        [string]$Description = '',
+        [string]$System = '',
+        [string]$Profile = 'general',
+        [int]$Dial = 3,
+        [string[]]$Tools
+    )
+    $blob = ("{0} {1} {2}" -f $Name, $Description, $System).ToLowerInvariant()
+    $suggested = New-Object System.Collections.Generic.List[string]
+    foreach ($base in @('files', 'workspace', 'secret_scan')) { $suggested.Add($base) }
+
+    $profile = if ($Profile) { $Profile } else { 'general' }
+    $dialOut = if ($Dial -ge 1 -and $Dial -le 5) { $Dial } else { 3 }
+    $reasons = New-Object System.Collections.Generic.List[string]
+
+    if ($blob -match 'code|review|refactor|bug|function|class|typescript|python|powershell|developer|api') {
+        $profile = 'developer'
+        $dialOut = 2
+        foreach ($t in @('code_brief', 'git', 'git_diff', 'file_index', 'deps', 'tree_pack')) {
+            if (-not ($suggested -contains $t)) { $suggested.Add($t) }
+        }
+        $reasons.Add('Code-oriented language → developer profile + code_brief / git / deps tools')
+    }
+    if ($blob -match 'secur|threat|vuln|cve|audit|exploit|firewall|auth') {
+        $profile = 'security-review'
+        $dialOut = 3
+        foreach ($t in @('secret_scan', 'code_brief', 'git_diff', 'file_index')) {
+            if (-not ($suggested -contains $t)) { $suggested.Add($t) }
+        }
+        $reasons.Add('Security language → security-review + secret_scan / git_diff')
+    }
+    if ($blob -match 'doc|policy|obligat|compliance|summar|manual|spec') {
+        if ($profile -eq 'general') { $profile = 'documentation' }
+        foreach ($t in @('tree_pack')) {
+            if (-not ($suggested -contains $t)) { $suggested.Add($t) }
+        }
+        $reasons.Add('Document language → documentation profile + tree_pack')
+    }
+    if ($blob -match 'log|syslog|splunk|siem|trace') {
+        $profile = 'log-analysis'
+        $dialOut = 4
+        $reasons.Add('Log language → log-analysis profile, higher dial for noisy text')
+    }
+    if ($blob -match 'ssh|remote|server|host') {
+        if (-not ($suggested -contains 'ssh')) { $suggested.Add('ssh') }
+        $reasons.Add('Remote/server language → ssh tool')
+    }
+    if ($blob -match 'git|github|pull request|commit|branch') {
+        if (-not ($suggested -contains 'git')) { $suggested.Add('git') }
+        if (-not ($suggested -contains 'git_diff')) { $suggested.Add('git_diff') }
+        $reasons.Add('Git language → git + git_diff')
+    }
+
+    # Merge user tools
+    if ($Tools) {
+        foreach ($t in @($Tools)) {
+            if ($t -and -not ($suggested -contains $t)) { $suggested.Add([string]$t) }
+        }
+    }
+
+    # Tighten system: strip filler, keep intent (local, heuristic)
+    $sys = if ($System) { $System.Trim() } else { '' }
+    if (-not $sys) {
+        $sys = "You are $Name. Be precise, cite evidence from attached local context, and prefer concrete actions."
+        if ($Description) { $sys += " Focus: $Description" }
+        $reasons.Add('Generated a short system brief (none provided)')
+    } else {
+        # Collapse whitespace / soft filler phrases
+        $sys2 = [regex]::Replace($sys, '\s+', ' ').Trim()
+        $sys2 = [regex]::Replace($sys2, '(?i)\b(please|kindly|very carefully|as much as possible)\b', '').Trim()
+        $sys2 = [regex]::Replace($sys2, '\s{2,}', ' ').Trim()
+        if ($sys2.Length -lt $sys.Length) {
+            $reasons.Add("System brief tightened locally ($($sys.Length) → $($sys2.Length) chars)")
+            $sys = $sys2
+        }
+        if ($sys.Length -gt 1200) {
+            $sys = $sys.Substring(0, 1200).Trim() + '…'
+            $reasons.Add('System brief capped at 1200 chars (local)')
+        }
+    }
+
+    # Prefer local-first reminder in system
+    if ($sys -notmatch '(?i)local|workspace|attached') {
+        $sys = $sys.TrimEnd('.') + '. Prefer evidence from attached local workspace/tools; do not invent files.'
+        $reasons.Add('Added local-evidence preference to system brief')
+    }
+
+    $catalog = @(Get-PromptParleToolCatalog)
+    $toolDetails = @()
+    foreach ($t in $suggested) {
+        $meta = $catalog | Where-Object { $_.id -eq $t } | Select-Object -First 1
+        if ($meta) {
+            $toolDetails += @{
+                id          = $meta.id
+                name        = $meta.name
+                description = $meta.description
+                category    = $meta.category
+                auto        = [bool]$meta.auto
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        ok          = $true
+        name        = $Name
+        description = $Description
+        system      = $sys
+        profile     = $profile
+        dial        = $dialOut
+        tools       = @($suggested)
+        tool_details = $toolDetails
+        reasons     = @($reasons)
+        tip         = 'Local tools run on this PC first (code brief, secret scan, git diff, file index) so fewer tokens hit the model.'
+    }
+}
+
+#endregion Local-first tools
 
 #region Workspace / Git / GitHub / SSH (local-only — credentials never leave this PC)
 
@@ -1569,6 +2238,9 @@ Commands (type in chat instead of a normal message):
   /agent [name]         Show or switch agent
   /agent new <name> | system text…   Create agent (system after |)
   /agent delete <name>  Delete a custom agent
+  /agent optimize …     Suggest local tools + tighter system (no AI tokens)
+  /tools                List local-first tools (run on this PC)
+  /tool <id> [arg]      Run a local tool now (file_index, deps, git_diff, …)
   /dial [1-5]           Compression dial
   /profile [name]       Optimization profile
   /provider [id]        openai | anthropic | gemini | grok
@@ -1576,6 +2248,11 @@ Commands (type in chat instead of a normal message):
   /usage                Cloud token savings summary
   /clear                Clear chat (UI) / screen (CLI)
   /quit                 Stop (CLI)
+
+Local-first tools (enabled per agent — run before AI tokens):
+  secret_scan  code_brief  file_index  deps  git_diff  tree_pack
+  + workspace / git / ssh / files
+  UI: Agent → Manage to create agents and pick tools
 
 Workspace & local directories (paths stay on this PC):
   /workspace            Show attached folder/repo
@@ -1726,12 +2403,57 @@ Session
             } elseif ($arg -match '^(new|create)\s+(\S+)(?:\s*\|\s*(.*))?$') {
                 $newName = $Matches[2]
                 $sys = if ($Matches[3]) { $Matches[3].Trim() } else { '' }
-                $created = Save-PromptParleAgent -Name $newName -System $sys -Profile $state.profile -Dial $state.dial -Description 'Custom agent'
+                $optNew = Optimize-PromptParleAgent -Name $newName -System $sys -Description 'Custom agent' -Profile $state.profile -Dial $state.dial
+                $created = Save-PromptParleAgent -Name $newName -System $optNew.system -Profile $optNew.profile -Dial $optNew.dial `
+                    -Description 'Custom agent' -Tools @($optNew.tools)
                 Set-PromptParleActiveAgent -Name $created.id | Out-Null
                 $state.active_agent = $created.id
                 $state.profile = $created.profile
                 $state.dial = $created.dial
-                $message = "Created and activated agent '$($created.name)' ($($created.id)). Edit system later with /agent new again or edit ~/.promptparle/agents/$($created.id).json"
+                $toolStr = (@($created.tools) -join ', ')
+                $message = @"
+Created and activated agent '$($created.name)' ($($created.id))
+  Profile : $($created.profile) · Dial $($created.dial)/5
+  Tools   : $toolStr
+  (Local tools run on this PC before AI tokens.)
+Edit in UI: Agent → Manage · or ~/.promptparle/agents/$($created.id).json
+"@
+            } elseif ($arg -match '^(optimize)\s*(.*)$') {
+                $optArg = if ($Matches[2]) { $Matches[2].Trim() } else { '' }
+                $agOpt = $null
+                $nameOpt = ''
+                $sysOpt = ''
+                $descOpt = ''
+                if ($optArg -match '^(\S+)(?:\s*\|\s*(.*))?$') {
+                    $nameOpt = $Matches[1]
+                    $sysOpt = if ($Matches[2]) { $Matches[2].Trim() } else { '' }
+                    $agOpt = Get-PromptParleAgent -Name $nameOpt
+                } else {
+                    $agOpt = Get-PromptParleAgent -Name $state.active_agent
+                    $nameOpt = if ($agOpt) { $agOpt.name } else { 'Custom agent' }
+                }
+                if ($agOpt -and -not $sysOpt) {
+                    $sysOpt = [string]$agOpt.system
+                    $descOpt = [string]$agOpt.description
+                }
+                $optRes = Optimize-PromptParleAgent -Name $nameOpt -System $sysOpt -Description $descOpt `
+                    -Profile $(if ($agOpt) { $agOpt.profile } else { $state.profile }) `
+                    -Dial $(if ($agOpt) { [int]$agOpt.dial } else { [int]$state.dial }) `
+                    -Tools $(if ($agOpt) { @($agOpt.tools) } else { @() })
+                $reasonLines = if ($optRes.reasons) { ($optRes.reasons | ForEach-Object { "  - $_" }) -join "`n" } else { '  (no changes suggested)' }
+                $message = @"
+Agent optimize (local — 0 AI tokens)
+  Name    : $($optRes.name)
+  Profile : $($optRes.profile) · Dial $($optRes.dial)/5
+  Tools   : $(($optRes.tools) -join ', ')
+Reasons:
+$reasonLines
+System:
+$($optRes.system)
+
+Apply: /agent new $($optRes.name) | $($optRes.system)
+Or use Agent → Manage → Optimize in the UI, then Save.
+"@
             } elseif ($arg -match '^(delete|rm|remove)\s+(\S+)$') {
                 $delName = $Matches[2]
                 try {
@@ -1791,6 +2513,37 @@ Session
         '^/optimize$' {
             $state.optimize_only = -not [bool]$state.optimize_only
             $message = if ($state.optimize_only) { 'Optimize-only ON (no AI spend until toggled off)' } else { 'Optimize-only OFF (full AI calls)' }
+        }
+        '^/tools$' {
+            $lines = @('Local-first tools (run on this PC — 0 AI tokens):')
+            foreach ($t in @(Get-PromptParleToolCatalog)) {
+                $auto = if ($t.auto) { 'auto' } else { 'manual' }
+                $lines += ("  {0,-12} [{1}] {2}" -f $t.id, $auto, $t.description)
+            }
+            $lines += 'Run: /tool code_brief   /tool file_index   /tool deps   /tool git_diff'
+            $lines += 'Assign tools when creating agents (UI Manage or /agent new).'
+            $message = $lines -join "`n"
+        }
+        '^/tool$' {
+            if (-not $arg) {
+                $message = 'Usage: /tool <id> [arg]   e.g. /tool file_index · /tool tree_pack 2 · /tool code_brief'
+            } else {
+                $tParts = $arg -split '\s+', 2
+                $tid = $tParts[0]
+                $targ = if ($tParts.Count -gt 1) { $tParts[1] } else { '' }
+                try {
+                    # For code_brief/secret_scan without text, hint to attach files
+                    $run = Invoke-PromptParleLocalTool -ToolId $tid -Text '' -Arg $targ
+                    $note = if ($run.notes) { ($run.notes -join '; ') } else { '' }
+                    $message = "Tool $($run.tool) (local)`n$note`n`n$($run.text)"
+                    if ($run.text -and $tid -match '^(file_index|deps|git_diff|tree_pack|git|workspace)$') {
+                        # Surface as attachable context via files array when supported
+                        $files = @(@{ name = "$tid.txt"; content = [string]$run.text })
+                    }
+                } catch {
+                    $message = "Tool error: $_"
+                }
+            }
         }
         '^/usage$' {
             try {
@@ -3503,33 +4256,227 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                     continue
                 }
 
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/tools') {
+                    try {
+                        $tools = @(Get-PromptParleToolCatalog)
+                        $items = @()
+                        foreach ($t in $tools) {
+                            $items += @{
+                                id          = [string]$t.id
+                                name        = [string]$t.name
+                                category    = [string]$t.category
+                                local       = [bool]$t.local
+                                auto        = [bool]$t.auto
+                                description = [string]$t.description
+                            }
+                        }
+                        $payload = @{ ok = $true; tools = $items } | ConvertTo-Json -Depth 6 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/tools/run') {
+                    try {
+                        $encT = $req.ContentEncoding
+                        if (-not $encT) { $encT = [System.Text.Encoding]::UTF8 }
+                        $readerT = New-Object System.IO.StreamReader($req.InputStream, $encT)
+                        $rawT = $readerT.ReadToEnd()
+                        $readerT.Close()
+                        $bodyT = ConvertFrom-PromptParleJson -Json $rawT
+                        $toolId = [string](Get-PromptParleProp $bodyT 'tool' (Get-PromptParleProp $bodyT 'id' ''))
+                        if (-not $toolId) { throw 'Missing tool id' }
+                        $textT = [string](Get-PromptParleProp $bodyT 'text' '')
+                        $argT = [string](Get-PromptParleProp $bodyT 'arg' '')
+                        $run = Invoke-PromptParleLocalTool -ToolId $toolId -Text $textT -Arg $argT
+                        $payload = ($run | ConvertTo-Json -Depth 6 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/agents') {
                     try {
                         $list = @(Get-PromptParleAgentList)
                         $items = @()
                         foreach ($a in $list) {
                             $cmdList = @()
+                            $cmdMap = [ordered]@{}
                             if ($a.commands) {
-                                foreach ($k in $a.commands.Keys) { $cmdList += [string]$k }
+                                foreach ($k in $a.commands.Keys) {
+                                    $cmdList += [string]$k
+                                    $cmdMap[[string]$k] = [string]$a.commands[$k]
+                                }
                             }
+                            $toolList = @()
+                            if ($a.tools) { foreach ($t in @($a.tools)) { if ($t) { $toolList += [string]$t } } }
                             $items += @{
                                 id          = $a.id
                                 name        = $a.name
                                 description = $a.description
+                                system      = $a.system
                                 profile     = $a.profile
                                 dial        = [int]$a.dial
                                 commands    = $cmdList
+                                command_map = $cmdMap
+                                tools       = $toolList
+                                builtin     = [bool](Get-PromptParleProp $a 'builtin' $false)
                             }
                         }
                         $payload = @{
                             ok           = $true
                             agents       = $items
                             active_agent = (Get-PromptParleActiveAgentId)
-                        } | ConvertTo-Json -Depth 6 -Compress
+                            tools        = @(Get-PromptParleToolCatalog | ForEach-Object {
+                                @{
+                                    id = $_.id; name = $_.name; category = $_.category
+                                    local = [bool]$_.local; auto = [bool]$_.auto
+                                    description = $_.description
+                                }
+                            })
+                        } | ConvertTo-Json -Depth 8 -Compress
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
                     } catch {
                         $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/agents') {
+                    try {
+                        $encA = $req.ContentEncoding
+                        if (-not $encA) { $encA = [System.Text.Encoding]::UTF8 }
+                        $readerA = New-Object System.IO.StreamReader($req.InputStream, $encA)
+                        $rawA = $readerA.ReadToEnd()
+                        $readerA.Close()
+                        $bodyA = ConvertFrom-PromptParleJson -Json $rawA
+                        $nameA = [string](Get-PromptParleProp $bodyA 'name' '')
+                        if (-not $nameA) { throw 'Missing name' }
+                        $idA = [string](Get-PromptParleProp $bodyA 'id' '')
+                        $sysA = [string](Get-PromptParleProp $bodyA 'system' '')
+                        $descA = [string](Get-PromptParleProp $bodyA 'description' '')
+                        $profA = [string](Get-PromptParleProp $bodyA 'profile' 'general')
+                        $dialA = 3
+                        $dRaw = Get-PromptParleProp $bodyA 'dial' $null
+                        if ($null -ne $dRaw) { try { $dialA = [int]$dRaw } catch { $dialA = 3 } }
+                        $toolsA = @()
+                        $toolsRaw = Get-PromptParleProp $bodyA 'tools' $null
+                        if ($null -ne $toolsRaw) {
+                            foreach ($t in @($toolsRaw)) { if ($t) { $toolsA += [string]$t } }
+                        }
+                        $cmds = @{}
+                        $cmdRaw = Get-PromptParleProp $bodyA 'commands' $null
+                        if ($null -eq $cmdRaw) { $cmdRaw = Get-PromptParleProp $bodyA 'command_map' $null }
+                        if ($null -ne $cmdRaw) {
+                            if ($cmdRaw -is [hashtable]) {
+                                foreach ($k in $cmdRaw.Keys) { $cmds[[string]$k] = [string]$cmdRaw[$k] }
+                            } else {
+                                $cmdRaw.PSObject.Properties | ForEach-Object {
+                                    $cmds[[string]$_.Name] = [string]$_.Value
+                                }
+                            }
+                        }
+                        # Optional slash command pairs: [{name,prompt}]
+                        $cmdListRaw = Get-PromptParleProp $bodyA 'command_list' $null
+                        if ($null -ne $cmdListRaw) {
+                            foreach ($c in @($cmdListRaw)) {
+                                $cn = [string](Get-PromptParleProp $c 'name' (Get-PromptParleProp $c 'id' ''))
+                                $cp = [string](Get-PromptParleProp $c 'prompt' (Get-PromptParleProp $c 'text' ''))
+                                if ($cn -and $cp) {
+                                    $ck = ($cn.ToLowerInvariant() -replace '[^a-z0-9]+', '').Trim()
+                                    if ($ck) { $cmds[$ck] = $cp }
+                                }
+                            }
+                        }
+                        $saveParams = @{
+                            Name        = $nameA
+                            System      = $sysA
+                            Description = $descA
+                            Profile     = $profA
+                            Dial        = $dialA
+                            Commands    = $cmds
+                            Tools       = $toolsA
+                        }
+                        if ($idA) { $saveParams.Id = $idA }
+                        $saved = Save-PromptParleAgent @saveParams
+                        $activate = Get-PromptParleProp $bodyA 'activate' $false
+                        if ($activate -eq $true) {
+                            Set-PromptParleActiveAgent -Name $saved.id | Out-Null
+                        }
+                        $payload = @{
+                            ok     = $true
+                            agent  = @{
+                                id          = $saved.id
+                                name        = $saved.name
+                                description = $saved.description
+                                system      = $saved.system
+                                profile     = $saved.profile
+                                dial        = [int]$saved.dial
+                                tools       = @($saved.tools)
+                            }
+                            active_agent = (Get-PromptParleActiveAgentId)
+                            message = "Saved agent '$($saved.name)' ($($saved.id))"
+                        } | ConvertTo-Json -Depth 6 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/agents/optimize') {
+                    try {
+                        $encO = $req.ContentEncoding
+                        if (-not $encO) { $encO = [System.Text.Encoding]::UTF8 }
+                        $readerO = New-Object System.IO.StreamReader($req.InputStream, $encO)
+                        $rawO = $readerO.ReadToEnd()
+                        $readerO.Close()
+                        $bodyO = ConvertFrom-PromptParleJson -Json $rawO
+                        $toolsO = @()
+                        $trO = Get-PromptParleProp $bodyO 'tools' $null
+                        if ($null -ne $trO) { foreach ($t in @($trO)) { if ($t) { $toolsO += [string]$t } } }
+                        $opt = Optimize-PromptParleAgent `
+                            -Name ([string](Get-PromptParleProp $bodyO 'name' 'Custom agent')) `
+                            -Description ([string](Get-PromptParleProp $bodyO 'description' '')) `
+                            -System ([string](Get-PromptParleProp $bodyO 'system' '')) `
+                            -Profile ([string](Get-PromptParleProp $bodyO 'profile' 'general')) `
+                            -Dial $(
+                                $d = Get-PromptParleProp $bodyO 'dial' 3
+                                try { [int]$d } catch { 3 }
+                            ) `
+                            -Tools $toolsO
+                        $payload = ($opt | ConvertTo-Json -Depth 8 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'DELETE' -and $path -eq '/api/agents') {
+                    try {
+                        $delId = [string]$req.QueryString['id']
+                        if (-not $delId) { $delId = [string]$req.QueryString['name'] }
+                        if (-not $delId) { throw 'Missing id query param' }
+                        Remove-PromptParleAgent -Name $delId | Out-Null
+                        $payload = @{
+                            ok           = $true
+                            message      = "Deleted agent '$delId'"
+                            active_agent = (Get-PromptParleActiveAgentId)
+                        } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
                     continue
                 }
@@ -3578,11 +4525,6 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                         # StrictMode: never touch $body.foo if foo may be absent
                         $prompt = [string](Get-PromptParleProp $body 'prompt' '')
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
-                        # Apply active agent system brief (local free feature)
-                        $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
-                        if ($skipAgent -ne $true) {
-                            $prompt = Format-PromptParleAgentPrompt -Prompt $prompt
-                        }
                         $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
                         if (-not $provider) { $provider = 'openai' }
                         $profile = [string](Get-PromptParleProp $body 'profile' 'general')
@@ -3604,9 +4546,24 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
 
                         $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
 
+                        # Local-first: agent tools (secret scan, code brief, tree/deps/diff) before AI tokens
+                        $localNotes = @()
+                        $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
+                        if ($skipAgent -ne $true) {
+                            try {
+                                $prep = Invoke-PromptParleAgentLocalPrep -Prompt $prompt -Context $(if ($context) { $context } else { '' })
+                                $prompt = [string]$prep.prompt
+                                if ($prep.context) { $context = [string]$prep.context }
+                                if ($prep.notes) { $localNotes = @($prep.notes) }
+                            } catch {
+                                Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
+                            }
+                            $prompt = Format-PromptParleAgentPrompt -Prompt $prompt
+                        }
+
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} profile={1} dial={2} optimize_only={3} prompt={4}c context={5}c images={6}" -f `
-                            $provider, $profile, $dial, $optOnly, $prompt.Length, $ctxLen, $images.Count) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} profile={1} dial={2} optimize_only={3} prompt={4}c context={5}c images={6} local_tools={7}" -f `
+                            $provider, $profile, $dial, $optOnly, $prompt.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
 
                         $params = @{
                             Prompt            = $prompt
@@ -3650,6 +4607,7 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                                 notes                   = @(Get-PromptParleProp $metaIn 'notes' @())
                                 signals                 = Get-PromptParleProp $metaIn 'signals' @{}
                                 image_count             = 0
+                                local_tools             = @($localNotes)
                             }
                             $imgC = Get-PromptParleProp $metaIn 'image_count'
                             if ($null -eq $imgC) { $imgC = Get-PromptParleProp $metaIn 'imageCount' }
@@ -3660,6 +4618,12 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                             $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
                             if ($metaOut.token_reduction_percent -eq 0 -and $metaOut.original_tokens -gt 0 -and -not $metaOut.expanded) {
                                 $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
+                            }
+                            if ($localNotes -and $localNotes.Count -gt 0) {
+                                $mergedNotes = @()
+                                foreach ($n in @($metaOut.notes)) { if ($n) { $mergedNotes += [string]$n } }
+                                foreach ($n in @($localNotes)) { if ($n) { $mergedNotes += [string]$n } }
+                                $metaOut.notes = $mergedNotes
                             }
                         }
                         $payload = [ordered]@{

@@ -186,8 +186,23 @@ Add-Content $PROFILE "Import-Module PromptParle"
 ### Local UI features
 
 - **Left menu:** Chat history · Agent / Provider / Dial · Project connections (This PC / SSH / Git)  
+- **Agents → Manage:** create custom agents on this PC, pick **local-first tools**, Optimize agent (0 AI tokens)  
 - **Top right:** version badge · **Update** · Help · ⋯ menu  
 - **Chat history** is stored in the browser (localStorage) on this PC only  
+
+### Local-first tools (run on your PC before AI tokens)
+
+| Tool | What it does |
+|------|----------------|
+| `secret_scan` | Mask keys/tokens in context before send |
+| `code_brief` | Strip comment noise / blank runs from code |
+| `file_index` | Language/size map of the workspace |
+| `deps` | Summarize package.json / requirements / go.mod… |
+| `git_diff` | Prefer local staged/unstaged diff over whole files |
+| `tree_pack` | Shallow workspace tree for structure |
+| `workspace` / `git` / `ssh` / `files` | Project connections you already use |
+
+Assign tools per agent in **Manage**. Auto tools run on send when relevant.
 
 ### Slash commands (type in chat)
 
@@ -195,6 +210,9 @@ Add-Content $PROFILE "Import-Module PromptParle"
 /help                 help
 /status               agent, workspace, ssh, dial
 /agents · /agent name
+/agent new Name | system brief…
+/agent optimize [name]
+/tools · /tool file_index|deps|git_diff|code_brief
 /dial 1-5 · /provider · /optimize · /usage · /clear
 
 # Project folder on this PC
