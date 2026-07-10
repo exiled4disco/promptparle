@@ -654,6 +654,7 @@ function Get-PromptParleSessionState {
         dial              = 3
         model             = $null
         optimize_only     = $false
+        tools_enabled     = $true
         workspace_path    = ''
         workspace_kind    = 'none'
         workspace_recent  = @()
@@ -671,6 +672,9 @@ function Get-PromptParleSessionState {
             if ($null -ne $d) { try { $state.dial = [int]$d } catch { } }
             $o = Get-PromptParleProp $s 'optimize_only'
             if ($null -ne $o) { $state.optimize_only = [bool]$o }
+            # Default ON when key missing (older session.json)
+            $te = Get-PromptParleProp $s 'tools_enabled' $null
+            if ($null -ne $te) { $state.tools_enabled = [bool]$te } else { $state.tools_enabled = $true }
             $sp = Get-PromptParleProp $s 'ssh_port'
             if ($null -ne $sp) { try { $state.ssh_port = [int]$sp } catch { } }
             $rec = Get-PromptParleProp $s 'workspace_recent'
@@ -712,6 +716,7 @@ function New-PromptParleSessionSnapshot {
         [int]$Dial = -1,
         $Model = $null,
         $OptimizeOnly = $null,
+        $ToolsEnabled = $null,
         [string]$WorkspacePath,
         [string]$WorkspaceKind,
         $WorkspaceRecent = $null,
@@ -732,6 +737,13 @@ function New-PromptParleSessionSnapshot {
             }
         }
     }
+    $toolsEn = $true
+    if ($null -ne $ToolsEnabled) {
+        $toolsEn = [bool]$ToolsEnabled
+    } else {
+        $baseTe = Get-PromptParleProp $Base 'tools_enabled' $null
+        if ($null -ne $baseTe) { $toolsEn = [bool]$baseTe } else { $toolsEn = $true }
+    }
     $out = [ordered]@{
         active_agent     = if ($PSBoundParameters.ContainsKey('ActiveAgent') -and $ActiveAgent) { $ActiveAgent } else { [string](Get-PromptParleProp $Base 'active_agent' 'default') }
         provider         = if ($PSBoundParameters.ContainsKey('Provider') -and $Provider) { $Provider } else { [string](Get-PromptParleProp $Base 'provider' 'openai') }
@@ -739,6 +751,7 @@ function New-PromptParleSessionSnapshot {
         dial             = if ($Dial -ge 1) { $Dial } else { [int](Get-PromptParleProp $Base 'dial' 3) }
         model            = if ($PSBoundParameters.ContainsKey('Model')) { $Model } else { Get-PromptParleProp $Base 'model' $null }
         optimize_only    = if ($null -ne $OptimizeOnly) { [bool]$OptimizeOnly } else { [bool](Get-PromptParleProp $Base 'optimize_only' $false) }
+        tools_enabled    = $toolsEn
         workspace_path   = if ($PSBoundParameters.ContainsKey('WorkspacePath')) { [string]$WorkspacePath } else { [string](Get-PromptParleProp $Base 'workspace_path' '') }
         workspace_kind   = if ($PSBoundParameters.ContainsKey('WorkspaceKind')) { [string]$WorkspaceKind } else { [string](Get-PromptParleProp $Base 'workspace_kind' 'none') }
         workspace_recent = $recent
@@ -762,6 +775,8 @@ function Save-PromptParleSessionState {
             if ($item -and "$item".Trim()) { $recent += [string]$item }
         }
     }
+    $toolsEnSave = Get-PromptParleProp $State 'tools_enabled' $null
+    if ($null -eq $toolsEnSave) { $toolsEnSave = $true } else { $toolsEnSave = [bool]$toolsEnSave }
     $out = [ordered]@{
         active_agent     = [string](Get-PromptParleProp $State 'active_agent' 'default')
         provider         = [string](Get-PromptParleProp $State 'provider' 'openai')
@@ -769,6 +784,7 @@ function Save-PromptParleSessionState {
         dial             = [int](Get-PromptParleProp $State 'dial' 3)
         model            = Get-PromptParleProp $State 'model' $null
         optimize_only    = [bool](Get-PromptParleProp $State 'optimize_only' $false)
+        tools_enabled    = $toolsEnSave
         workspace_path   = [string](Get-PromptParleProp $State 'workspace_path' '')
         workspace_kind   = [string](Get-PromptParleProp $State 'workspace_kind' 'none')
         workspace_recent = $recent
@@ -1184,13 +1200,18 @@ function Invoke-PromptParleLocalTool {
 function Invoke-PromptParleAgentLocalPrep {
     <#
     .SYNOPSIS
-      Apply the active agent's local-first tools to context before AI spend.
+      Session local-first prep before AI spend. When Tools is ON (default), useful
+      tools run automatically — user does not have to force each tool.
+      Dial controls how aggressively code is thinned locally.
     #>
     [CmdletBinding()]
     param(
         [string]$Prompt = '',
         [string]$Context = '',
-        [string]$AgentId
+        [string]$AgentId,
+        [bool]$ToolsEnabled = $true,
+        [int]$Dial = 3,
+        [string]$Profile = ''
     )
     if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
     $agent = Get-PromptParleAgent -Name $AgentId
@@ -1198,69 +1219,115 @@ function Invoke-PromptParleAgentLocalPrep {
     $extra = New-Object System.Collections.Generic.List[string]
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
-    $tools = @()
-    if ($agent -and $agent.tools) { $tools = @($agent.tools) }
 
-    $has = {
-        param([string]$Id)
-        return ($tools -contains $Id)
-    }
-
-    # Auto tools that mutate context
-    if (& $has 'secret_scan') {
-        $r1 = Invoke-PromptParleSecretScanLocal -Text $pr
-        $r2 = Invoke-PromptParleSecretScanLocal -Text $ctx
-        $pr = $r1.text
-        $ctx = $r2.text
-        $m = $r1.masked + $r2.masked
-        if ($m -gt 0) { $notes.Add("secret_scan: masked ~$m candidates (local)") }
-    }
-    if ((& $has 'code_brief') -and $ctx -and $ctx.Length -gt 400) {
-        # Only brief when context looks code-like
-        if ($ctx -match '(function |class |def |import |package |using |#include|=>|\{)') {
-            $br = Invoke-PromptParleCodeBriefLocal -Text $ctx
-            $ctx = $br.text
-            foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n) } }
+    if (-not $ToolsEnabled) {
+        $notes.Add('tools: off (session) — raw context, dial only via gateway')
+        return [pscustomobject]@{
+            prompt  = $pr
+            context = $ctx
+            notes   = @($notes.ToArray())
+            tools   = @()
+            agent   = if ($agent) { $agent.id } else { $AgentId }
+            tools_enabled = $false
         }
     }
 
-    # Auto packs that append structure (cheap) when workspace is set
+    if ($Dial -lt 1) { $Dial = 1 }
+    if ($Dial -gt 5) { $Dial = 5 }
+    $prof = $Profile
+    if (-not $prof -and $agent) { $prof = [string]$agent.profile }
+    if (-not $prof) { $prof = 'general' }
+
+    # Session Tools ON → full auto set (agent tools are optional extras, not required)
+    $tools = @('secret_scan', 'code_brief', 'file_index', 'deps', 'git_diff', 'tree_pack', 'workspace', 'git', 'files')
+    if ($agent -and $agent.tools) {
+        foreach ($t in @($agent.tools)) {
+            if ($t -and ($tools -notcontains [string]$t)) { $tools += [string]$t }
+        }
+    }
+
+    # 1) Always mask secrets when Tools on
+    $r1 = Invoke-PromptParleSecretScanLocal -Text $pr
+    $r2 = Invoke-PromptParleSecretScanLocal -Text $ctx
+    $pr = $r1.text
+    $ctx = $r2.text
+    $m = $r1.masked + $r2.masked
+    if ($m -gt 0) { $notes.Add("secret_scan: masked ~$m candidates (local)") }
+
+    # 2) Code brief when context looks like code or is large — dial tightens max chars
+    $codeLike = $ctx -and (
+        $ctx -match '(function |class |def |import |package |using |#include|=>|\bconst\b|\blet\b|\bvar\b|\{)' -or
+        $ctx -match '===== FILE:' -or
+        $ctx.Length -gt 2500
+    )
+    if ($codeLike -and $ctx.Length -gt 300) {
+        $maxChars = switch ($Dial) {
+            1 { 160000 }
+            2 { 120000 }
+            3 { 90000 }
+            4 { 60000 }
+            5 { 40000 }
+            default { 90000 }
+        }
+        $br = Invoke-PromptParleCodeBriefLocal -Text $ctx -MaxChars $maxChars
+        $ctx = $br.text
+        foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n + " · dial $Dial") } }
+    }
+
+    # 3) Workspace-aware packs when useful (not forced by user)
     $ws = $null
     try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
+    $blob = ("{0}`n{1}" -f $pr, $prof).ToLowerInvariant()
+    $thinCtx = $ctx.Length -lt 1800
+    $noAttach = $ctx.Length -lt 80
+
     if ($ws -and $ws.exists) {
-        if ((& $has 'tree_pack') -and $ctx.Length -lt 2000) {
+        # Structure: cheap tree when little context attached
+        if ($thinCtx -or $noAttach -or $blob -match 'structure|layout|where is|codebase|project|repo') {
             try {
-                $tr = Invoke-PromptParleLocalTool -ToolId 'tree_pack' -Arg '2'
-                if ($tr.text) {
-                    $extra.Add($tr.text)
-                    $notes.Add('tree_pack: attached shallow tree (local)')
+                $depth = if ($Dial -ge 4) { '2' } else { '3' }
+                $tr = Invoke-PromptParleLocalTool -ToolId 'tree_pack' -Arg $depth
+                if ($tr.text -and $tr.text.Length -gt 20) {
+                    $extra.Add([string]$tr.text)
+                    $notes.Add("tree_pack: shallow tree (local, dial $Dial)")
                 }
             } catch { }
         }
-        if ((& $has 'file_index') -and ($pr -match '(?i)\b(codebase|repo|project|structure|files?|where)\b')) {
+
+        # File index when exploring / thin context / developer-ish profiles
+        if ($noAttach -or $thinCtx -or $blob -match 'file|codebase|repo|project|structure|find|where|index' -or $prof -match 'developer|security') {
             try {
                 $fi = Invoke-PromptParleLocalTool -ToolId 'file_index'
                 if ($fi.text) {
-                    $extra.Add($fi.text)
-                    $notes.Add('file_index: attached (local)')
+                    $extra.Add([string]$fi.text)
+                    $notes.Add('file_index: workspace map (local)')
                 }
             } catch { }
         }
-        if ((& $has 'deps') -and ($pr -match '(?i)\b(dependenc|package\.json|npm|pip|module|import|require)\b')) {
+
+        # Deps when dependencies matter or thin context on a code workspace
+        if ($blob -match 'dependenc|package\.json|npm|pip|module|import|require|version|upgrade' -or
+            ($thinCtx -and $prof -match 'developer|security')) {
             try {
                 $dp = Invoke-PromptParleLocalTool -ToolId 'deps'
-                if ($dp.text) {
-                    $extra.Add($dp.text)
-                    $notes.Add('deps: attached manifests (local)')
+                if ($dp.text -and $dp.text -notmatch 'no common dependency') {
+                    $extra.Add([string]$dp.text)
+                    $notes.Add('deps: manifests (local)')
                 }
             } catch { }
         }
-        if ((& $has 'git_diff') -and ($pr -match '(?i)\b(diff|change|pr\b|pull request|review|commit|patch)\b')) {
+
+        # Git diff when reviewing changes — or auto if repo dirty and prompt is review-ish
+        $wantDiff = $blob -match 'diff|change|pr\b|pull request|review|commit|patch|what changed|delta'
+        if (-not $wantDiff -and $ws.is_git -and ($prof -match 'developer|security' -or $blob -match 'bug|fix|error')) {
+            $wantDiff = $true
+        }
+        if ($wantDiff -and $ws.is_git) {
             try {
                 $gd = Invoke-PromptParleLocalTool -ToolId 'git_diff'
-                if ($gd.text) {
-                    $extra.Add($gd.text)
-                    $notes.Add('git_diff: attached local diff')
+                if ($gd.text -and $gd.text.Length -gt 40) {
+                    $extra.Add([string]$gd.text)
+                    $notes.Add('git_diff: local diff pack')
                 }
             } catch { }
         }
@@ -1271,12 +1338,18 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($ctx) { $ctx = $ctx + "`n`n" + $block } else { $ctx = $block }
     }
 
+    if ($notes.Count -eq 0) {
+        $notes.Add('tools: on — no local packs needed this turn (secret_scan clean)')
+    }
+
     return [pscustomobject]@{
-        prompt  = $pr
-        context = $ctx
-        notes   = @($notes.ToArray())
-        tools   = $tools
-        agent   = if ($agent) { $agent.id } else { $AgentId }
+        prompt        = $pr
+        context       = $ctx
+        notes         = @($notes.ToArray())
+        tools         = $tools
+        agent         = if ($agent) { $agent.id } else { $AgentId }
+        tools_enabled = $true
+        dial          = $Dial
     }
 }
 
@@ -2239,7 +2312,7 @@ Commands (type in chat instead of a normal message):
   /agent new <name> | system text…   Create agent (system after |)
   /agent delete <name>  Delete a custom agent
   /agent optimize …     Suggest local tools + tighter system (no AI tokens)
-  /tools                List local-first tools (run on this PC)
+  /tools [on|off]       Session local tools (default ON — auto before tokens)
   /tool <id> [arg]      Run a local tool now (file_index, deps, git_diff, …)
   /dial [1-5]           Compression dial
   /profile [name]       Optimization profile
@@ -2308,7 +2381,8 @@ function Invoke-PromptParleSlashCommand {
         [string]$Profile,
         [int]$Dial = -1,
         [string]$Model,
-        [bool]$OptimizeOnly = $false
+        [bool]$OptimizeOnly = $false,
+        $ToolsEnabled = $null
     )
 
     $line = $Line.Trim()
@@ -2329,7 +2403,8 @@ function Invoke-PromptParleSlashCommand {
         -Provider $(if ($Provider) { $Provider } else { $null }) `
         -Profile $(if ($Profile) { $Profile } else { $null }) `
         -Dial $Dial `
-        -OptimizeOnly $OptimizeOnly
+        -OptimizeOnly $OptimizeOnly `
+        -ToolsEnabled $ToolsEnabled
     if ($PSBoundParameters.ContainsKey('Model')) {
         $state = New-PromptParleSessionSnapshot -Base $state -Model $Model
     }
@@ -2374,6 +2449,7 @@ Session
   Dial      : $($state.dial)/5
   Model     : $(if ($state.model) { $state.model } else { '(default)' })
   Optimize  : $($state.optimize_only)
+  Tools     : $(if ($state.tools_enabled) { 'ON (local prep before tokens)' } else { 'off' })
   Workspace : $wsLine
   SSH       : $sshLine
   Commands  : $(if ($cmds.Count) { $cmds -join ' ' } else { '(none)' })
@@ -2515,14 +2591,28 @@ Or use Agent → Manage → Optimize in the UI, then Save.
             $message = if ($state.optimize_only) { 'Optimize-only ON (no AI spend until toggled off)' } else { 'Optimize-only OFF (full AI calls)' }
         }
         '^/tools$' {
-            $lines = @('Local-first tools (run on this PC — 0 AI tokens):')
-            foreach ($t in @(Get-PromptParleToolCatalog)) {
-                $auto = if ($t.auto) { 'auto' } else { 'manual' }
-                $lines += ("  {0,-12} [{1}] {2}" -f $t.id, $auto, $t.description)
+            if ($arg -match '^(on|1|true|enable)$') {
+                $state.tools_enabled = $true
+                $message = 'Tools ON — local prep (secret scan, code brief, git diff, …) runs automatically before AI tokens. Dial still applies.'
+            } elseif ($arg -match '^(off|0|false|disable)$') {
+                $state.tools_enabled = $false
+                $message = 'Tools OFF — raw context only; dial/gateway compression still applies.'
+            } else {
+                $onOff = if ($state.tools_enabled) { 'ON' } else { 'OFF' }
+                $lines = @(
+                    "Session Tools: $onOff (sidebar checkbox next to Dial; default ON)",
+                    'When ON, useful local tools run automatically before tokens — you do not force each one.',
+                    'Toggle: /tools on  ·  /tools off',
+                    '',
+                    'Catalog (0 AI tokens on this PC):'
+                )
+                foreach ($t in @(Get-PromptParleToolCatalog)) {
+                    $auto = if ($t.auto) { 'auto' } else { 'manual' }
+                    $lines += ("  {0,-12} [{1}] {2}" -f $t.id, $auto, $t.description)
+                }
+                $lines += 'Manual run: /tool file_index · /tool deps · /tool git_diff · /tool code_brief'
+                $message = $lines -join "`n"
             }
-            $lines += 'Run: /tool code_brief   /tool file_index   /tool deps   /tool git_diff'
-            $lines += 'Assign tools when creating agents (UI Manage or /agent new).'
-            $message = $lines -join "`n"
         }
         '^/tool$' {
             if (-not $arg) {
@@ -2865,6 +2955,7 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
         dial            = [int]$state.dial
         model           = $state.model
         optimize_only   = [bool]$state.optimize_only
+        tools_enabled   = if ($null -ne (Get-PromptParleProp $state 'tools_enabled' $null)) { [bool]$state.tools_enabled } else { $true }
         workspace_path   = [string]$wsOut.path
         workspace_kind   = [string]$wsOut.kind
         workspace_branch = $wsOut.branch
@@ -4150,6 +4241,7 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                             dial             = [int]$st.dial
                             model            = $st.model
                             optimize_only    = [bool]$st.optimize_only
+                            tools_enabled    = if ($null -ne (Get-PromptParleProp $st 'tools_enabled' $null)) { [bool]$st.tools_enabled } else { $true }
                             workspace_path   = [string]$ws.path
                             workspace_kind   = [string]$ws.kind
                             workspace_branch = $ws.branch
@@ -4499,10 +4591,14 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                         $optOnlyC = $false
                         $optFlagC = Get-PromptParleProp $bodyC 'optimize_only' (Get-PromptParleProp $bodyC 'optimizeOnly' $null)
                         if ($optFlagC -eq $true) { $optOnlyC = $true }
+                        $toolsEnC = $null
+                        $teFlagC = Get-PromptParleProp $bodyC 'tools_enabled' (Get-PromptParleProp $bodyC 'toolsEnabled' $null)
+                        if ($null -ne $teFlagC) { $toolsEnC = [bool]$teFlagC }
                         $cmdParams = @{ Line = $lineC; OptimizeOnly = $optOnlyC }
                         if ($provC) { $cmdParams.Provider = $provC }
                         if ($profC) { $cmdParams.Profile = $profC }
                         if ($dialC -ge 1) { $cmdParams.Dial = $dialC }
+                        if ($null -ne $toolsEnC) { $cmdParams.ToolsEnabled = $toolsEnC }
                         $resultC = Invoke-PromptParleSlashCommand @cmdParams
                         $jsonC = ($resultC | ConvertTo-Json -Depth 8 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $jsonC
@@ -4546,14 +4642,37 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
 
                         $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
 
-                        # Local-first: agent tools (secret scan, code brief, tree/deps/diff) before AI tokens
+                        # Session Tools (default ON) + dial: local prep before AI tokens
                         $localNotes = @()
+                        $toolsEnChat = $true
+                        $teBody = Get-PromptParleProp $body 'tools_enabled' (Get-PromptParleProp $body 'toolsEnabled' $null)
+                        if ($null -ne $teBody) {
+                            $toolsEnChat = [bool]$teBody
+                        } else {
+                            try {
+                                $stChat = Get-PromptParleSessionState
+                                if ($null -ne (Get-PromptParleProp $stChat 'tools_enabled' $null)) {
+                                    $toolsEnChat = [bool]$stChat.tools_enabled
+                                }
+                            } catch { $toolsEnChat = $true }
+                        }
+                        # Persist tools toggle from UI each chat
+                        try {
+                            $stSave = Get-PromptParleSessionState
+                            $stSave = New-PromptParleSessionSnapshot -Base $stSave -ToolsEnabled $toolsEnChat -Dial $dial -Profile $profile -Provider $provider -OptimizeOnly $optOnly
+                            Save-PromptParleSessionState -State $stSave
+                        } catch { }
+
                         $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
                         if ($skipAgent -ne $true) {
                             try {
-                                $prep = Invoke-PromptParleAgentLocalPrep -Prompt $prompt -Context $(if ($context) { $context } else { '' })
+                                $prep = Invoke-PromptParleAgentLocalPrep -Prompt $prompt `
+                                    -Context $(if ($context) { $context } else { '' }) `
+                                    -ToolsEnabled $toolsEnChat `
+                                    -Dial $dial `
+                                    -Profile $profile
                                 $prompt = [string]$prep.prompt
-                                if ($prep.context) { $context = [string]$prep.context }
+                                if ($null -ne $prep.context) { $context = [string]$prep.context }
                                 if ($prep.notes) { $localNotes = @($prep.notes) }
                             } catch {
                                 Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
@@ -4562,8 +4681,8 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                         }
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} profile={1} dial={2} optimize_only={3} prompt={4}c context={5}c images={6} local_tools={7}" -f `
-                            $provider, $profile, $dial, $optOnly, $prompt.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} profile={1} dial={2} tools={3} optimize_only={4} prompt={5}c context={6}c images={7} local_notes={8}" -f `
+                            $provider, $profile, $dial, $toolsEnChat, $optOnly, $prompt.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
 
                         $params = @{
                             Prompt            = $prompt

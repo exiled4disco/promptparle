@@ -367,6 +367,8 @@
       flex-direction: column;
       gap: .75rem;
       scroll-behavior: smooth;
+      scrollbar-width: thin;
+      scrollbar-color: #2a3a55 #0a0e16;
     }
     .msg {
       max-width: min(92%, 52rem);
@@ -516,6 +518,39 @@
       width: min(560px, 100%); max-height: min(80vh, 720px); overflow: auto;
       background: var(--card); border: 1px solid var(--border); border-radius: 14px;
       padding: 1rem 1.1rem 1.1rem; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+      /* Dark scrollbars — brand match (not light OS chrome) */
+      scrollbar-width: thin;
+      scrollbar-color: #2a3a55 #0a0e16;
+    }
+    .modal.help-modal {
+      width: min(860px, 100%);
+      max-height: min(88vh, 920px);
+    }
+    .modal::-webkit-scrollbar,
+    .chat::-webkit-scrollbar,
+    .agent-modal::-webkit-scrollbar,
+    .tool-grid::-webkit-scrollbar,
+    .agent-list::-webkit-scrollbar {
+      width: 10px; height: 10px;
+    }
+    .modal::-webkit-scrollbar-track,
+    .chat::-webkit-scrollbar-track,
+    .agent-modal::-webkit-scrollbar-track,
+    .tool-grid::-webkit-scrollbar-track,
+    .agent-list::-webkit-scrollbar-track {
+      background: #0a0e16; border-radius: 8px;
+    }
+    .modal::-webkit-scrollbar-thumb,
+    .chat::-webkit-scrollbar-thumb,
+    .agent-modal::-webkit-scrollbar-thumb,
+    .tool-grid::-webkit-scrollbar-thumb,
+    .agent-list::-webkit-scrollbar-thumb {
+      background: #2a3a55; border-radius: 8px;
+      border: 2px solid #0a0e16;
+    }
+    .modal::-webkit-scrollbar-thumb:hover,
+    .chat::-webkit-scrollbar-thumb:hover {
+      background: #3d5275;
     }
     .modal h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
     .modal .sub { color: var(--muted); font-size: .82rem; margin-bottom: .75rem; }
@@ -528,7 +563,31 @@
       border-radius: 10px; font-size: .78rem; line-height: 1.45; white-space: pre-wrap;
       color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
+    .modal.help-modal pre {
+      font-size: .8rem;
+      column-count: 1;
+    }
+    @media (min-width: 720px) {
+      .modal.help-modal .help-cols {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 .9rem;
+        align-items: start;
+      }
+      .modal.help-modal .help-cols .help-span {
+        grid-column: 1 / -1;
+      }
+    }
     .modal .row-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .85rem; }
+    .checks.dial-tools {
+      display: flex; flex-wrap: wrap; gap: .35rem .85rem; margin-top: .35rem;
+    }
+    .checks.dial-tools label {
+      display: inline-flex; align-items: center; gap: .35rem;
+      font-size: .72rem; color: var(--muted); cursor: pointer; margin: 0;
+    }
+    .checks.dial-tools label strong { color: var(--text); font-weight: 600; }
+    .checks.dial-tools input[type=checkbox] { accent-color: var(--accent); }
     .hidden-profile { display: none !important; }
     .info-stats {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
@@ -679,9 +738,16 @@
                 <span class="hint" id="dialHint"> · ~45–60% fewer</span>
               </div>
             </div>
-          </div>
-          <div class="checks">
-            <label><input type="checkbox" id="optimizeOnly" /> Optimize only</label>
+            <div class="checks dial-tools">
+              <label title="Run local tools automatically before AI tokens (secret scan, code brief, git diff, …)">
+                <input type="checkbox" id="toolsEnabled" checked />
+                <strong>Tools</strong>
+              </label>
+              <label title="Optimize context only — do not call the AI provider">
+                <input type="checkbox" id="optimizeOnly" />
+                Optimize only
+              </label>
+            </div>
           </div>
         </div>
 
@@ -766,37 +832,45 @@
   </div>
 
   <div class="modal-backdrop" id="helpModal" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
-    <div class="modal">
+    <div class="modal help-modal">
       <h2 id="helpTitle">Help &amp; commands</h2>
-      <div class="sub">Type these in the chat box (same as CLI). Agent shortcuts change with the active agent.</div>
+      <div class="sub">Type these in chat (same as CLI). With <strong>Tools</strong> on (default), useful local tools + dial run before AI tokens — no extra steps.</div>
 
+      <div class="help-cols">
+      <div>
       <h3>Session</h3>
       <pre>/help                 this help
-/status               agent, workspace, ssh, dial
+/status               agent, workspace, ssh, dial, tools
 /agents · /agent &lt;name&gt;
-/agent new Name | system brief…
+/agent new Name | system…
 /agent optimize [name]
-/tools · /tool file_index|deps|git_diff|code_brief
+/tools [on|off]       session local tools (default on)
+/tool file_index|deps|git_diff|code_brief
 /dial 1-5 · /provider · /optimize · /usage · /clear
-UI: Agent → Manage — create agents + pick local tools</pre>
-
+Sidebar: Dial + Tools (auto on) · Agent → Manage</pre>
+      </div>
+      <div>
       <h3>Chat history</h3>
-      <pre>Sidebar → History: switch past chats, New chat, delete (×)
+      <pre>Sidebar → History: switch chats, New, delete (×)
 ⋯ menu → New chat
-/clear                clears the active chat only
-History stays in this browser (localStorage)</pre>
+/clear                active chat only
+History: this browser (localStorage)</pre>
 
-      <h3>Project connections (sidebar buttons)</h3>
-      <pre>This PC → Browse / Detach
-SSH → Connect / Detach
-Git/GitHub → Connect (clone) / Detach
-
-Also: /workspace · /git · /github · /ssh</pre>
-
-      <h3>Agent shortcuts (examples)</h3>
+      <h3>Agent shortcuts</h3>
       <pre>security:  /audit  /threats
 docs:      /summary  /risks
 code:      /review  /explain</pre>
+      </div>
+      <div class="help-span">
+      <h3>Project connections</h3>
+      <pre>This PC → Browse / Detach · SSH → Connect / Detach · Git/GitHub → Connect / Detach
+Also: /workspace · /git · /github · /ssh   (paths &amp; keys stay on this PC)</pre>
+
+      <h3>Local-first tools (Tools ON)</h3>
+      <pre>Before tokens: secret_scan · code_brief · file_index · deps · git_diff · tree_pack when useful
+Dial still compresses via the gateway. Toggle Tools off only if you want raw context.</pre>
+      </div>
+      </div>
 
       <h3>Account &amp; server</h3>
       <div class="row-actions">
@@ -969,6 +1043,7 @@ code:      /review  /explain</pre>
     const form = document.getElementById('form');
     const sendBtn = document.getElementById('send');
     const optimizeOnlyEl = document.getElementById('optimizeOnly');
+    const toolsEnabledEl = document.getElementById('toolsEnabled');
     const fileInput = document.getElementById('fileInput');
     const chipsEl = document.getElementById('chips');
     const attachBtn = document.getElementById('attachBtn');
@@ -1950,7 +2025,8 @@ code:      /review  /explain</pre>
           provider: providerEl.value,
           profile: profileEl.value,
           dial: parseInt(dialEl.value, 10) || 3,
-          optimize_only: !!optimizeOnlyEl.checked
+          optimize_only: !!optimizeOnlyEl.checked,
+            tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         })
       });
       let data = {};
@@ -2305,6 +2381,11 @@ code:      /review  /explain</pre>
       if (typeof s.optimize_only === 'boolean') {
         optimizeOnlyEl.checked = s.optimize_only;
       }
+      if (typeof s.tools_enabled === 'boolean' && toolsEnabledEl) {
+        toolsEnabledEl.checked = s.tools_enabled;
+      } else if (toolsEnabledEl && typeof s.tools_enabled === 'undefined') {
+        toolsEnabledEl.checked = true; // default ON
+      }
       if (s.active_agent && agentSelect) {
         // option may not exist yet if agents still loading — set after load too
         if (agentSelect.querySelector('option[value="' + s.active_agent + '"]')) {
@@ -2612,7 +2693,8 @@ code:      /review  /explain</pre>
             provider: providerEl.value,
             profile: profileEl.value,
             dial: parseInt(dialEl.value, 10) || 3,
-            optimize_only: !!optimizeOnlyEl.checked
+            optimize_only: !!optimizeOnlyEl.checked,
+            tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
           })
         });
         const data = await res.json();
@@ -2643,7 +2725,8 @@ code:      /review  /explain</pre>
           provider: providerEl.value,
           profile: profileEl.value,
           dial: parseInt(dialEl.value, 10) || 3,
-          optimize_only: !!optimizeOnlyEl.checked
+          optimize_only: !!optimizeOnlyEl.checked,
+            tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         })
       });
       const data = await res.json();
@@ -2943,6 +3026,18 @@ code:      /review  /explain</pre>
       });
     });
 
+    // Session Tools (default ON) — auto local prep before tokens; persist via /tools
+    if (toolsEnabledEl) {
+      toolsEnabledEl.addEventListener('change', async function () {
+        var on = !!toolsEnabledEl.checked;
+        try {
+          await runSlash(on ? '/tools on' : '/tools off');
+        } catch (e) {
+          addMsg('sys', 'Could not set Tools: ' + (e.message || e), null, true);
+        }
+      });
+    }
+
     checkVersion();
     loadAgents().then(loadSession);
     refreshAttachHint();
@@ -3044,9 +3139,10 @@ code:      /review  /explain</pre>
       const wait = document.createElement('div');
       wait.className = 'msg sys';
       wait.id = 'waiting';
+      var toolsOn = !toolsEnabledEl || toolsEnabledEl.checked;
       wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing (dial ' + dialNow + '/5 · agent ' + (agentSelect.value || 'default') + ')…'
-        : 'Sending (dial ' + dialNow + '/5 · ' + (agentSelect.value || 'default') + ')' +
+        ? 'Optimizing (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · ' + (agentSelect.value || 'default') + ')…'
+        : 'Sending (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · ' + (agentSelect.value || 'default') + ')' +
           (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') + '…';
       chat.appendChild(wait);
       scrollChatToBottom();
@@ -3061,7 +3157,8 @@ code:      /review  /explain</pre>
           compression_level: dialNow,
           prompt: prompt,
           context: context || undefined,
-          optimize_only: !!optimizeOnlyEl.checked
+          optimize_only: !!optimizeOnlyEl.checked,
+            tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         };
         if (images.length && !optimizeOnlyEl.checked) {
           payload.images = images;
