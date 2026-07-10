@@ -10,7 +10,10 @@ export default async function UsagePage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const usage = await getUsageSummary(user.id, { plan: user.plan });
+  const usage = await getUsageSummary(user.id, {
+    plan: user.plan,
+    includePromptBodies: true,
+  });
 
   return (
     <div className="grid gap-6">

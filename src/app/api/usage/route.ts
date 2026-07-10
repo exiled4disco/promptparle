@@ -5,7 +5,10 @@ import { getUsageSummary } from "@/lib/usage";
 export async function GET() {
   try {
     const user = await requireUser();
-    const summary = await getUsageSummary(user.id);
+    // Portal session API may include stored prompt bodies for history compare UI.
+    const summary = await getUsageSummary(user.id, {
+      includePromptBodies: true,
+    });
     return NextResponse.json(summary);
   } catch (err) {
     if (err instanceof AuthError) {

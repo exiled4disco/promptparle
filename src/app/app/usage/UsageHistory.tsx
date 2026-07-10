@@ -13,11 +13,12 @@ export type UsageRow = {
   status: string;
   createdAt: string | Date;
   promptPreview: string | null;
-  originalText: string | null;
-  optimizedText: string | null;
-  originalTruncated: boolean;
-  optimizedTruncated: boolean;
-  errorMessage: string | null;
+  /** Present only when portal loads with includePromptBodies */
+  originalText?: string | null;
+  optimizedText?: string | null;
+  originalTruncated?: boolean;
+  optimizedTruncated?: boolean;
+  errorMessage?: string | null;
   reductionPercent: number;
   tokensSaved: number;
   hasCompare: boolean;
@@ -141,15 +142,15 @@ export function UsageHistory({
                   <ComparePane
                     title="Before (original)"
                     subtitle={`${formatNumber(row.originalTokens)} tokens`}
-                    text={row.originalText}
-                    truncated={row.originalTruncated}
+                    text={row.originalText ?? null}
+                    truncated={Boolean(row.originalTruncated)}
                     emptyHint="No original text stored for this request."
                   />
                   <ComparePane
                     title="After (optimized)"
                     subtitle={`${formatNumber(row.optimizedTokens)} tokens · saved ${formatNumber(row.tokensSaved)}`}
-                    text={row.optimizedText}
-                    truncated={row.optimizedTruncated}
+                    text={row.optimizedText ?? null}
+                    truncated={Boolean(row.optimizedTruncated)}
                     emptyHint="No optimized text stored for this request."
                     accent
                   />

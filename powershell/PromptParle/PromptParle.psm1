@@ -2067,6 +2067,31 @@ function Start-PromptParleLocalServer {
                     continue
                 }
 
+                # Lightweight cloud proxies for local UI modals (JSON only — no portal HTML/SSR)
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/usage') {
+                    try {
+                        $result = Invoke-PromptParleApi -Method GET -Path '/api/v1/usage?recent=5'
+                        $json = ($result | ConvertTo-Json -Depth 8 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/api-keys') {
+                    try {
+                        $result = Invoke-PromptParleApi -Method GET -Path '/api/v1/api-keys'
+                        $json = ($result | ConvertTo-Json -Depth 8 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/session') {
                     try {
                         $st = Get-PromptParleSessionState

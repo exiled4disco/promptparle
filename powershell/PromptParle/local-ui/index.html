@@ -331,6 +331,33 @@
       background: #0a0e16;
     }
     .hidden-profile { display: none !important; }
+    .info-stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: .45rem; margin: .5rem 0 .75rem;
+    }
+    .info-stat {
+      background: #0a0e16; border: 1px solid var(--border); border-radius: 10px;
+      padding: .55rem .65rem;
+    }
+    .info-stat .lbl { font-size: .68rem; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+    .info-stat .val { font-size: 1.05rem; font-weight: 700; margin-top: .15rem; color: var(--text); }
+    .info-stat .val.ok { color: var(--success); }
+    .info-list { list-style: none; margin: 0; padding: 0; }
+    .info-list li {
+      display: flex; justify-content: space-between; gap: .5rem; align-items: baseline;
+      padding: .45rem 0; border-bottom: 1px solid var(--border); font-size: .82rem;
+    }
+    .info-list li:last-child { border-bottom: 0; }
+    .info-list .name { color: var(--text); font-weight: 600; }
+    .info-list .meta { color: var(--muted); font-size: .75rem; text-align: right; }
+    .pill {
+      display: inline-block; font-size: .68rem; padding: .1rem .4rem; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--muted);
+    }
+    .pill.on { color: var(--success); border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
+    .pill.off { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.1); }
+    .info-loading, .info-error { color: var(--muted); font-size: .85rem; padding: .5rem 0; }
+    .info-error { color: #fecaca; }
   </style>
 </head>
 <body>
@@ -401,9 +428,9 @@
           <button type="button" class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">⋯</button>
           <div class="menu" id="appMenu" role="menu">
             <button type="button" id="menuHelp">Help &amp; slash commands</button>
-            <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
-            <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage / savings</a>
-            <a href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">API keys</a>
+            <button type="button" id="menuProviders" data-info="providers">Providers</button>
+            <button type="button" id="menuUsage" data-info="usage">Usage / savings</button>
+            <button type="button" id="menuApiKeys" data-info="api-keys">API keys</button>
             <div class="sep"></div>
             <button type="button" id="menuUpdate">Update client</button>
             <div class="sep"></div>
@@ -455,16 +482,30 @@
 docs:      /summary  /risks
 code:      /review  /explain</pre>
 
-      <h3>Portal &amp; server</h3>
+      <h3>Account &amp; server</h3>
       <div class="row-actions">
-        <a class="icon-btn" href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
-        <a class="icon-btn" href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage</a>
-        <a class="icon-btn" href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">API keys</a>
+        <button type="button" class="icon-btn" data-info="providers">Providers</button>
+        <button type="button" class="icon-btn" data-info="usage">Usage</button>
+        <button type="button" class="icon-btn" data-info="api-keys">API keys</button>
         <button type="button" class="icon-btn" id="helpUpdate">Update client</button>
         <button type="button" class="stop-btn" id="helpStop" style="width:auto">Stop server</button>
       </div>
       <div class="row-actions">
         <button type="button" class="secondary" id="helpClose">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cloud account glance (API JSON only — Edit opens portal when needed) -->
+  <div class="modal-backdrop" id="infoModal" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
+    <div class="modal">
+      <h2 id="infoTitle">Account</h2>
+      <div class="sub" id="infoSub">Loaded via API — no full portal page until you edit.</div>
+      <div id="infoBody" class="info-loading">Loading…</div>
+      <div class="row-actions">
+        <a class="icon-btn" id="infoEdit" href="#" target="_blank" rel="noreferrer">Edit in portal</a>
+        <button type="button" class="secondary" id="infoRefresh">Refresh</button>
+        <button type="button" class="secondary" id="infoClose">Close</button>
       </div>
     </div>
   </div>
@@ -497,6 +538,13 @@ code:      /review  /explain</pre>
     const menuBtn = document.getElementById('menuBtn');
     const appMenu = document.getElementById('appMenu');
     const helpModal = document.getElementById('helpModal');
+    const infoModal = document.getElementById('infoModal');
+    const infoTitle = document.getElementById('infoTitle');
+    const infoSub = document.getElementById('infoSub');
+    const infoBody = document.getElementById('infoBody');
+    const infoEdit = document.getElementById('infoEdit');
+    const PORTAL = 'https://promptparle.com';
+    let infoKind = null;
 
     const DIAL_META = {
       1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
@@ -1108,6 +1156,177 @@ code:      /review  /explain</pre>
 
     updateBtn.addEventListener('click', function () { runUpdate(); });
 
+    // —— Cloud account modals (API pull, portal only for edit) ——
+    function closeInfo() {
+      infoModal.classList.remove('open');
+      infoKind = null;
+    }
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+    function fmtN(n) {
+      const x = Number(n || 0);
+      return x.toLocaleString();
+    }
+    function fmtWhen(v) {
+      if (!v) return '—';
+      try {
+        const d = new Date(v);
+        if (isNaN(d.getTime())) return String(v);
+        return d.toLocaleString();
+      } catch (e) { return String(v); }
+    }
+    function pick(obj) {
+      // PowerShell ConvertTo-Json may PascalCase; prefer snake_case then camel then Pascal
+      const keys = Array.prototype.slice.call(arguments, 1);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (obj && obj[k] != null) return obj[k];
+        if (!obj || !k) continue;
+        const pascal = k.replace(/(^|_)([a-z])/g, function (_, __, c) { return c.toUpperCase(); });
+        if (obj[pascal] != null) return obj[pascal];
+      }
+      return undefined;
+    }
+
+    function renderProviders(data) {
+      const list = pick(data, 'providers') || [];
+      if (!list.length) {
+        return '<p class="info-error">No providers returned. Is your API key set?</p>';
+      }
+      let html = '<ul class="info-list">';
+      list.forEach(function (p) {
+        const id = pick(p, 'id') || '';
+        const name = pick(p, 'name') || id;
+        const model = pick(p, 'default_model', 'defaultModel') || '';
+        const ok = !!pick(p, 'configured');
+        html += '<li><span class="name">' + esc(name) +
+          (model ? ' <span class="meta" style="display:inline;margin-left:.35rem">' + esc(model) + '</span>' : '') +
+          '</span><span class="pill ' + (ok ? 'on' : 'off') + '">' +
+          (ok ? 'configured' : 'not set') + '</span></li>';
+      });
+      html += '</ul>';
+      return html;
+    }
+
+    function renderUsage(data) {
+      const reqs = pick(data, 'request_count', 'requestCount') || 0;
+      const orig = pick(data, 'original_tokens', 'originalTokens') || 0;
+      const opt = pick(data, 'optimized_tokens', 'optimizedTokens') || 0;
+      const saved = pick(data, 'tokens_saved', 'tokensSaved') || Math.max(0, orig - opt);
+      const pct = pick(data, 'reduction_percent', 'reductionPercent') || 0;
+      const plan = pick(data, 'plan') || '';
+      let html =
+        '<div class="info-stats">' +
+          '<div class="info-stat"><div class="lbl">Requests</div><div class="val">' + fmtN(reqs) + '</div></div>' +
+          '<div class="info-stat"><div class="lbl">Tokens saved</div><div class="val ok">' + fmtN(saved) + '</div></div>' +
+          '<div class="info-stat"><div class="lbl">Reduction</div><div class="val ok">' + esc(pct) + '%</div></div>' +
+          '<div class="info-stat"><div class="lbl">Plan</div><div class="val" style="font-size:.9rem">' + esc(plan || '—') + '</div></div>' +
+        '</div>' +
+        '<div class="sub" style="margin:0 0 .4rem">' + fmtN(orig) + ' → ' + fmtN(opt) + ' tokens (lifetime completed)</div>';
+      const recent = pick(data, 'recent') || [];
+      if (recent.length) {
+        html += '<h3>Recent</h3><ul class="info-list">';
+        recent.slice(0, 5).forEach(function (r) {
+          const prov = pick(r, 'provider') || '?';
+          const o = pick(r, 'original_tokens', 'originalTokens') || 0;
+          const t = pick(r, 'optimized_tokens', 'optimizedTokens') || 0;
+          const rp = pick(r, 'reduction_percent', 'reductionPercent');
+          const when = fmtWhen(pick(r, 'created_at', 'createdAt'));
+          html += '<li><span class="name">' + esc(prov) +
+            (rp != null ? ' <span class="pill on">−' + esc(rp) + '%</span>' : '') +
+            '</span><span class="meta">' + fmtN(o) + '→' + fmtN(t) + '<br>' + esc(when) + '</span></li>';
+        });
+        html += '</ul>';
+      } else {
+        html += '<p class="info-loading">No requests yet — send a chat or run Invoke-PromptParle.</p>';
+      }
+      return html;
+    }
+
+    function renderApiKeys(data) {
+      const keys = pick(data, 'keys') || [];
+      if (!keys.length) {
+        return '<p class="info-loading">No desktop API keys yet. Create one in the portal.</p>';
+      }
+      let html = '<ul class="info-list">';
+      keys.forEach(function (k) {
+        const name = pick(k, 'name') || 'key';
+        const prefix = pick(k, 'key_prefix', 'keyPrefix') || 'pp_live_…';
+        const status = pick(k, 'status') || '';
+        const cur = !!pick(k, 'is_current', 'isCurrent');
+        const last = fmtWhen(pick(k, 'last_used_at', 'lastUsedAt'));
+        html += '<li><span class="name">' + esc(name) +
+          (cur ? ' <span class="pill on">this client</span>' : '') +
+          ' <span class="pill ' + (status === 'active' ? 'on' : 'off') + '">' + esc(status) + '</span>' +
+          '<div class="meta" style="text-align:left;margin-top:.15rem">' + esc(prefix) + '…</div></span>' +
+          '<span class="meta">last used<br>' + esc(last) + '</span></li>';
+      });
+      html += '</ul>';
+      return html;
+    }
+
+    async function loadInfo(kind) {
+      infoKind = kind;
+      const meta = {
+        providers: {
+          title: 'AI Providers',
+          sub: 'Which provider keys are on your account (read-only API).',
+          path: '/api/providers',
+          edit: PORTAL + '/app/providers',
+          editLabel: 'Edit providers',
+          render: renderProviders
+        },
+        usage: {
+          title: 'Usage & savings',
+          sub: 'Token savings from the cloud API — no full portal page load.',
+          path: '/api/usage',
+          edit: PORTAL + '/app/usage',
+          editLabel: 'Open full history',
+          render: renderUsage
+        },
+        'api-keys': {
+          title: 'API keys',
+          sub: 'Desktop keys (prefix only). Full secrets never leave the portal create flow.',
+          path: '/api/api-keys',
+          edit: PORTAL + '/app/api-keys',
+          editLabel: 'Create / revoke keys',
+          render: renderApiKeys
+        }
+      }[kind];
+      if (!meta) return;
+
+      closeMenu();
+      closeHelp();
+      infoTitle.textContent = meta.title;
+      infoSub.textContent = meta.sub;
+      infoEdit.href = meta.edit;
+      infoEdit.textContent = meta.editLabel;
+      infoBody.className = 'info-loading';
+      infoBody.textContent = 'Loading…';
+      infoModal.classList.add('open');
+
+      try {
+        const res = await fetch(meta.path, { cache: 'no-store' });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (!res.ok) {
+          throw new Error(data.error || data.Error || ('HTTP ' + res.status));
+        }
+        infoBody.className = '';
+        infoBody.innerHTML = meta.render(data);
+      } catch (e) {
+        infoBody.className = 'info-error';
+        infoBody.innerHTML =
+          '<p class="info-error">' + esc(e.message || e) + '</p>' +
+          '<p class="info-loading">Check Set-PromptParleApiKey, then Refresh. Or use Edit to open the portal.</p>';
+      }
+    }
+
+    function openInfo(kind) { loadInfo(kind); }
+
     // Help modal + ⋯ menu
     helpBtn.addEventListener('click', openHelp);
     document.getElementById('menuHelp').addEventListener('click', openHelp);
@@ -1115,8 +1334,16 @@ code:      /review  /explain</pre>
     helpModal.addEventListener('click', function (e) {
       if (e.target === helpModal) closeHelp();
     });
+    infoModal.addEventListener('click', function (e) {
+      if (e.target === infoModal) closeInfo();
+    });
+    document.getElementById('infoClose').addEventListener('click', closeInfo);
+    document.getElementById('infoRefresh').addEventListener('click', function () {
+      if (infoKind) loadInfo(infoKind);
+    });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
+        closeInfo();
         closeHelp();
         closeMenu();
       }
@@ -1132,6 +1359,14 @@ code:      /review  /explain</pre>
     document.getElementById('helpUpdate').addEventListener('click', function () { runUpdate(); });
     document.getElementById('menuStop').addEventListener('click', function () { stopServer(); });
     document.getElementById('helpStop').addEventListener('click', function () { stopServer(); });
+
+    // Menu + help: open API glance modals instead of navigating to portal pages
+    document.querySelectorAll('[data-info]').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.preventDefault();
+        openInfo(el.getAttribute('data-info'));
+      });
+    });
 
     // Keep agent meta chip in sync when dial moves
     dialEl.addEventListener('input', function () {

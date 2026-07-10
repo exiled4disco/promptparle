@@ -13,7 +13,11 @@ export default async function DashboardPage() {
   if (!user) redirect("/login");
 
   const [usage, providers, keys] = await Promise.all([
-    getUsageSummary(user.id),
+    // Dashboard glance only — skip prompt body columns to cut DB read I/O
+    getUsageSummary(user.id, {
+      recentLimit: 8,
+      includePromptBodies: false,
+    }),
     listProviderCredentials(user.id),
     listApiKeys(user.id),
   ]);
