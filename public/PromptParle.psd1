@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.11.2'
+    ModuleVersion     = '0.12.0'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -52,7 +52,9 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
-0.11.1: Session Tools toggle (default ON) next to Dial; auto local prep when useful; wider Help + dark scrollbars
+0.12.0: Uniform top chrome; soft Update glow + poll; SSH/Git working dir; portal feature lockdown; Free 1 desktop seat
+0.11.2: Brief-first local shrink (mask→brief→budget; one pack max); tighter tool outputs
+0.11.1: Session Tools toggle (default ON) next to Dial; wider Help + dark scrollbars
 0.11.0: Create/optimize local agents in UI; local-first tools catalog
 0.10.9: Copyright + trademark in local UI
 0.10.8: Align left menu top with chat; larger brand + logo; history no longer stretches mid-gap

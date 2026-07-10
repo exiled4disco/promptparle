@@ -167,17 +167,30 @@ function Save-PromptParleConfigInternal {
         [Parameter(Mandatory)]
         [string]$ApiKey,
 
-        [string]$BaseUrl = $script:DefaultBaseUrl
+        [string]$BaseUrl = $script:DefaultBaseUrl,
+
+        [string]$DesktopClientId = ''
     )
 
     if (-not (Test-Path -LiteralPath $script:PromptParleConfigDir)) {
         New-Item -ItemType Directory -Path $script:PromptParleConfigDir -Force | Out-Null
     }
 
+    # Preserve existing desktop client id when not explicitly passed
+    $existingClientId = ''
+    if (-not $DesktopClientId -and (Test-Path -LiteralPath $script:PromptParleConfigPath)) {
+        try {
+            $prev = Get-Content -LiteralPath $script:PromptParleConfigPath -Raw | ConvertFrom-Json
+            $existingClientId = [string](Get-PromptParleProp $prev 'DesktopClientId' '')
+        } catch { }
+    }
+    $clientId = if ($DesktopClientId) { $DesktopClientId } else { $existingClientId }
+
     $obj = [ordered]@{
-        ApiKey    = $ApiKey
-        BaseUrl   = $BaseUrl.TrimEnd('/')
-        UpdatedAt = (Get-Date).ToUniversalTime().ToString('o')
+        ApiKey           = $ApiKey
+        BaseUrl          = $BaseUrl.TrimEnd('/')
+        DesktopClientId  = $clientId
+        UpdatedAt        = (Get-Date).ToUniversalTime().ToString('o')
     }
 
     $obj | ConvertTo-Json | Set-Content -LiteralPath $script:PromptParleConfigPath -Encoding UTF8
@@ -186,6 +199,51 @@ function Save-PromptParleConfigInternal {
     if (-not $script:PromptParleIsWindows) {
         try { chmod 600 $script:PromptParleConfigPath 2>$null } catch { }
     }
+}
+
+function Get-PromptParleDesktopClientId {
+    <#
+    .SYNOPSIS
+      Stable per-machine desktop client id (stored in config.json) for concurrent seat gating.
+    #>
+    $id = ''
+    if (Test-Path -LiteralPath $script:PromptParleConfigPath) {
+        try {
+            $raw = Get-Content -LiteralPath $script:PromptParleConfigPath -Raw -ErrorAction Stop
+            $json = $raw | ConvertFrom-Json
+            $id = [string](Get-PromptParleProp $json 'DesktopClientId' '')
+        } catch { }
+    }
+    if (-not $id -or $id.Length -lt 8) {
+        $id = [guid]::NewGuid().ToString('n')
+        # Persist without requiring a re-set of API key
+        try {
+            $cfg = Get-PromptParleConfigInternal
+            if ($cfg.ApiKey) {
+                Save-PromptParleConfigInternal -ApiKey $cfg.ApiKey -BaseUrl $cfg.BaseUrl -DesktopClientId $id
+            } else {
+                if (-not (Test-Path -LiteralPath $script:PromptParleConfigDir)) {
+                    New-Item -ItemType Directory -Path $script:PromptParleConfigDir -Force | Out-Null
+                }
+                $obj = [ordered]@{
+                    DesktopClientId = $id
+                    UpdatedAt       = (Get-Date).ToUniversalTime().ToString('o')
+                }
+                if (Test-Path -LiteralPath $script:PromptParleConfigPath) {
+                    try {
+                        $prev = Get-Content -LiteralPath $script:PromptParleConfigPath -Raw | ConvertFrom-Json
+                        if ($prev.ApiKey) { $obj.ApiKey = [string]$prev.ApiKey }
+                        if ($prev.BaseUrl) { $obj.BaseUrl = [string]$prev.BaseUrl }
+                    } catch { }
+                }
+                $obj | ConvertTo-Json | Set-Content -LiteralPath $script:PromptParleConfigPath -Encoding UTF8
+                if (-not $script:PromptParleIsWindows) {
+                    try { chmod 600 $script:PromptParleConfigPath 2>$null } catch { }
+                }
+            }
+        } catch { }
+    }
+    return $id
 }
 
 function Invoke-PromptParleApi {
@@ -660,11 +718,12 @@ function Get-PromptParleSessionState {
         workspace_recent  = @()
         ssh_target        = ''
         ssh_port          = 22
+        ssh_cwd           = ''
     }
     if (Test-Path -LiteralPath $path) {
         try {
             $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target')) {
+            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd')) {
                 $v = Get-PromptParleProp $s $k
                 if ($null -ne $v -and "$v" -ne '') { $state[$k] = [string]$v }
             }
@@ -721,7 +780,8 @@ function New-PromptParleSessionSnapshot {
         [string]$WorkspaceKind,
         $WorkspaceRecent = $null,
         [string]$SshTarget,
-        $SshPort = $null
+        $SshPort = $null,
+        [string]$SshCwd
     )
     if (-not $Base) { $Base = Get-PromptParleSessionState }
     $recent = @()
@@ -757,6 +817,7 @@ function New-PromptParleSessionSnapshot {
         workspace_recent = $recent
         ssh_target       = if ($PSBoundParameters.ContainsKey('SshTarget')) { [string]$SshTarget } else { [string](Get-PromptParleProp $Base 'ssh_target' '') }
         ssh_port         = if ($null -ne $SshPort) { [int]$SshPort } else { [int](Get-PromptParleProp $Base 'ssh_port' 22) }
+        ssh_cwd          = if ($PSBoundParameters.ContainsKey('SshCwd')) { [string]$SshCwd } else { [string](Get-PromptParleProp $Base 'ssh_cwd' '') }
     }
     return [pscustomobject]$out
 }
@@ -790,6 +851,7 @@ function Save-PromptParleSessionState {
         workspace_recent = $recent
         ssh_target       = [string](Get-PromptParleProp $State 'ssh_target' '')
         ssh_port         = [int](Get-PromptParleProp $State 'ssh_port' 22)
+        ssh_cwd          = [string](Get-PromptParleProp $State 'ssh_cwd' '')
         updated_at       = (Get-Date).ToString('o')
     }
     ($out | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
@@ -1755,6 +1817,7 @@ function Get-PromptParleWorkspace {
         recent     = $recent
         ssh_target = [string](Get-PromptParleProp $state 'ssh_target' '')
         ssh_port   = [int](Get-PromptParleProp $state 'ssh_port' 22)
+        ssh_cwd    = [string](Get-PromptParleProp $state 'ssh_cwd' '')
     }
 }
 
@@ -2245,7 +2308,8 @@ function Get-PromptParleGitHubStatusText {
 function Set-PromptParleSshTarget {
     param(
         [Parameter(Mandatory)][string]$Target,
-        [int]$Port = 22
+        [int]$Port = 22,
+        [string]$WorkingDirectory = ''
     )
     $t = $Target.Trim()
     if ($t -match '^ssh\s+(.+)$') { $t = $Matches[1].Trim() }
@@ -2258,15 +2322,16 @@ function Set-PromptParleSshTarget {
     if ($t -notmatch '@' -and $t -notmatch '^[A-Za-z0-9._-]+$') {
         throw 'SSH target should look like user@host (or host).'
     }
+    $cwd = if ($null -eq $WorkingDirectory) { '' } else { $WorkingDirectory.Trim() }
     $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $t -SshPort $port
+    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $t -SshPort $port -SshCwd $cwd
     Save-PromptParleSessionState -State $state
-    return [pscustomobject]@{ target = $t; port = $port }
+    return [pscustomobject]@{ target = $t; port = $port; cwd = $cwd }
 }
 
 function Clear-PromptParleSshTarget {
     $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22
+    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22 -SshCwd ''
     Save-PromptParleSessionState -State $state
 }
 
@@ -2275,18 +2340,28 @@ function Invoke-PromptParleSsh {
         [Parameter(Mandatory)][string]$RemoteCommand,
         [string]$Target,
         [int]$Port = 0,
+        [string]$WorkingDirectory = '',
         [int]$TimeoutSec = 45
     )
     if (-not (Test-PromptParleCommandAvailable -Name 'ssh')) {
         throw 'ssh not found. On Windows install OpenSSH Client (Optional Features) or Git for Windows.'
     }
+    $cwd = $WorkingDirectory
     if (-not $Target) {
         $ws = Get-PromptParleWorkspace
         $Target = $ws.ssh_target
         if ($Port -le 0) { $Port = [int]$ws.ssh_port }
+        if (-not $cwd) { $cwd = [string](Get-PromptParleProp $ws 'ssh_cwd' '') }
     }
     if (-not $Target) { throw 'No SSH target. /ssh user@host' }
     if ($Port -le 0) { $Port = 22 }
+
+    $remote = $RemoteCommand
+    if ($cwd -and $cwd.Trim()) {
+        # Quote path for remote shell; run command in working directory
+        $safe = ($cwd.Trim() -replace "'", "'\''")
+        $remote = "cd '$safe' && $RemoteCommand"
+    }
 
     # Non-interactive: use BatchMode so missing keys fail fast (never prompt for password in server)
     $sshArgs = @(
@@ -2295,7 +2370,7 @@ function Invoke-PromptParleSsh {
         '-o', "ConnectTimeout=$TimeoutSec",
         '-p', "$Port",
         $Target,
-        $RemoteCommand
+        $remote
     )
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -2373,8 +2448,9 @@ Git / GitHub (uses git + your SSH keys / gh auth on this PC):
 
 SSH (OpenSSH on this PC — private keys never leave the machine):
   /ssh                  Show target / help
-  /ssh user@host        Set target + connectivity test
-  /ssh ls [path]        List remote directory
+  /ssh user@host [cwd]  Set target (+ optional remote working dir) + test
+  /ssh cwd <path>       Set/clear remote working directory
+  /ssh ls [path]        List remote directory (uses cwd when set)
   /ssh cat <path>       Fetch remote file → attachment
   /ssh run <command>    Run remote command (output → chat)
   /ssh disconnect       Clear target
@@ -2463,7 +2539,12 @@ function Invoke-PromptParleSlashCommand {
                     "$($ws.path) ($($extra -join ' · '))"
                 } else { "$($ws.path) (missing)" }
             } else { '(none — /workspace <path>)' }
-            $sshLine = if ($ws.ssh_target) { "$($ws.ssh_target):$($ws.ssh_port)" } else { '(none — /ssh user@host)' }
+            $sshLine = if ($ws.ssh_target) {
+                $s = "$($ws.ssh_target):$($ws.ssh_port)"
+                $sc = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
+                if ($sc) { $s = "$s  cwd $sc" }
+                $s
+            } else { '(none — /ssh user@host [/path])' }
             $message = @"
 Session
   Agent     : $agName ($($state.active_agent))
@@ -2849,14 +2930,18 @@ Uses your local git remotes / SSH keys / gh auth — PromptParle never stores th
                 if (-not $arg) {
                     $ws = Get-PromptParleWorkspace
                     if ($ws.ssh_target) {
+                        $cwdShow = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
+                        if (-not $cwdShow) { $cwdShow = '(login home — set with /ssh cwd /path)' }
                         $message = @"
 SSH target: $($ws.ssh_target) port $($ws.ssh_port)
+Working dir: $cwdShow
 
-  /ssh ls [path]       list remote dir
+  /ssh ls [path]       list remote dir (relative to cwd when set)
   /ssh cat <path>      fetch file → attachment
-  /ssh run <command>   run remote command
+  /ssh run <command>   run remote command (in cwd when set)
+  /ssh cwd <path>      set remote working directory (empty to clear)
   /ssh disconnect      clear target
-  /ssh user@other      switch host
+  /ssh user@other [cwd]  switch host
 
 Keys: ssh-agent / ~/.ssh — never uploaded to PromptParle.
 "@
@@ -2864,8 +2949,9 @@ Keys: ssh-agent / ~/.ssh — never uploaded to PromptParle.
                         $message = @"
 No SSH target.
 
-  /ssh user@host           set target + test (BatchMode / key auth)
+  /ssh user@host [cwd]     set target + optional remote working dir + test
   /ssh user@host:2222      custom port
+  /ssh cwd /var/www        set working directory (after connect)
   /ssh ls /var/www         list remote
   /ssh cat /etc/hosts      pull file into chat
   /ssh run uptime          run command
@@ -2875,14 +2961,31 @@ Requires OpenSSH client on this PC. Private keys stay local.
                     }
                 } elseif ($arg -match '^(disconnect|clear|off|none)$') {
                     Clear-PromptParleSshTarget
-                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22 -SshCwd ''
                     $message = 'SSH target cleared.'
+                } elseif ($arg -match '^(cwd|cd|dir)(?:\s+(.*))?$') {
+                    $ws = Get-PromptParleWorkspace
+                    if (-not $ws.ssh_target) { throw 'No SSH target. /ssh user@host first.' }
+                    $cwdIn = if ($null -ne $Matches[2]) { $Matches[2].Trim().Trim('"').Trim("'") } else { '' }
+                    if ($cwdIn -match '^(clear|none|off|~|/home)$') { $cwdIn = '' }
+                    if ($cwdIn -and $cwdIn -match '[;|&`$]') { throw 'Invalid remote path' }
+                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory $cwdIn
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd
+                    if ($set.cwd) {
+                        $message = "SSH working directory: $($set.cwd) (on $($set.target))"
+                    } else {
+                        $message = "SSH working directory cleared (login home on $($set.target))."
+                    }
                 } elseif ($arg -match '^(ls|list)(?:\s+(.+))?$') {
                     $rpath = if ($Matches[2]) { $Matches[2].Trim() } else { '.' }
                     # sanitize remote path slightly
                     if ($rpath -match '[;|&`$]') { throw 'Invalid remote path' }
                     $r = Invoke-PromptParleSsh -RemoteCommand "ls -la -- $rpath"
-                    $message = "ssh $($r.target):$($r.port) ls $rpath (exit $($r.exit_code))`n$($r.text)"
+                    $cwdNote = ''
+                    $wsNow = Get-PromptParleWorkspace
+                    $sc = [string](Get-PromptParleProp $wsNow 'ssh_cwd' '')
+                    if ($sc) { $cwdNote = " cwd $sc" }
+                    $message = "ssh $($r.target):$($r.port)$cwdNote ls $rpath (exit $($r.exit_code))`n$($r.text)"
                 } elseif ($arg -match '^(cat|read|get)\s+(.+)$') {
                     $rpath = $Matches[2].Trim().Trim('"').Trim("'")
                     if ($rpath -match '[;|&`$]') { throw 'Invalid remote path' }
@@ -2910,21 +3013,29 @@ Requires OpenSSH client on this PC. Private keys stay local.
                     $r = Test-PromptParleSsh
                     $message = "SSH test $($r.target):$($r.port) exit $($r.exit_code)`n$($r.text)"
                 } else {
-                    # treat as user@host[:port]
-                    $targetArg = $arg.Trim()
+                    # user@host[:port] [optional remote working directory]
+                    $rest = $arg.Trim()
+                    $targetArg = $rest
+                    $cwdArg = ''
+                    if ($rest -match '^(\S+)(?:\s+(.+))?$') {
+                        $targetArg = $Matches[1]
+                        if ($Matches[2]) { $cwdArg = $Matches[2].Trim().Trim('"').Trim("'") }
+                    }
                     $port = 22
                     if ($targetArg -match '^(.+):(\d+)$') {
                         $targetArg = $Matches[1]
                         $port = [int]$Matches[2]
                     }
-                    $set = Set-PromptParleSshTarget -Target $targetArg -Port $port
-                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port
+                    if ($cwdArg -and $cwdArg -match '[;|&`$]') { throw 'Invalid remote working directory' }
+                    $set = Set-PromptParleSshTarget -Target $targetArg -Port $port -WorkingDirectory $cwdArg
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd
                     $r = Test-PromptParleSsh -Target $set.target -Port $set.port
+                    $cwdMsg = if ($set.cwd) { "`nWorking dir: $($set.cwd)" } else { '' }
                     if ($r.exit_code -eq 0) {
-                        $message = "SSH target set: $($set.target):$($set.port)`nOK`n$($r.text)"
+                        $message = "SSH target set: $($set.target):$($set.port)$cwdMsg`nOK`n$($r.text)"
                     } else {
                         $message = @"
-SSH target saved: $($set.target):$($set.port)
+SSH target saved: $($set.target):$($set.port)$cwdMsg
 Connectivity test failed (exit $($r.exit_code)):
 $($r.text)
 
@@ -3460,9 +3571,10 @@ function Get-PromptParleRemoteClientVersion {
     #>
     [CmdletBinding()]
     param()
+    # Prefer portal (shipped with deploy) so Update lights up without waiting on GitHub.
     $urls = @(
-        'https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1',
-        'https://promptparle.com/PromptParle.psd1'
+        'https://promptparle.com/PromptParle.psd1',
+        'https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1'
     )
     foreach ($url in $urls) {
         try {
@@ -4247,6 +4359,44 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                     continue
                 }
 
+                # Desktop entitlements + concurrent client seat (Free = 1)
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/entitlements') {
+                    try {
+                        $clientId = Get-PromptParleDesktopClientId
+                        $ver = try { Get-PromptParleClientVersion } catch { 'unknown' }
+                        $hostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } elseif ($env:HOSTNAME) { $env:HOSTNAME } else { 'desktop' }
+                        $plat = if ($script:PromptParleIsWindows) { 'windows' } else { 'unix' }
+                        $body = @{
+                            client_id   = $clientId
+                            hostname    = [string]$hostName
+                            platform    = [string]$plat
+                            app_version = [string]$ver
+                        }
+                        $result = Invoke-PromptParleApi -Method POST -Path '/api/v1/desktop/heartbeat' -Body $body
+                        $json = ($result | ConvertTo-Json -Depth 8 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $msg = "$_"
+                        $status = 502
+                        $allowed = $true
+                        if ($msg -match 'limit|client|seat|403|Forbidden') {
+                            $status = 403
+                            $allowed = $false
+                        }
+                        $err = @{
+                            error                = $msg
+                            allowed              = $allowed
+                            project_pc           = $true
+                            project_ssh          = $true
+                            project_git          = $true
+                            max_desktop_clients  = 1
+                            message              = if (-not $allowed) { $msg } else { $null }
+                        } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode $status -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/session') {
                     try {
                         $st = Get-PromptParleSessionState
@@ -4272,6 +4422,7 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                             workspace_recent = @($ws.recent)
                             ssh_target       = [string]$ws.ssh_target
                             ssh_port         = [int]$ws.ssh_port
+                            ssh_cwd          = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
                             agent_name       = if ($ag) { $ag.name } else { $st.active_agent }
                             agent_system     = if ($ag) { $ag.system } else { '' }
                             agent_commands   = $cmdList

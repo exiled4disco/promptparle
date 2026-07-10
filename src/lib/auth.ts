@@ -12,6 +12,9 @@ export type SessionUser = {
   retentionPolicy: string;
   storePrompts: boolean;
   emailVerifiedAt: Date | null;
+  featProjectPc: boolean;
+  featProjectSsh: boolean;
+  featProjectGit: boolean;
 };
 
 export async function hashPassword(password: string): Promise<string> {
@@ -86,6 +89,9 @@ export async function getSessionUser(): Promise<SessionUser | null> {
           retentionPolicy: true,
           storePrompts: true,
           emailVerifiedAt: true,
+          featProjectPc: true,
+          featProjectSsh: true,
+          featProjectGit: true,
         },
       },
     },

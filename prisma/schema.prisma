@@ -23,13 +23,37 @@ model User {
   // Default on so portal can show before/after; user can opt out in Settings
   storePrompts    Boolean @default(true) @map("store_prompts")
 
+  // Desktop Project Connections lockdown (portal Settings → desktop client)
+  featProjectPc  Boolean @default(true) @map("feat_project_pc")
+  featProjectSsh Boolean @default(true) @map("feat_project_ssh")
+  featProjectGit Boolean @default(true) @map("feat_project_git")
+
   providerCredentials  ProviderCredential[]
   apiKeys              ApiKey[]
   promptRequests       PromptRequest[]
   sessions             Session[]
   emailVerifications   EmailVerificationToken[]
+  desktopClients       DesktopClient[]
 
   @@map("users")
+}
+
+/** Concurrent desktop UI seats (Free plan = 1 active client). */
+model DesktopClient {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  clientId   String   @map("client_id")
+  hostname   String?
+  platform   String?
+  appVersion String?  @map("app_version")
+  lastSeenAt DateTime @map("last_seen_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientId])
+  @@index([userId, lastSeenAt])
+  @@map("desktop_clients")
 }
 
 model Session {

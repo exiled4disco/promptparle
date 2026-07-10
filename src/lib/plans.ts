@@ -18,6 +18,11 @@ export type PlanLimits = {
   dailyRequests: number;
   /** Max AI provider credentials (carriers) the account may attach */
   maxProviders: number;
+  /**
+   * Max concurrent desktop clients (local UI) with recent heartbeat.
+   * Free GTM: 1 seat so one free account ≠ unlimited machines.
+   */
+  maxDesktopClients: number;
 };
 
 export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
@@ -29,6 +34,7 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     historyLimit: 25,
     dailyRequests: 25,
     maxProviders: 1,
+    maxDesktopClients: 1,
   },
   pro: {
     id: "pro",
@@ -38,6 +44,7 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     historyLimit: 100,
     dailyRequests: 500,
     maxProviders: 4,
+    maxDesktopClients: 3,
   },
   team: {
     id: "team",
@@ -47,8 +54,12 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     historyLimit: 200,
     dailyRequests: 5_000,
     maxProviders: 4,
+    maxDesktopClients: 10,
   },
 };
+
+/** Heartbeat window — clients not seen within this interval free a seat. */
+export const DESKTOP_CLIENT_ACTIVE_MS = 2 * 60 * 1000;
 
 export function normalizePlan(plan: string | null | undefined): PlanId {
   const p = (plan || "free").toLowerCase();

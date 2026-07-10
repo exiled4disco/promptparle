@@ -108,38 +108,80 @@
     }
     .help-legal p { margin: 0 0 0.25rem; }
     .help-legal p:last-child { margin-bottom: 0; }
+    /* Uniform top-right pills: version · Update · Help · ⋯ */
     .badge {
-      display: inline-block; font-size: .68rem; padding: .18rem .45rem; border-radius: 999px;
-      border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 1.85rem;
+      min-height: 1.85rem;
+      padding: 0 .7rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--success);
+      background: rgba(52,211,153,.1);
+      font-size: .75rem;
+      font-weight: 600;
+      line-height: 1;
       white-space: nowrap;
+      box-sizing: border-box;
     }
     .badge.warn {
       color: var(--warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.35);
     }
     .update-btn {
-      background: #0a0e16 !important; color: var(--muted) !important;
-      border: 1px solid var(--border) !important; font-weight: 500;
-      border-radius: 999px; padding: .28rem .7rem; cursor: pointer; font-size: .75rem;
-      width: auto; margin: 0; font: inherit; line-height: 1.2;
+      display: inline-flex !important;
+      align-items: center;
+      justify-content: center;
+      height: 1.85rem !important;
+      min-height: 1.85rem !important;
+      padding: 0 .75rem !important;
+      border-radius: 999px !important;
+      border: 1px solid var(--border) !important;
+      background: #0a0e16 !important;
+      color: var(--muted) !important;
+      font: inherit !important;
+      font-size: .75rem !important;
+      font-weight: 600 !important;
+      line-height: 1 !important;
+      cursor: pointer;
+      width: auto !important;
+      margin: 0 !important;
+      box-sizing: border-box;
     }
     .update-btn.secondary-look {
-      background: #0a0e16 !important; color: var(--muted) !important;
-      border: 1px solid var(--border) !important; font-weight: 500;
+      background: #0a0e16 !important;
+      color: var(--muted) !important;
+      border: 1px solid var(--border) !important;
+      font-weight: 600 !important;
     }
-    /* Update available — red highlight next to Help */
+    /* Update available: same size pill, soft red glow (not a fat solid button) */
     .update-btn.needs-update {
-      background: linear-gradient(135deg, #f87171, #b91c1c) !important;
-      color: #fff !important;
-      border: 1px solid rgba(248,113,113,.85) !important;
-      font-weight: 800;
-      box-shadow: 0 0 0 1px rgba(248,113,113,.35), 0 0 14px rgba(248,113,113,.45);
-      animation: pp-update-pulse 1.5s ease-in-out infinite;
+      background: rgba(248, 113, 113, 0.12) !important;
+      color: #fecaca !important;
+      border: 1px solid rgba(248, 113, 113, 0.55) !important;
+      font-weight: 700 !important;
+      box-shadow:
+        0 0 0 1px rgba(248, 113, 113, 0.2),
+        0 0 14px rgba(248, 113, 113, 0.45),
+        inset 0 0 12px rgba(248, 113, 113, 0.08);
+      animation: pp-update-glow 2s ease-in-out infinite;
     }
-    @keyframes pp-update-pulse {
-      0%, 100% { box-shadow: 0 0 0 1px rgba(248,113,113,.35), 0 0 10px rgba(248,113,113,.35); }
-      50% { box-shadow: 0 0 0 2px rgba(248,113,113,.55), 0 0 18px rgba(248,113,113,.55); }
+    @keyframes pp-update-glow {
+      0%, 100% {
+        box-shadow:
+          0 0 0 1px rgba(248, 113, 113, 0.22),
+          0 0 10px rgba(248, 113, 113, 0.35),
+          inset 0 0 8px rgba(248, 113, 113, 0.06);
+      }
+      50% {
+        box-shadow:
+          0 0 0 1px rgba(248, 113, 113, 0.4),
+          0 0 20px rgba(248, 113, 113, 0.55),
+          inset 0 0 14px rgba(248, 113, 113, 0.12);
+      }
     }
-    .update-btn:disabled { opacity: .55; cursor: not-allowed; animation: none; }
+    .update-btn:disabled { opacity: .55; cursor: not-allowed; animation: none !important; }
     .ver-line { font-size: .7rem; color: var(--dim); line-height: 1.25; }
     .hist-head {
       display: flex; align-items: center; justify-content: space-between; gap: .35rem;
@@ -490,11 +532,29 @@
       white-space: nowrap;
     }
     .icon-btn {
-      background: #0a0e16; border: 1px solid var(--border); color: var(--text);
-      border-radius: 999px; padding: .35rem .7rem; font-size: .8rem; font-weight: 600;
-      cursor: pointer; font: inherit;
+      display: inline-flex !important;
+      align-items: center;
+      justify-content: center;
+      height: 1.85rem !important;
+      min-height: 1.85rem !important;
+      padding: 0 .75rem !important;
+      border-radius: 999px !important;
+      border: 1px solid var(--border) !important;
+      background: #0a0e16 !important;
+      color: var(--muted) !important;
+      font: inherit !important;
+      font-size: .75rem !important;
+      font-weight: 600 !important;
+      line-height: 1 !important;
+      cursor: pointer;
+      width: auto !important;
+      margin: 0 !important;
+      box-sizing: border-box;
     }
-    .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .icon-btn:hover {
+      border-color: var(--accent) !important;
+      color: var(--accent-strong) !important;
+    }
     .menu {
       display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
       min-width: 200px; background: var(--card); border: 1px solid var(--border);
@@ -670,6 +730,31 @@
     .conn-row.is-on .conn-name { color: var(--success); }
     .conn-row.is-on .conn-path { color: var(--text); font-weight: 500; }
     .conn-row.is-warn .conn-path { color: var(--warn); }
+    .conn-row.is-locked {
+      opacity: 0.55;
+    }
+    .conn-row.is-locked .conn-name { color: var(--dim); }
+    .conn-row.is-locked .conn-path { color: var(--dim); font-style: italic; }
+    .conn-row.is-locked .conn-actions button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .client-limit-banner {
+      margin: 0 1rem .5rem;
+      padding: .55rem .85rem;
+      border-radius: 10px;
+      border: 1px solid rgba(248, 113, 113, 0.4);
+      background: rgba(248, 113, 113, 0.1);
+      color: #fecaca;
+      font-size: .8rem;
+      line-height: 1.4;
+      box-shadow: 0 0 16px rgba(248, 113, 113, 0.2);
+    }
+    .client-limit-banner a {
+      color: #93c5fd;
+      margin-left: .35rem;
+    }
+    .client-limit-banner[hidden] { display: none !important; }
     .mini-primary {
       background: var(--accent-soft) !important;
       border: 1px solid rgba(91,140,255,.4) !important;
@@ -864,7 +949,7 @@ code:      /review  /explain</pre>
       <div class="help-span">
       <h3>Project connections</h3>
       <pre>This PC → Browse / Detach · SSH → Connect / Detach · Git/GitHub → Connect / Detach
-Also: /workspace · /git · /github · /ssh   (paths &amp; keys stay on this PC)</pre>
+Also: /workspace · /git · /github · /ssh [cwd]   (paths &amp; keys stay on this PC)</pre>
 
       <h3>Tools ON = brief first</h3>
       <pre>Local shrink before tokens: mask → brief → dial budget. At most one small pack if empty.
@@ -985,10 +1070,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
   <div class="modal-backdrop" id="sshModal" role="dialog" aria-modal="true" aria-labelledby="sshTitle">
     <div class="modal" style="width:min(420px,100%)">
       <h2 id="sshTitle">Connect SSH</h2>
-      <div class="sub">Uses OpenSSH on this PC. Private keys never leave the machine.</div>
+      <div class="sub">Uses OpenSSH on this PC. Private keys never leave the machine. Remote commands run in the working directory when set.</div>
       <div class="field-row">
         <label for="sshTargetInput">Host</label>
         <input type="text" id="sshTargetInput" placeholder="user@hostname  or  user@host:2222" spellcheck="false" />
+      </div>
+      <div class="field-row">
+        <label for="sshCwdInput">Working directory (optional)</label>
+        <input type="text" id="sshCwdInput" placeholder="/var/www/app  or  ~/project" spellcheck="false" />
       </div>
       <div class="row-actions">
         <button type="button" class="primary" id="sshModalConnect" style="border-radius:999px;padding:.55rem 1rem">Connect</button>
@@ -1001,13 +1090,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
   <div class="modal-backdrop" id="gitModal" role="dialog" aria-modal="true" aria-labelledby="gitTitle">
     <div class="modal" style="width:min(440px,100%)">
       <h2 id="gitTitle">Connect Git / GitHub</h2>
-      <div class="sub">Clone with your local git credentials, or point at a folder that already has .git.</div>
+      <div class="sub">Clone with your local git credentials, or point at a folder that already has .git. The clone path becomes the project working directory.</div>
       <div class="field-row">
         <label for="gitRepoInput">GitHub repo or URL</label>
         <input type="text" id="gitRepoInput" placeholder="owner/repo  or  https://github.com/owner/repo.git" spellcheck="false" />
       </div>
       <div class="field-row">
-        <label for="gitDestInput">Clone into (optional)</label>
+        <label for="gitDestInput">Working directory (clone into)</label>
         <input type="text" id="gitDestInput" placeholder="Leave blank → ~/src/repo-name" spellcheck="false" />
       </div>
       <div class="row-actions">
@@ -1076,6 +1165,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const sshModal = document.getElementById('sshModal');
     const gitModal = document.getElementById('gitModal');
     const sshTargetInput = document.getElementById('sshTargetInput');
+    const sshCwdInput = document.getElementById('sshCwdInput');
     const gitRepoInput = document.getElementById('gitRepoInput');
     const gitDestInput = document.getElementById('gitDestInput');
     const helpBtn = document.getElementById('helpBtn');
@@ -1083,6 +1173,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     let currentWorkspacePath = '';
     let currentWorkspaceKind = '';
     let currentSshTarget = '';
+    let currentSshCwd = '';
+    /** @type {{ project_pc?: boolean, project_ssh?: boolean, project_git?: boolean, max_desktop_clients?: number, plan?: string, allowed?: boolean, message?: string }|null} */
+    let entitlements = null;
     const menuBtn = document.getElementById('menuBtn');
     const appMenu = document.getElementById('appMenu');
     const helpModal = document.getElementById('helpModal');
@@ -1976,12 +2069,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       // SSH
       const t = s.ssh_target || s.sshTarget || '';
       const port = s.ssh_port || s.sshPort || 22;
+      const cwd = s.ssh_cwd || s.sshCwd || '';
       currentSshTarget = t || '';
+      currentSshCwd = cwd || '';
       if (sshLine) {
         if (t) {
-          const label = t + (port && Number(port) !== 22 ? ':' + port : '');
+          let label = t + (port && Number(port) !== 22 ? ':' + port : '');
+          if (cwd) label += ' · ' + cwd;
           sshLine.textContent = label;
-          sshLine.title = label;
+          sshLine.title = cwd ? (t + ' cwd ' + cwd) : label;
           if (sshConnectBtn) sshConnectBtn.hidden = true;
           if (sshDetachBtn) sshDetachBtn.hidden = false;
           setConnRow(sshRow, true, false);
@@ -1994,15 +2090,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         }
       }
 
-      // Git / GitHub
+      // Git / GitHub — show remote + working directory (local path)
       if (gitLine) {
         if (path && kind === 'git') {
           const bits = [];
           if (remote) bits.push(prettyRemote(remote));
-          else bits.push(path);
           if (branch) bits.push('@ ' + branch);
-          gitLine.textContent = bits.join(' ');
-          gitLine.title = (remote || path) + (branch ? ' (' + branch + ')' : '');
+          if (path) bits.push('· ' + path);
+          gitLine.textContent = bits.join(' ') || path;
+          gitLine.title = 'Working dir: ' + path + (remote ? '\nRemote: ' + remote : '') + (branch ? '\nBranch: ' + branch : '');
           if (gitConnectBtn) gitConnectBtn.hidden = true;
           if (gitDetachBtn) gitDetachBtn.hidden = false;
           setConnRow(gitRow, true, false);
@@ -2013,6 +2109,58 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           if (gitDetachBtn) gitDetachBtn.hidden = true;
           setConnRow(gitRow, false, false);
         }
+      }
+
+      applyEntitlementUi();
+    }
+
+    function applyEntitlementUi() {
+      const e = entitlements || {};
+      const allowed = e.allowed !== false;
+      // Feature lockdown from portal settings (default enabled when unknown)
+      const featPc = e.project_pc !== false;
+      const featSsh = e.project_ssh !== false;
+      const featGit = e.project_git !== false;
+
+      function lockRow(row, btnConnect, btnDetach, lineEl, enabled, name) {
+        if (!row) return;
+        if (!enabled) {
+          row.classList.add('is-locked');
+          row.title = name + ' disabled for your account (portal Settings).';
+          if (btnConnect) { btnConnect.disabled = true; btnConnect.title = 'Disabled in portal Settings'; }
+          if (btnDetach) { btnDetach.disabled = true; }
+          if (lineEl && (!lineEl.textContent || lineEl.textContent === 'Not connected' || lineEl.textContent === 'No folder')) {
+            lineEl.textContent = 'Disabled by account';
+          }
+        } else {
+          row.classList.remove('is-locked');
+          if (!row.title || /disabled/i.test(row.title)) row.title = '';
+          if (btnConnect) { btnConnect.disabled = false; btnConnect.title = ''; }
+          if (btnDetach) { btnDetach.disabled = false; }
+        }
+      }
+      lockRow(pcRow, browseFolderBtn, clearFolderBtn, workspaceLine, featPc, 'This PC');
+      lockRow(sshRow, sshConnectBtn, sshDetachBtn, sshLine, featSsh, 'SSH');
+      lockRow(gitRow, gitConnectBtn, gitDetachBtn, gitLine, featGit, 'Git / GitHub');
+
+      // Concurrent desktop client gate (Free = 1)
+      let ban = document.getElementById('clientLimitBanner');
+      if (!allowed) {
+        if (!ban) {
+          ban = document.createElement('div');
+          ban.id = 'clientLimitBanner';
+          ban.className = 'client-limit-banner';
+          const mainTop = document.querySelector('.main-top');
+          if (mainTop && mainTop.parentNode) {
+            mainTop.parentNode.insertBefore(ban, mainTop.nextSibling);
+          }
+        }
+        ban.hidden = false;
+        ban.innerHTML = '<strong>Desktop client limit</strong> — ' +
+          esc(e.message || 'Another desktop client is already active on this Free account (limit 1). Close the other session or upgrade.') +
+          ' <a href="' + PORTAL + '/app/settings" target="_blank" rel="noreferrer">Account settings</a>';
+      } else if (ban) {
+        ban.hidden = true;
       }
     }
 
@@ -2086,6 +2234,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
     function openFsModal() {
       if (!fsModal) return;
+      if (entitlements && entitlements.project_pc === false) {
+        addMsg('sys', 'This PC folder attach is disabled for your account in portal Settings.', null, true);
+        return;
+      }
       closeMenu();
       closeHelp();
       closeSshModal();
@@ -2098,6 +2250,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (sshModal) sshModal.classList.remove('open');
     }
     function openSshModal() {
+      if (entitlements && entitlements.project_ssh === false) {
+        addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
+        return;
+      }
       closeMenu();
       closeHelp();
       closeFsModal();
@@ -2106,6 +2262,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         sshTargetInput.value = currentSshTarget || '';
         setTimeout(function () { sshTargetInput.focus(); }, 50);
       }
+      if (sshCwdInput) sshCwdInput.value = currentSshCwd || '';
       if (sshModal) sshModal.classList.add('open');
     }
 
@@ -2113,6 +2270,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (gitModal) gitModal.classList.remove('open');
     }
     function openGitModal() {
+      if (entitlements && entitlements.project_git === false) {
+        addMsg('sys', 'Git / GitHub is disabled for your account in portal Settings.', null, true);
+        return;
+      }
       closeMenu();
       closeHelp();
       closeFsModal();
@@ -2121,18 +2282,29 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         gitRepoInput.value = '';
         setTimeout(function () { gitRepoInput.focus(); }, 50);
       }
-      if (gitDestInput) gitDestInput.value = '';
+      if (gitDestInput) {
+        gitDestInput.value = currentWorkspacePath || '';
+        gitDestInput.placeholder = currentWorkspacePath
+          ? currentWorkspacePath
+          : 'Leave blank → ~/src/repo-name';
+      }
       if (gitModal) gitModal.classList.add('open');
     }
 
     async function connectSsh() {
+      if (entitlements && entitlements.project_ssh === false) {
+        addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
+        return;
+      }
       const target = (sshTargetInput && sshTargetInput.value || '').trim();
       if (!target) {
         addMsg('sys', 'Enter user@host first.', null, true);
         return;
       }
+      const cwd = (sshCwdInput && sshCwdInput.value || '').trim();
+      const line = cwd ? ('/ssh ' + target + ' ' + cwd) : ('/ssh ' + target);
       try {
-        await postCommand('/ssh ' + target);
+        await postCommand(line);
         closeSshModal();
         loadSession();
       } catch (e) {
@@ -2284,6 +2456,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
     if (sshTargetInput) {
       sshTargetInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); connectSsh(); }
+      });
+    }
+    if (sshCwdInput) {
+      sshCwdInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); connectSsh(); }
       });
     }
@@ -2799,6 +2976,12 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     updateBtn.addEventListener('click', function () { runUpdate(); });
 
+    // Poll for updates (no hard refresh needed) + recheck when tab becomes visible
+    setInterval(function () { checkVersion(); }, 45000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') checkVersion();
+    });
+
     // —— Cloud account modals (API pull, portal only for edit) ——
     function closeInfo() {
       infoModal.classList.remove('open');
@@ -3038,7 +3221,42 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
     }
 
+    async function loadEntitlements() {
+      try {
+        const res = await fetch('/api/entitlements', { cache: 'no-store' });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (res.ok && data) {
+          entitlements = data;
+        } else if (data && (data.allowed === false || data.project_pc !== undefined)) {
+          entitlements = Object.assign({}, entitlements || {}, data);
+        } else if (!entitlements) {
+          // Soft-fail offline: do not lock the UI
+          entitlements = {
+            allowed: true,
+            project_pc: true,
+            project_ssh: true,
+            project_git: true,
+            max_desktop_clients: 1,
+            plan: 'free'
+          };
+        }
+        applyEntitlementUi();
+      } catch (e) {
+        if (!entitlements) {
+          entitlements = {
+            allowed: true,
+            project_pc: true,
+            project_ssh: true,
+            project_git: true
+          };
+        }
+      }
+    }
+
     checkVersion();
+    loadEntitlements();
+    setInterval(function () { loadEntitlements(); }, 60000);
     loadAgents().then(loadSession);
     refreshAttachHint();
 
