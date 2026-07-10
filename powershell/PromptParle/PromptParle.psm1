@@ -97,7 +97,7 @@ function ConvertTo-PromptParleNetObject {
     if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [uint32] -or $Value -is [uint64]) {
         return [int]$Value
     }
-    # PSCustomObject / hashtable / ordered
+    # Hashtable / Dictionary first (also IEnumerable — must not enumerate as KeyValue pairs)
     if ($Value -is [System.Collections.IDictionary]) {
         $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'
         foreach ($key in $Value.Keys) {
@@ -106,21 +106,29 @@ function ConvertTo-PromptParleNetObject {
         return $d
     }
     if ($Value -is [System.Management.Automation.PSObject] -and $Value.PSObject -and $Value.PSObject.Properties) {
+        # Prefer NoteProperty dictionary shape over enumerating PSObject
         $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'
         foreach ($p in $Value.PSObject.Properties) {
             if ($null -eq $p.Name) { continue }
-            # skip ETS noise
-            if ($p.Name -match '^(PS|Base)Object$') { continue }
+            if ($p.MemberType -and [string]$p.MemberType -notmatch 'NoteProperty|Property') { continue }
             $d[[string]$p.Name] = ConvertTo-PromptParleNetObject $p.Value
         }
-        return $d
+        if ($d.Count -gt 0) { return $d }
     }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string]) -and -not ($Value -is [System.Collections.IDictionary])) {
         $list = New-Object System.Collections.ArrayList
         foreach ($item in $Value) {
-            [void]$list.Add((ConvertTo-PromptParleNetObject $item))
+            # Flatten accidental nested arrays (PS unary-comma + @() wrap)
+            if ($item -is [System.Array]) {
+                foreach ($inner in $item) {
+                    [void]$list.Add((ConvertTo-PromptParleNetObject $inner))
+                }
+            } else {
+                [void]$list.Add((ConvertTo-PromptParleNetObject $item))
+            }
         }
-        return ,$list.ToArray()
+        # Plain Object[] — no unary comma (would re-nest under @())
+        return $list.ToArray()
     }
     return [string]$Value
 }
@@ -178,16 +186,32 @@ function ConvertTo-PromptParlePsObject {
 function ConvertTo-PromptParleImageList {
     <#
     .SYNOPSIS
-      Normalize UI/API image objects into API-shaped hashtables.
+      Normalize UI/API image objects into a flat Object[] of hashtables.
+      Do NOT use unary-comma return — that nests as [[img,img]] after @() wrap
+      and Zod rejects with "images: expected object, received array".
     #>
     param($Images)
 
     $out = New-Object System.Collections.Generic.List[hashtable]
     if ($null -eq $Images) { return @() }
 
-    $items = @($Images)
+    # Flatten one nesting level (PS often wraps arrays)
+    $items = New-Object System.Collections.Generic.List[object]
+    foreach ($x in @($Images)) {
+        if ($null -eq $x) { continue }
+        if ($x -is [System.Array]) {
+            foreach ($y in $x) { if ($null -ne $y) { [void]$items.Add($y) } }
+        } else {
+            [void]$items.Add($x)
+        }
+    }
+
     foreach ($img in $items) {
         if ($null -eq $img) { continue }
+        # Skip pure nested arrays that aren't image objects
+        if ($img -is [System.Array] -and -not (Get-PromptParleProp $img 'media_type' $null) -and -not (Get-PromptParleProp $img 'data_base64' $null)) {
+            continue
+        }
         $mediaType = Get-PromptParleProp $img 'media_type' $null
         if (-not $mediaType) { $mediaType = Get-PromptParleProp $img 'mediaType' 'image/png' }
         $data = Get-PromptParleProp $img 'data_base64' $null
@@ -203,7 +227,8 @@ function ConvertTo-PromptParleImageList {
         [void]$out.Add($entry)
         if ($out.Count -ge 6) { break }
     }
-    return ,$out.ToArray()
+    # Flat array of hashtables (pipeline-unroll is OK — callers use @())
+    return $out.ToArray()
 }
 
 function Get-PromptParleConfigInternal {
@@ -5407,7 +5432,8 @@ function Invoke-PromptParle {
 
         $imageList = @(ConvertTo-PromptParleImageList -Images $Images)
         if ($imageList.Count -gt 0 -and -not $OptimizeOnly) {
-            $body.images = $imageList
+            # Explicit Object[] of hashtables — never a single nested array element
+            $body.images = [object[]]$imageList
         }
 
         $result = Invoke-PromptParleApi -Method POST -Path '/api/v1/prompt' -Body $body

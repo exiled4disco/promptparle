@@ -94,7 +94,55 @@ export function coercePromptBody(raw: unknown): Record<string, unknown> {
     delete b.model;
   }
 
+  // PowerShell often nests images as [[ {...}, {...} ]] after unary-comma + @()
+  if ("images" in b) {
+    b.images = flattenImageList(b.images);
+    if (!Array.isArray(b.images) || b.images.length === 0) {
+      delete b.images;
+    }
+  }
+
   return b;
+}
+
+/** Flatten nested image arrays and drop non-objects. */
+function flattenImageList(raw: unknown): unknown[] {
+  if (raw == null) return [];
+  const out: Record<string, unknown>[] = [];
+
+  const pushImg = (item: unknown) => {
+    if (item == null) return;
+    if (Array.isArray(item)) {
+      // Nested array (PS accident) or rarely key/value pairs — recurse
+      for (const x of item) pushImg(x);
+      return;
+    }
+    if (typeof item !== "object") return;
+    const o = item as Record<string, unknown>;
+    // Skip DictionaryEntry-looking junk without payload
+    const data =
+      o.data_base64 ?? o.dataBase64 ?? o.data ?? o.Data_base64 ?? o.DataBase64;
+    const media =
+      o.media_type ?? o.mediaType ?? o.Media_type ?? o.MediaType ?? "image/png";
+    if (data == null || data === "") return;
+    out.push({
+      media_type: typeof media === "string" ? media : "image/png",
+      data_base64: typeof data === "string" ? data : String(data),
+      ...(typeof o.name === "string" && o.name
+        ? { name: o.name }
+        : typeof o.Name === "string" && o.Name
+          ? { name: o.Name }
+          : {}),
+    });
+  };
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) pushImg(item);
+  } else {
+    pushImg(raw);
+  }
+
+  return out.slice(0, 8);
 }
 
 export function formatZodDetails(err: {
