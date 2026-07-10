@@ -32,6 +32,9 @@ $script:PromptParleConfigDir = if ($env:PROMPTPARLE_CONFIG_DIR) {
 }
 $script:PromptParleConfigPath = Join-Path $script:PromptParleConfigDir 'config.json'
 $script:DefaultBaseUrl = 'https://promptparle.com'
+# Brief caches (local-only; avoid re-running git/SSH/web on every chat turn)
+$script:PromptParleConnBriefCache = @{ key = ''; text = ''; at = [datetime]::MinValue }
+$script:PromptParleWebSearchCache = @{}
 
 #region Private helpers
 
@@ -478,20 +481,21 @@ function New-PromptParleAgentObject {
 function Initialize-PromptParleDefaultAgents {
     $dir = Get-PromptParleAgentsDir
     $defaults = @(
-        (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 -System '' `
-            -Tools @('files', 'workspace', 'secret_scan')),
+        (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 `
+            -System 'You are a helpful assistant. Respect [CONN] Project connections (local PC folder, Git, SSH). Prefer attached local evidence; use [WEB] briefs when present.' `
+            -Tools @('files', 'workspace', 'secret_scan', 'connections', 'web_search')),
         (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Hostile security review' -Profile 'security-review' -Dial 3 `
-            -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. Prefer evidence from the attached material. Do not invent findings.' `
+            -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. Prefer evidence from the attached material and [CONN] workspace/SSH paths. Do not invent findings.' `
             -Commands @{ audit = 'Find the highest risk items and recommend actions with severity.'; threats = 'Map attack surface and threat scenarios from the material.' } `
-            -Tools @('files', 'workspace', 'git', 'secret_scan', 'code_brief', 'git_diff', 'file_index')),
+            -Tools @('files', 'workspace', 'git', 'secret_scan', 'code_brief', 'git_diff', 'file_index', 'connections', 'web_search')),
         (New-PromptParleAgentObject -Id 'docs' -Name 'Doc analyst' -Description 'Document coverage + obligations' -Profile 'documentation' -Dial 3 `
-            -System 'You are a careful document analyst. Preserve structure and obligations. Lead with the most useful findings, then cover gaps.' `
+            -System 'You are a careful document analyst. Preserve structure and obligations. Lead with the most useful findings, then cover gaps. Use [WEB] only to fill doc gaps, cite sources.' `
             -Commands @{ summary = 'Summarize with section coverage and hard requirements.'; risks = 'Extract risks, must/shall obligations, and deadlines.' } `
-            -Tools @('files', 'workspace', 'secret_scan', 'tree_pack')),
+            -Tools @('files', 'workspace', 'secret_scan', 'tree_pack', 'connections', 'web_search')),
         (New-PromptParleAgentObject -Id 'code' -Name 'Code reviewer' -Description 'Code-focused review' -Profile 'developer' -Dial 2 `
-            -System 'You are a senior code reviewer. Focus on bugs, security, and maintainability. Cite symbols and files when possible.' `
+            -System 'You are a senior code reviewer. Focus on bugs, security, and maintainability. Cite symbols and files from the [CONN] workspace when possible.' `
             -Commands @{ review = 'Review the attached code for bugs, risks, and improvements.'; explain = 'Explain the attached code structure and control flow.' } `
-            -Tools @('files', 'workspace', 'git', 'code_brief', 'secret_scan', 'file_index', 'deps', 'git_diff', 'tree_pack'))
+            -Tools @('files', 'workspace', 'git', 'code_brief', 'secret_scan', 'file_index', 'deps', 'git_diff', 'tree_pack', 'connections', 'web_search'))
     )
     foreach ($a in $defaults) {
         $path = Join-Path $dir ($a.id + '.json')
@@ -876,6 +880,7 @@ function Format-PromptParleAgentPrompt {
     <#
     .SYNOPSIS
       Prepend agent system brief to the user prompt (local; free tier).
+      Reminds the model that Project connections context is in the attach block.
     #>
     param(
         [string]$Prompt,
@@ -883,11 +888,21 @@ function Format-PromptParleAgentPrompt {
     )
     if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
     $agent = Get-PromptParleAgent -Name $AgentId
-    if (-not $agent) { return $Prompt }
-    $sys = ($agent.system | ForEach-Object { $_ }) -join ''
-    if (-not $sys -or -not $sys.Trim()) { return $Prompt }
-    $sys = $sys.Trim()
-    return ("[AGENT: {0}]`n{1}`n`n[USER]`n{2}" -f $agent.name, $sys, $Prompt)
+    $sys = ''
+    $name = 'Default'
+    if ($agent) {
+        $name = [string]$agent.name
+        $sys = ($agent.system | ForEach-Object { $_ }) -join ''
+        if ($sys) { $sys = $sys.Trim() }
+    }
+    if (-not $sys) {
+        $sys = 'You are a helpful assistant. Prefer evidence from attached context.'
+    }
+    # Always remind about session project connections (actual paths live in [CONN] context)
+    if ($sys -notmatch '(?i)\[CONN\]|project connections') {
+        $sys = $sys.TrimEnd('.') + '. Honor [CONN] Project connections (PC folder, Git, SSH) in context; do not invent paths. Use [WEB] briefs when present for external facts.'
+    }
+    return ("[AGENT: {0}]`n{1}`n`n[USER]`n{2}" -f $name, $sys, $Prompt)
 }
 
 #region Local-first tools (run on this PC before AI tokens are spent)
@@ -959,8 +974,365 @@ function Get-PromptParleToolCatalog {
             category = 'optimize'; local = $true
             description = 'Shallow tree (prefer index when auto).'
             auto = $true
+        },
+        [pscustomobject]@{
+            id = 'connections'; name = 'Project connections'
+            category = 'project'; local = $true
+            description = 'Ultra-brief PC / Git / SSH session map (always injected).'
+            auto = $true
+        },
+        [pscustomobject]@{
+            id = 'web_search'; name = 'Web search'
+            category = 'research'; local = $true
+            description = 'Brief web results (DDG + Wikipedia); cached, char-capped.'
+            auto = $true
         }
     )
+}
+
+function Get-PromptParleShortPath {
+    <# Compact path for connection briefs (~ for home). #>
+    param([string]$Path)
+    if (-not $Path) { return '' }
+    $p = [string]$Path
+    try {
+        $home = Get-PromptParleHomePath
+        if ($home -and $p.StartsWith($home, [StringComparison]::OrdinalIgnoreCase)) {
+            $rest = $p.Substring($home.Length).TrimStart('\', '/')
+            if ($rest) { return "~/$rest".Replace('\', '/') }
+            return '~'
+        }
+    } catch { }
+    # Prefer leaf + parent for long paths
+    try {
+        if ($p.Length -gt 48) {
+            $leaf = [IO.Path]::GetFileName($p.TrimEnd('\', '/'))
+            $parent = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($p.TrimEnd('\', '/')))
+            if ($parent -and $leaf) { return ".../$parent/$leaf" }
+            if ($leaf) { return ".../$leaf" }
+        }
+    } catch { }
+    return $p.Replace('\', '/')
+}
+
+function Get-PromptParleProjectConnectionsBrief {
+    <#
+    .SYNOPSIS
+      Ultra-brief Project Connections map for every chat turn.
+      Doctrine: one block, few lines, cache ~20s — model always knows PC/Git/SSH.
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$MaxChars = 520,
+        [switch]$Force
+    )
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
+    $key = 'none'
+    if ($ws) {
+        $key = ("{0}|{1}|{2}|{3}|{4}" -f `
+            [string](Get-PromptParleProp $ws 'path' ''), `
+            [string](Get-PromptParleProp $ws 'ssh_target' ''), `
+            [string](Get-PromptParleProp $ws 'ssh_cwd' ''), `
+            [string](Get-PromptParleProp $ws 'ssh_port' '22'), `
+            [string](Get-PromptParleProp $ws 'branch' ''))
+    }
+    $now = [datetime]::UtcNow
+    if (-not $Force -and $script:PromptParleConnBriefCache.key -eq $key -and `
+        $script:PromptParleConnBriefCache.text -and `
+        ($now - $script:PromptParleConnBriefCache.at).TotalSeconds -lt 20) {
+        return [string]$script:PromptParleConnBriefCache.text
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('[CONN] Project connections (this session — local PC)')
+
+    # PC / workspace
+    if ($ws -and $ws.path) {
+        $short = Get-PromptParleShortPath -Path ([string]$ws.path)
+        $bits = New-Object System.Collections.Generic.List[string]
+        $bits.Add($short)
+        if ($ws.exists) {
+            if ($ws.is_git) {
+                $bits.Add('git')
+                if ($ws.branch) { $bits.Add([string]$ws.branch) }
+            } else {
+                $bits.Add([string](Get-PromptParleProp $ws 'kind' 'folder'))
+            }
+        } else {
+            $bits.Add('MISSING')
+        }
+        $pcLine = 'PC: ' + ($bits -join ' · ')
+        if ($ws.is_git -and $ws.remote) {
+            $rem = [string]$ws.remote
+            if ($rem.Length -gt 56) { $rem = $rem.Substring(0, 53) + '…' }
+            $pcLine += " | origin $rem"
+        }
+        $lines.Add($pcLine)
+    } else {
+        $lines.Add('PC: none — attach via Project connections / /workspace <path>')
+    }
+
+    # SSH
+    $sshT = if ($ws) { [string](Get-PromptParleProp $ws 'ssh_target' '') } else { '' }
+    if ($sshT) {
+        $port = if ($ws) { [int](Get-PromptParleProp $ws 'ssh_port' 22) } else { 22 }
+        $cwd = if ($ws) { [string](Get-PromptParleProp $ws 'ssh_cwd' '') } else { '' }
+        $sshLine = "SSH: ${sshT}:$port"
+        if ($cwd) { $sshLine += " cwd $(Get-PromptParleShortPath -Path $cwd)" }
+        $lines.Add($sshLine)
+    } else {
+        $lines.Add('SSH: none — /ssh user@host [cwd]')
+    }
+
+    # Git tooling availability (not a full status dump)
+    $gitOk = Test-PromptParleCommandAvailable -Name 'git'
+    $lines.Add($(if ($gitOk) { 'Git: available on this PC' } else { 'Git: not found on PATH' }))
+
+    $lines.Add('Use attached workspace/SSH evidence; do not invent paths. Web facts → web_search.')
+    $text = ($lines -join "`n")
+    if ($text.Length -gt $MaxChars) {
+        $text = $text.Substring(0, $MaxChars) + "`n…[conn]"
+    }
+    $script:PromptParleConnBriefCache = @{ key = $key; text = $text; at = $now }
+    return $text
+}
+
+function Get-PromptParleWebSearchQuery {
+    <# Extract a clean search query from a user prompt when auto-triggering. #>
+    param([string]$Prompt)
+    if (-not $Prompt) { return '' }
+    $p = $Prompt.Trim()
+    # Strip leading search-intent phrases
+    $p2 = [regex]::Replace($p, '(?i)^(please\s+)?(search(\s+the\s+web)?(\s+for)?|look\s+up|google|find\s+online|web\s+search(\s+for)?|what\s+is|who\s+is|what''?s\s+the\s+latest|docs?\s+for|documentation\s+for)\s*[:\-]?\s*', '')
+    if (-not $p2) { $p2 = $p }
+    # Drop trailing "please" / filler
+    $p2 = [regex]::Replace($p2, '(?i)\s+(please|thanks|thank you)[.!?]?\s*$', '').Trim()
+    if ($p2.Length -gt 160) { $p2 = $p2.Substring(0, 160).Trim() }
+    return $p2
+}
+
+function Test-PromptParleWebSearchIntent {
+    param([string]$Prompt)
+    if (-not $Prompt) { return $false }
+    $b = $Prompt.ToLowerInvariant()
+    if ($b -match '(?i)\b(search the web|web search|look up|google|find online|according to (the )?(docs|documentation|internet|web))\b') { return $true }
+    if ($b -match '(?i)^(what is|who is|what''?s the latest|current version of)\b') { return $true }
+    if ($b -match '(?i)\b(latest (news|release|version)|as of 20\d{2})\b') { return $true }
+    # Explicit /search is handled by slash router, not here
+    return $false
+}
+
+function Invoke-PromptParleWebSearchLocal {
+    <#
+    .SYNOPSIS
+      Brief multi-source web search on this PC (no AI tokens for the fetch).
+      Sources: DuckDuckGo Instant Answer → Wikipedia opensearch/summary.
+      Optimized: cache 5m, max N hits, hard char budget, no HTML dumps.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Query,
+        [int]$MaxResults = 4,
+        [int]$MaxChars = 2400
+    )
+    $q = if ($null -eq $Query) { '' } else { $Query.Trim() }
+    if (-not $q) {
+        return [pscustomobject]@{
+            ok = $false; tool = 'web_search'; local = $true
+            text = ''; notes = @('web_search: empty query'); query = ''
+        }
+    }
+    if ($MaxResults -lt 1) { $MaxResults = 1 }
+    if ($MaxResults -gt 6) { $MaxResults = 6 }
+    if ($MaxChars -lt 400) { $MaxChars = 400 }
+    if ($MaxChars -gt 6000) { $MaxChars = 6000 }
+
+    $cacheKey = ("{0}|{1}|{2}" -f $q.ToLowerInvariant(), $MaxResults, $MaxChars)
+    $now = [datetime]::UtcNow
+    if ($script:PromptParleWebSearchCache.ContainsKey($cacheKey)) {
+        $hit = $script:PromptParleWebSearchCache[$cacheKey]
+        if ($hit -and $hit.text -and ($now - $hit.at).TotalSeconds -lt 300) {
+            return [pscustomobject]@{
+                ok = $true; tool = 'web_search'; local = $true
+                text = [string]$hit.text
+                notes = @('web_search: cache hit')
+                query = $q
+                cached = $true
+            }
+        }
+    }
+
+    $ua = 'PromptParle/0.12 (desktop local tools; +https://promptparle.com)'
+    $hits = New-Object System.Collections.Generic.List[object]
+    $notes = New-Object System.Collections.Generic.List[string]
+    $abstract = ''
+
+    # 1) DuckDuckGo Instant Answer (free, no key) — best for entities
+    try {
+        $enc = [uri]::EscapeDataString($q)
+        $ddgUrl = "https://api.duckduckgo.com/?q=$enc&format=json&no_html=1&skip_disambig=1"
+        $ddg = Invoke-RestMethod -Uri $ddgUrl -TimeoutSec 12 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+        $abs = [string](Get-PromptParleProp $ddg 'AbstractText' '')
+        if (-not $abs) { $abs = [string](Get-PromptParleProp $ddg 'Abstract' '') }
+        $absUrl = [string](Get-PromptParleProp $ddg 'AbstractURL' '')
+        $heading = [string](Get-PromptParleProp $ddg 'Heading' '')
+        $answer = [string](Get-PromptParleProp $ddg 'Answer' '')
+        if ($answer) {
+            $abstract = $answer.Trim()
+            $notes.Add('ddg-answer')
+        }
+        if ($abs) {
+            if ($abstract) { $abstract = $abstract + ' ' + $abs.Trim() } else { $abstract = $abs.Trim() }
+            $notes.Add('ddg-abstract')
+            if ($heading -or $absUrl) {
+                $hits.Add([pscustomobject]@{
+                    title = if ($heading) { $heading } else { 'DuckDuckGo' }
+                    url   = $absUrl
+                    snip  = if ($abs.Length -gt 180) { $abs.Substring(0, 177) + '…' } else { $abs }
+                })
+            }
+        }
+        $related = Get-PromptParleProp $ddg 'RelatedTopics' @()
+        foreach ($rt in @($related)) {
+            if ($hits.Count -ge $MaxResults) { break }
+            $txt = [string](Get-PromptParleProp $rt 'Text' '')
+            $first = Get-PromptParleProp $rt 'FirstURL' $null
+            if (-not $txt -and (Get-PromptParleProp $rt 'Topics' $null)) {
+                foreach ($sub in @(Get-PromptParleProp $rt 'Topics' @())) {
+                    if ($hits.Count -ge $MaxResults) { break }
+                    $txt2 = [string](Get-PromptParleProp $sub 'Text' '')
+                    $u2 = [string](Get-PromptParleProp $sub 'FirstURL' '')
+                    if ($txt2) {
+                        $title2 = $txt2
+                        if ($txt2 -match '^([^\-–]+)\s*[\-–]') { $title2 = $Matches[1].Trim() }
+                        $snip2 = $txt2
+                        if ($snip2.Length -gt 160) { $snip2 = $snip2.Substring(0, 157) + '…' }
+                        $hits.Add([pscustomobject]@{ title = $title2; url = $u2; snip = $snip2 })
+                    }
+                }
+                continue
+            }
+            if ($txt) {
+                $title = $txt
+                if ($txt -match '^([^\-–]+)\s*[\-–]') { $title = $Matches[1].Trim() }
+                $snip = $txt
+                if ($snip.Length -gt 160) { $snip = $snip.Substring(0, 157) + '…' }
+                $hits.Add([pscustomobject]@{
+                    title = $title
+                    url   = [string]$first
+                    snip  = $snip
+                })
+            }
+        }
+        if ($hits.Count -gt 0) { $notes.Add("ddg-related:$($hits.Count)") }
+    } catch {
+        $notes.Add('ddg-skip')
+    }
+
+    # 2) Wikipedia opensearch + 1–2 summaries when still thin (reliable, free)
+    if ($hits.Count -lt 2 -or -not $abstract) {
+        try {
+            $enc = [uri]::EscapeDataString($q)
+            $osUrl = "https://en.wikipedia.org/w/api.php?action=opensearch&search=$enc&limit=$MaxResults&namespace=0&format=json"
+            $os = Invoke-RestMethod -Uri $osUrl -TimeoutSec 12 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+            # opensearch: [query, [titles], [descs], [urls]]
+            $titles = @()
+            $descs = @()
+            $urls = @()
+            if ($os -is [System.Array] -and $os.Count -ge 4) {
+                $titles = @($os[1])
+                $descs = @($os[2])
+                $urls = @($os[3])
+            }
+            $wikiAdded = 0
+            for ($i = 0; $i -lt $titles.Count -and $hits.Count -lt $MaxResults; $i++) {
+                $t = [string]$titles[$i]
+                if (-not $t) { continue }
+                $u = if ($i -lt $urls.Count) { [string]$urls[$i] } else { '' }
+                $d = if ($i -lt $descs.Count) { [string]$descs[$i] } else { '' }
+                # Enrich first 2 with REST summary extract
+                if ($wikiAdded -lt 2) {
+                    try {
+                        $canon = ($t -replace ' ', '_')
+                        $sumUrl = "https://en.wikipedia.org/api/rest_v1/page/summary/$([uri]::EscapeDataString($canon))"
+                        $sum = Invoke-RestMethod -Uri $sumUrl -TimeoutSec 10 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+                        $ext = [string](Get-PromptParleProp $sum 'extract' '')
+                        if ($ext) {
+                            $d = if ($ext.Length -gt 200) { $ext.Substring(0, 197) + '…' } else { $ext }
+                            if (-not $abstract -and $wikiAdded -eq 0) { $abstract = $ext }
+                        }
+                        $page = Get-PromptParleProp (Get-PromptParleProp $sum 'content_urls' @{}) 'desktop' $null
+                        $pageUrl = [string](Get-PromptParleProp $page 'page' '')
+                        if ($pageUrl) { $u = $pageUrl }
+                    } catch { }
+                }
+                # Dedup by URL/title
+                $dup = $false
+                foreach ($h in $hits) {
+                    if (($u -and $h.url -eq $u) -or ($h.title -eq $t)) { $dup = $true; break }
+                }
+                if ($dup) { continue }
+                if (-not $d) { $d = 'Wikipedia' }
+                if ($d.Length -gt 160) { $d = $d.Substring(0, 157) + '…' }
+                $hits.Add([pscustomobject]@{ title = $t; url = $u; snip = $d })
+                $wikiAdded++
+            }
+            if ($wikiAdded -gt 0) { $notes.Add("wiki:$wikiAdded") }
+        } catch {
+            $notes.Add('wiki-skip')
+        }
+    }
+
+    # Build brief text
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add("[WEB] q=$q")
+    if ($abstract) {
+        $a = $abstract.Trim()
+        if ($a.Length -gt 420) { $a = $a.Substring(0, 417) + '…' }
+        $out.Add("Summary: $a")
+    }
+    $n = 0
+    foreach ($h in $hits) {
+        if ($n -ge $MaxResults) { break }
+        $n++
+        $line = "$n. $($h.title)"
+        if ($h.url) { $line += " | $($h.url)" }
+        $out.Add($line)
+        if ($h.snip) { $out.Add("   $($h.snip)") }
+    }
+    if ($n -eq 0 -and -not $abstract) {
+        $out.Add('(no brief hits — try a more specific query or /search <terms>)')
+        $notes.Add('empty')
+    }
+    $out.Add('Cite sources; prefer local workspace facts over web when they conflict.')
+    $text = ($out -join "`n")
+    if ($text.Length -gt $MaxChars) {
+        $text = $text.Substring(0, $MaxChars) + "`n…[web budget]"
+        $notes.Add("cap $MaxChars")
+    }
+
+    $script:PromptParleWebSearchCache[$cacheKey] = @{ text = $text; at = $now }
+    # Bound cache size
+    if ($script:PromptParleWebSearchCache.Count -gt 24) {
+        $oldest = $script:PromptParleWebSearchCache.GetEnumerator() |
+            Sort-Object { $_.Value.at } |
+            Select-Object -First 8
+        foreach ($o in $oldest) {
+            $script:PromptParleWebSearchCache.Remove($o.Key)
+        }
+    }
+
+    return [pscustomobject]@{
+        ok      = $true
+        tool    = 'web_search'
+        local   = $true
+        text    = $text
+        notes   = @($notes.ToArray())
+        query   = $q
+        cached  = $false
+        hits    = $n
+    }
 }
 
 function Invoke-PromptParleSecretScanLocal {
@@ -1309,6 +1681,14 @@ function Invoke-PromptParleLocalTool {
                 notes = @()
             }
         }
+        'connections' {
+            $t = Get-PromptParleProjectConnectionsBrief -Force
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('connections: session map') }
+        }
+        { $_ -in @('web_search', 'web', 'search') } {
+            $q = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
+            return Invoke-PromptParleWebSearchLocal -Query $q
+        }
         default {
             throw "Unknown local tool: $ToolId"
         }
@@ -1319,7 +1699,8 @@ function Invoke-PromptParleAgentLocalPrep {
     <#
     .SYNOPSIS
       Brief-first local shrink before AI tokens (proprietary).
-      Doctrine: (1) mask (2) thin (3) hard budget (4) at most one small structure pack if empty.
+      Doctrine: (0) connections map (1) mask (2) thin (3) optional web brief
+      (4) hard budget (5) at most one small structure pack if empty.
       Never pile tree+index+deps+diff — that grows tokens.
     #>
     [CmdletBinding()]
@@ -1337,12 +1718,32 @@ function Invoke-PromptParleAgentLocalPrep {
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
     $charsIn = $ctx.Length + $pr.Length
+    $tools = New-Object System.Collections.Generic.List[string]
+
+    # 0) Always inject Project Connections brief (tiny; model knows PC/Git/SSH)
+    #    Even when tools are off — awareness is not a heavy tool.
+    try {
+        $connMax = 520
+        if ($Dial -ge 4) { $connMax = 360 }
+        $connBrief = Get-PromptParleProjectConnectionsBrief -MaxChars $connMax
+        if ($connBrief) {
+            if ($ctx -and $ctx -notmatch '(?m)^\[CONN\]') {
+                $ctx = $connBrief + "`n`n" + $ctx
+            } elseif (-not $ctx) {
+                $ctx = $connBrief
+            }
+            $notes.Add('conn')
+            $tools.Add('connections')
+        }
+    } catch {
+        $notes.Add('conn-skip')
+    }
 
     if (-not $ToolsEnabled) {
         $notes.Add('tools off')
         return [pscustomobject]@{
             prompt = $pr; context = $ctx; notes = @($notes.ToArray())
-            tools = @(); agent = if ($agent) { $agent.id } else { $AgentId }
+            tools = @($tools); agent = if ($agent) { $agent.id } else { $AgentId }
             tools_enabled = $false
         }
     }
@@ -1353,43 +1754,78 @@ function Invoke-PromptParleAgentLocalPrep {
     if (-not $prof -and $agent) { $prof = [string]$agent.profile }
     if (-not $prof) { $prof = 'general' }
     $budget = Get-PromptParleLocalContextBudget -Dial $Dial
-    $tools = @('secret_scan', 'code_brief')
+    $tools.Add('secret_scan')
+    $tools.Add('code_brief')
 
-    # 1) Mask secrets (always)
+    # 1) Mask secrets (always when tools on)
     $r1 = Invoke-PromptParleSecretScanLocal -Text $pr
     $r2 = Invoke-PromptParleSecretScanLocal -Text $ctx
     $pr = $r1.text
     $ctx = $r2.text
     if (($r1.masked + $r2.masked) -gt 0) { $notes.Add("mask $($r1.masked + $r2.masked)") }
 
-    # 2) Brief shrink — any non-trivial context
+    # 2) Brief shrink — any non-trivial context (protect [CONN] header)
     if ($ctx.Length -gt 200) {
-        $br = Invoke-PromptParleCodeBriefLocal -Text $ctx -MaxChars $budget -Dial $Dial
-        $ctx = $br.text
-        foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n) } }
+        $connPrefix = ''
+        $restCtx = $ctx
+        if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+            $connPrefix = $Matches[1]
+            $restCtx = $Matches[2]
+        }
+        if ($restCtx.Length -gt 200) {
+            $br = Invoke-PromptParleCodeBriefLocal -Text $restCtx -MaxChars ([Math]::Max(800, $budget - $connPrefix.Length - 40)) -Dial $Dial
+            $restCtx = $br.text
+            foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n) } }
+        }
+        if ($connPrefix) { $ctx = $connPrefix + "`n`n" + $restCtx } else { $ctx = $restCtx }
     }
 
-    # 3) At most ONE brief structure pack when context is empty/thin (not when already fat)
+    # 3) Optional web search brief (intent-only; char-capped; cached)
+    $blob = ("{0} {1}" -f $pr, $prof).ToLowerInvariant()
+    if (Test-PromptParleWebSearchIntent -Prompt $pr) {
+        try {
+            $wq = Get-PromptParleWebSearchQuery -Prompt $pr
+            if ($wq) {
+                $webBudget = [Math]::Min(2400, [int]($budget * 0.12))
+                if ($Dial -ge 4) { $webBudget = [Math]::Min(1400, $webBudget) }
+                if ($Dial -le 2) { $webBudget = [Math]::Min(3200, [int]($budget * 0.15)) }
+                $web = Invoke-PromptParleWebSearchLocal -Query $wq -MaxResults 4 -MaxChars $webBudget
+                if ($web.ok -and $web.text) {
+                    if ($ctx) { $ctx = $ctx + "`n`n" + $web.text } else { $ctx = $web.text }
+                    $notes.Add($(if ($web.cached) { 'web-cache' } else { 'web' }))
+                    $tools.Add('web_search')
+                }
+            }
+        } catch {
+            $notes.Add('web-skip')
+        }
+    }
+
+    # 4) At most ONE brief structure pack when context is empty/thin (not when already fat)
     $ws = $null
     try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
-    $blob = ("{0} {1}" -f $pr, $prof).ToLowerInvariant()
     $extra = $null
+    # Measure non-CONN body size for "thin" decision
+    $bodyLen = $ctx.Length
+    if ($ctx -match '(?s)^\[CONN\]') {
+        $bodyLen = [Math]::Max(0, $ctx.Length - 200)
+    }
 
-    if ($ws -and $ws.exists -and $ctx.Length -lt [Math]::Min(1200, [int]($budget * 0.15))) {
+    if ($ws -and $ws.exists -and $bodyLen -lt [Math]::Min(1200, [int]($budget * 0.15))) {
         $wantDiff = $blob -match 'diff|change|pr\b|pull request|commit|patch|what changed'
         $wantDeps = $blob -match 'dependenc|package\.json|npm|pip|upgrade|version'
         $wantMap  = $blob -match 'structure|codebase|where is|file index|layout|tree'
         try {
             if ($wantDiff -and $ws.is_git) {
                 $extra = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(18000, [int]($budget * 0.55)))
-                if ($extra) { $notes.Add('diff'); $tools += 'git_diff' }
+                if ($extra) { $notes.Add('diff'); $tools.Add('git_diff') }
             } elseif ($wantDeps) {
                 $extra = Get-PromptParleWorkspaceDepsMap -MaxChars 2800
-                if ($extra) { $notes.Add('deps'); $tools += 'deps' }
-            } elseif ($wantMap -or $ctx.Length -lt 40) {
+                if ($extra) { $notes.Add('deps'); $tools.Add('deps') }
+            } elseif ($wantMap -or $bodyLen -lt 40) {
                 # Prefer ultra-brief index over deep tree
                 $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
-                if ($extra) { $notes.Add('idx'); $tools += 'file_index' }
+                if ($extra) { $notes.Add('idx'); $tools.Add('file_index') }
             }
         } catch { $extra = $null }
         if ($extra) {
@@ -1401,17 +1837,31 @@ function Invoke-PromptParleAgentLocalPrep {
             try {
                 $gd = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(20000, $budget))
                 if ($gd -and $gd.Length -lt $ctx.Length) {
-                    $ctx = $gd
+                    # Keep CONN header if present
+                    $connKeep = ''
+                    if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)') { $connKeep = $Matches[1] }
+                    $ctx = if ($connKeep) { $connKeep + "`n`n" + $gd } else { $gd }
                     $notes.Add('diff>files')
-                    $tools += 'git_diff'
+                    $tools.Add('git_diff')
                 }
             } catch { }
         }
     }
 
-    # 4) Hard local budget (brief)
+    # 5) Hard local budget (brief) — never drop [CONN] if possible
     if ($ctx.Length -gt $budget) {
-        $ctx = $ctx.Substring(0, $budget) + "`n…[budget d$Dial]"
+        $connKeep = ''
+        $rest = $ctx
+        if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+            $connKeep = $Matches[1]
+            $rest = $Matches[2]
+        }
+        $room = $budget - $connKeep.Length - 20
+        if ($room -lt 200) { $room = 200 }
+        if ($rest.Length -gt $room) {
+            $rest = $rest.Substring(0, $room) + "`n…[budget d$Dial]"
+        }
+        $ctx = if ($connKeep) { $connKeep + "`n`n" + $rest } else { $rest }
         $notes.Add("cap $budget")
     }
 
@@ -1498,6 +1948,12 @@ function Optimize-PromptParleAgent {
         if (-not ($suggested -contains 'git_diff')) { $suggested.Add('git_diff') }
         $reasons.Add('Git language → git + git_diff')
     }
+    if ($blob -match 'search|web|research|look up|news|docs|documentation|internet') {
+        if (-not ($suggested -contains 'web_search')) { $suggested.Add('web_search') }
+        $reasons.Add('Research language → web_search (brief, cached)')
+    }
+    # Always keep connections awareness on agent tools list
+    if (-not ($suggested -contains 'connections')) { $suggested.Add('connections') }
 
     # Merge user tools
     if ($Tools) {
@@ -1558,7 +2014,7 @@ function Optimize-PromptParleAgent {
         tools       = @($suggested)
         tool_details = $toolDetails
         reasons     = @($reasons)
-        tip         = 'Local tools run on this PC first (code brief, secret scan, git diff, file index) so fewer tokens hit the model.'
+        tip         = 'Local tools run on this PC first (connections map, code brief, secret scan, git diff, web search brief) so fewer tokens hit the model.'
     }
 }
 
@@ -2701,7 +3157,8 @@ Commands (type in chat instead of a normal message):
   /agent delete <name>  Delete a custom agent
   /agent optimize …     Suggest local tools + tighter system (no AI tokens)
   /tools [on|off]       Session local tools (default ON — auto before tokens)
-  /tool <id> [arg]      Run a local tool now (file_index, deps, git_diff, …)
+  /tool <id> [arg]      Run a local tool now (file_index, deps, git_diff, web_search, …)
+  /search <query>       Brief web search (local; injects results into next chat)
   /dial [1-5]           Compression dial
   /profile [name]       Optimization profile
   /provider [id]        openai | anthropic | gemini | grok
@@ -2711,8 +3168,10 @@ Commands (type in chat instead of a normal message):
   /quit                 Stop (CLI)
 
 Local-first tools (enabled per agent — run before AI tokens):
-  secret_scan  code_brief  file_index  deps  git_diff  tree_pack
+  connections  secret_scan  code_brief  file_index  deps  git_diff  tree_pack  web_search
   + workspace / git / ssh / files
+  Every chat gets a [CONN] Project connections brief (PC folder + SSH + Git).
+  Web search auto-runs on search intent; or use /search <query>.
   UI: Agent → Manage to create agents and pick tools
 
 Workspace & local directories (paths stay on this PC):
@@ -2987,30 +3446,47 @@ Or use Agent → Manage → Optimize in the UI, then Save.
         '^/tools$' {
             if ($arg -match '^(on|1|true|enable)$') {
                 $state.tools_enabled = $true
-                $message = 'Tools ON — local prep (secret scan, code brief, git diff, …) runs automatically before AI tokens. Dial still applies.'
+                $message = 'Tools ON — local prep (connections, secret scan, code brief, web search, git diff, …) runs automatically before AI tokens. Dial still applies.'
             } elseif ($arg -match '^(off|0|false|disable)$') {
                 $state.tools_enabled = $false
-                $message = 'Tools OFF — raw context only; dial/gateway compression still applies.'
+                $message = 'Tools OFF — connections brief still injected; other local packs skipped. Dial/gateway compression still applies.'
             } else {
                 $onOff = if ($state.tools_enabled) { 'ON' } else { 'OFF' }
                 $lines = @(
                     "Session Tools: $onOff (sidebar checkbox next to Dial; default ON)",
                     'When ON, useful local tools run automatically before tokens — you do not force each one.',
+                    'Every chat includes a brief [CONN] Project connections map (PC / Git / SSH).',
                     'Toggle: /tools on  ·  /tools off',
                     '',
-                    'Catalog (0 AI tokens on this PC):'
+                    'Catalog (0 AI tokens on this PC for local tools):'
                 )
                 foreach ($t in @(Get-PromptParleToolCatalog)) {
                     $auto = if ($t.auto) { 'auto' } else { 'manual' }
                     $lines += ("  {0,-12} [{1}] {2}" -f $t.id, $auto, $t.description)
                 }
-                $lines += 'Manual run: /tool file_index · /tool deps · /tool git_diff · /tool code_brief'
+                $lines += 'Manual run: /tool file_index · /tool web_search <q> · /search <q> · /tool connections'
                 $message = $lines -join "`n"
+            }
+        }
+        '^/search$' {
+            if (-not $arg) {
+                $message = 'Usage: /search <query>   e.g. /search PowerShell 7 release notes'
+            } else {
+                try {
+                    $web = Invoke-PromptParleWebSearchLocal -Query $arg -MaxResults 4 -MaxChars 2400
+                    $note = if ($web.notes) { ($web.notes -join '; ') } else { '' }
+                    $message = "Web search (local, optimized)`n$note`n`n$($web.text)"
+                    if ($web.text) {
+                        $files = @(@{ name = 'web_search.txt'; content = [string]$web.text })
+                    }
+                } catch {
+                    $message = "Search error: $_"
+                }
             }
         }
         '^/tool$' {
             if (-not $arg) {
-                $message = 'Usage: /tool <id> [arg]   e.g. /tool file_index · /tool tree_pack 2 · /tool code_brief'
+                $message = 'Usage: /tool <id> [arg]   e.g. /tool file_index · /tool web_search PowerShell · /tool connections'
             } else {
                 $tParts = $arg -split '\s+', 2
                 $tid = $tParts[0]
@@ -3020,7 +3496,7 @@ Or use Agent → Manage → Optimize in the UI, then Save.
                     $run = Invoke-PromptParleLocalTool -ToolId $tid -Text '' -Arg $targ
                     $note = if ($run.notes) { ($run.notes -join '; ') } else { '' }
                     $message = "Tool $($run.tool) (local)`n$note`n`n$($run.text)"
-                    if ($run.text -and $tid -match '^(file_index|deps|git_diff|tree_pack|git|workspace)$') {
+                    if ($run.text -and $tid -match '^(file_index|deps|git_diff|tree_pack|git|workspace|connections|web_search|web|search)$') {
                         # Surface as attachable context via files array when supported
                         $files = @(@{ name = "$tid.txt"; content = [string]$run.text })
                     }
@@ -5588,6 +6064,17 @@ function Start-PromptParle {
 
         Write-Host 'thinking...' -ForegroundColor DarkGray
         try {
+            $cliCtx = if ($sessionContext) { [string]$sessionContext } else { '' }
+            try {
+                $cliPrep = Invoke-PromptParleAgentLocalPrep -Prompt $trimmed -Context $cliCtx -Dial $sessionDial -Profile $sessionProfile -ToolsEnabled $true
+                $trimmed = [string]$cliPrep.prompt
+                if ($null -ne $cliPrep.context) { $cliCtx = [string]$cliPrep.context }
+                if ($cliPrep.notes) {
+                    Write-Host ("  local: {0}" -f ($cliPrep.notes -join ', ')) -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
+            }
             $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed
             $params = @{
                 Prompt           = $sendPrompt
@@ -5597,7 +6084,7 @@ function Start-PromptParle {
                 Quiet            = $false
             }
             if ($sessionModel) { $params.Model = $sessionModel }
-            if ($sessionContext) { $params.Context = $sessionContext }
+            if ($cliCtx) { $params.Context = [string]$cliCtx }
             if ($optimizeOnlyNext) {
                 $params.OptimizeOnly = $true
                 $optimizeOnlyNext = $false
