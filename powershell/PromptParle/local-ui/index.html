@@ -2795,14 +2795,82 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
     }
 
-    async function runUpdate() {
+    /** Last /api/version snapshot — drives version-aware Update button */
+    let lastVersionInfo = { local: null, remote: null, available: false };
+
+    /**
+     * Version-aware update.
+     * - Newer portal version → download + install (no force)
+     * - Already current → no download; optional force reinstall after confirm
+     * - Shift+click → force reinstall path
+     */
+    async function runUpdate(evOrOpts) {
       closeMenu();
       closeHelp();
-      if (!confirm('Download latest PromptParle and restart local chat?\n\nIf the update fails, your current version is kept and this window stays open.')) return;
+      var force = false;
+      if (evOrOpts && evOrOpts.force) force = true;
+      if (evOrOpts && evOrOpts.shiftKey) force = true;
+
+      // Refresh local vs portal before deciding
+      try { await checkVersion(); } catch (e) { /* use last known */ }
+      var local = lastVersionInfo.local || '?';
+      var remote = lastVersionInfo.remote;
+      var available = !!lastVersionInfo.available;
+
+      if (!force) {
+        if (!available && remote && local && local !== '?' && cmpClientVersion(local, remote) >= 0) {
+          // Already current — do not download unless user explicitly reinstalls
+          if (!confirm(
+            'Already up to date.\n\n' +
+            'Installed: v' + local + '\n' +
+            'Portal:    v' + remote + '\n\n' +
+            'No download needed.\n\n' +
+            'Reinstall the same version anyway? (repair only)'
+          )) {
+            logOps('Update skipped — already on v' + local + ' (portal v' + remote + ').', { level: 'ok' });
+            return;
+          }
+          force = true;
+        } else if (available && remote) {
+          if (!confirm(
+            'Update available.\n\n' +
+            'Installed: v' + local + '\n' +
+            'Portal:    v' + remote + '\n\n' +
+            'Download and install v' + remote + ', then restart local chat?\n' +
+            'If it fails, your current version is kept.'
+          )) return;
+        } else {
+          if (!confirm(
+            'Download latest PromptParle from the portal and restart local chat?\n\n' +
+            'Installed: v' + local +
+            (remote ? ('\nPortal:    v' + remote) : '\nPortal version: unknown') +
+            '\n\nIf the update fails, your current version is kept.'
+          )) return;
+        }
+      } else {
+        if (!confirm(
+          'Force reinstall from portal?\n\n' +
+          'Installed: v' + local +
+          (remote ? ('\nPortal:    v' + remote) : '') +
+          '\n\nThis re-downloads even if versions match (repair).'
+        )) return;
+      }
+
       setUpdateBusy(true);
-      addMsg('sys', 'Updating client (safe mode: validate → backup → install → re-check)…');
+      if (force) {
+        addMsg('sys', 'Force reinstall v' + (remote || local) + ' (validate → backup → install → re-check)…');
+      } else if (available && remote) {
+        addMsg('sys', 'Updating v' + local + ' → v' + remote + ' (safe mode: validate → backup → install → re-check)…');
+      } else {
+        addMsg('sys', 'Updating client (version-aware safe mode)…');
+      }
       try {
-        const res = await fetch('/api/update', { method: 'POST' });
+        var url = '/api/update' + (force ? '?force=1' : '');
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: force ? { 'Content-Type': 'application/json' } : undefined,
+          body: force ? JSON.stringify({ force: true }) : undefined
+        });
         let data = {};
         try { data = await res.json(); } catch (e) { data = {}; }
 
@@ -2816,15 +2884,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             (data.rolled_back ? ' Files were rolled back from backup.' : '') +
             ' You can keep working; try Update again later.',
             null, true);
-          setUpdateBusy(false, 'Retry update');
-          // Refresh version badge without restarting
+          setUpdateBusy(false);
           try { await checkVersion(); } catch (e2) { /* ignore */ }
           return;
         }
 
         if (data.updated === false) {
-          addMsg('sys', data.message || 'Already up to date.');
-          setUpdateBusy(false, 'Update');
+          addMsg('sys', data.message || ('Already up to date (v' + (data.version || local) + ').'));
+          logOps(data.message || ('Already up to date (v' + (data.version || local) + ').'), { level: 'ok' });
+          setUpdateBusy(false);
           try { await checkVersion(); } catch (e2) { /* ignore */ }
           return;
         }
@@ -2833,20 +2901,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           ? ' — no auto-restart; keep this window or run  pp'
           : ' — restarting…'));
         if (data.restart_required === false) {
-          setUpdateBusy(false, 'Update');
+          setUpdateBusy(false);
           try { await checkVersion(); } catch (e2) { /* ignore */ }
           return;
         }
-        const url = data.url || (window.location.origin + '/');
+        const nextUrl = data.url || (window.location.origin + '/');
         // ~60s: new process waits for port free, then imports + binds
-        const up = await waitForServer(url.endsWith('/') ? url : url + '/', 90);
-        if (up) window.location.href = url;
+        const up = await waitForServer(nextUrl.endsWith('/') ? nextUrl : nextUrl + '/', 90);
+        if (up) window.location.href = nextUrl;
         else {
           addMsg('sys',
             'Updated on disk, but local chat did not come back. Open a new PowerShell and run:  pp' +
             (data.restart_log ? ('  · log: ' + data.restart_log) : '  · log: %TEMP%\\promptparle-restart.log'),
             null, true);
-          setUpdateBusy(false, 'Update');
+          setUpdateBusy(false);
         }
       } catch (e) {
         // Network blip: check if local server still alive — do not force reload into a dead page
@@ -2856,7 +2924,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             'Update did not complete: ' + (e.message || e) +
             ' — previous version kept; local chat still running.',
             null, true);
-          setUpdateBusy(false, 'Retry update');
+          setUpdateBusy(false);
           try { await checkVersion(); } catch (e2) { /* ignore */ }
         } else {
           addMsg('sys',
@@ -2864,26 +2932,33 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             '  · if that fails: Import-Module PromptParle -Force; pp' +
             '  · log: %TEMP%\\promptparle-restart.log',
             null, true);
-          setUpdateBusy(false, 'Retry update');
+          setUpdateBusy(false);
         }
       }
     }
 
     function setUpdateBusy(busy, label) {
-      const text = label || (busy ? '…' : 'Update');
       [updateBtn, document.getElementById('menuUpdate'), document.getElementById('helpUpdate')].forEach(function (btn) {
         if (!btn) return;
         btn.disabled = !!busy;
         if (btn === updateBtn) {
-          btn.textContent = text;
           if (busy) {
             btn.classList.remove('needs-update');
             btn.style.removeProperty('color');
             btn.style.removeProperty('font-weight');
             btn.style.removeProperty('border-color');
+            btn.textContent = label || '…';
           }
         }
       });
+      if (!busy) {
+        // Restore version-aware label/style
+        setUpdateButtonState(
+          !!lastVersionInfo.available,
+          lastVersionInfo.local || '?',
+          lastVersionInfo.remote
+        );
+      }
     }
 
     function updateAgentMeta(s) {
@@ -4824,6 +4899,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function setUpdateButtonState(available, local, remote) {
       if (!updateBtn) return;
       updateBtn.disabled = false;
+      lastVersionInfo = {
+        local: local || lastVersionInfo.local,
+        remote: remote != null ? remote : lastVersionInfo.remote,
+        available: !!available
+      };
+      var menuUp = document.getElementById('menuUpdate');
+      var helpUp = document.getElementById('helpUpdate');
       if (available && remote) {
         updateBtn.classList.remove('secondary-look');
         updateBtn.classList.add('needs-update');
@@ -4832,8 +4914,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         updateBtn.style.setProperty('font-weight', '700', 'important');
         updateBtn.style.setProperty('border-color', 'rgba(255,45,45,0.55)', 'important');
         updateBtn.textContent = 'Update';
-        updateBtn.title = 'Update available: v' + local + ' → v' + remote;
+        updateBtn.title = 'Update available: v' + local + ' → v' + remote + ' · click to install · Shift+click force reinstall';
         updateBtn.setAttribute('data-update', '1');
+        updateBtn.setAttribute('aria-label', 'Update available: v' + local + ' to v' + remote);
+        if (menuUp) menuUp.textContent = 'Update client (v' + local + ' → v' + remote + ')';
+        if (helpUp) helpUp.textContent = 'Update client (v' + local + ' → v' + remote + ')';
         if (versionBadge) {
           versionBadge.classList.add('warn');
           versionBadge.title = 'Update available: v' + local + ' → v' + remote;
@@ -4844,11 +4929,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         updateBtn.style.removeProperty('color');
         updateBtn.style.removeProperty('font-weight');
         updateBtn.style.removeProperty('border-color');
-        updateBtn.textContent = 'Update';
+        updateBtn.textContent = 'Up to date';
         updateBtn.title = remote
-          ? ('Up to date · reinstall v' + remote)
-          : 'Reinstall latest client';
+          ? ('Up to date · v' + local + ' (portal v' + remote + ') · click for options · Shift+click force reinstall')
+          : ('Up to date · v' + local + ' · portal check pending');
         updateBtn.removeAttribute('data-update');
+        updateBtn.setAttribute('aria-label', 'Up to date: v' + local);
+        if (menuUp) menuUp.textContent = remote ? ('Up to date (v' + local + ')') : 'Update client';
+        if (helpUp) helpUp.textContent = remote ? ('Up to date (v' + local + ')') : 'Update client';
         if (versionBadge) {
           versionBadge.classList.remove('warn');
           versionBadge.title = remote ? ('Up to date · v' + local) : ('Local v' + local);
@@ -4872,6 +4960,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (!available && remote && local && local !== '?') {
           available = cmpClientVersion(local, remote) < 0;
         }
+        // Never claim update when versions equal (defensive)
+        if (available && remote && local && local !== '?' && cmpClientVersion(local, remote) >= 0) {
+          available = false;
+        }
         setUpdateButtonState(available, local, remote);
         if (data.check_error && versionBadge && !available) {
           versionBadge.title = (versionBadge.title || '') + ' · check: ' + data.check_error;
@@ -4881,8 +4973,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           versionBadge.textContent = 'local';
           versionBadge.title = 'Version check failed: ' + (e.message || e);
         }
-        setUpdateButtonState(false, '?', null);
-        if (updateBtn) updateBtn.title = 'Update from portal / GitHub';
+        lastVersionInfo = { local: lastVersionInfo.local, remote: null, available: false };
+        setUpdateButtonState(false, lastVersionInfo.local || '?', null);
+        if (updateBtn) updateBtn.title = 'Update check failed — click to try portal download';
       }
     }
 
@@ -4898,7 +4991,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return false;
     }
 
-    updateBtn.addEventListener('click', function () { runUpdate(); });
+    updateBtn.addEventListener('click', function (ev) { runUpdate(ev); });
 
     // Poll for updates (no hard refresh needed) + recheck when tab becomes visible
     setInterval(function () { checkVersion(); }, 45000);
@@ -5108,8 +5201,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     document.addEventListener('click', function (e) {
       if (!appMenu.contains(e.target) && e.target !== menuBtn) closeMenu();
     });
-    document.getElementById('menuUpdate').addEventListener('click', function () { runUpdate(); });
-    document.getElementById('helpUpdate').addEventListener('click', function () { runUpdate(); });
+    document.getElementById('menuUpdate').addEventListener('click', function (ev) { runUpdate(ev); });
+    document.getElementById('helpUpdate').addEventListener('click', function (ev) { runUpdate(ev); });
     document.getElementById('menuStop').addEventListener('click', function () { stopServer(); });
     document.getElementById('helpStop').addEventListener('click', function () { stopServer(); });
 

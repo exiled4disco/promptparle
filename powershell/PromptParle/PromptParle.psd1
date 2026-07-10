@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.14.6'
+    ModuleVersion     = '0.14.7'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.14.7: Version-aware Update — skip download when already current; force reinstall only on confirm / Shift+click
 0.14.6: Activity log always visible (left menu above footer); continuous [MEM] auto-compact (spine+tiers); seamless system brief
 0.14.5: Fix images nested array (expected object, received array) — flatten PS wrap + portal coerce
 0.14.4: Fix multi-image paste — large JSON serialize (PS 5.1 2MB cap) + tighter compress + nginx 32M

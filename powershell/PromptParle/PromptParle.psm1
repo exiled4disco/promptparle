@@ -6171,17 +6171,28 @@ function Update-PromptParleClient {
     $remote = $null
     try { $remote = Get-PromptParleRemoteClientVersion } catch { }
 
-    if (-not $Force -and $remote -and (Compare-PromptParleVersion -A $before -B $remote) -ge 0) {
-        return [pscustomobject]@{
-            ok               = $true
-            updated          = $false
-            previous_version = $before
-            version          = $before
-            remote_version   = $remote
-            message          = "Already up to date ($before)."
-            restart_required = $false
-            rolled_back      = $false
+    # Version-aware gate (default): never download/install when already current.
+    # -Force is repair/reinstall only — UI must ask before sending force=1.
+    if (-not $Force) {
+        if ($remote -and (Compare-PromptParleVersion -A $before -B $remote) -ge 0) {
+            Write-Host ("  update: already current v{0} (portal v{1}) — skip download" -f $before, $remote) -ForegroundColor DarkGreen
+            return [pscustomobject]@{
+                ok               = $true
+                updated          = $false
+                previous_version = $before
+                version          = $before
+                remote_version   = $remote
+                message          = "Already up to date (v$before). Portal also reports v$remote — no download."
+                restart_required = $false
+                rolled_back      = $false
+                skipped_reason   = 'already-current'
+            }
         }
+        if ($remote -and (Compare-PromptParleVersion -A $before -B $remote) -lt 0) {
+            Write-Host ("  update: v{0} → v{1} available" -f $before, $remote) -ForegroundColor Cyan
+        }
+    } else {
+        Write-Host ("  update: force reinstall (local v{0}, portal v{1})" -f $before, $(if ($remote) { $remote } else { '?' })) -ForegroundColor Yellow
     }
 
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('pp-update-' + [guid]::NewGuid().ToString('n'))
@@ -6312,6 +6323,23 @@ function Update-PromptParleClient {
         }
         $newVer = if ($pre.version) { [string]$pre.version } else { 'unknown' }
         Write-Host ("  package ok · v{0}" -f $newVer) -ForegroundColor DarkGray
+
+        # Second gate: package itself not newer than installed (covers remote-check miss / CDN lag)
+        if (-not $Force -and $newVer -and $newVer -ne 'unknown' -and (Compare-PromptParleVersion -A $before -B $newVer) -ge 0) {
+            Write-Host ("  update: package v{0} is not newer than installed v{1} — skip install" -f $newVer, $before) -ForegroundColor DarkGreen
+            return [pscustomobject]@{
+                ok               = $true
+                updated          = $false
+                previous_version = $before
+                version          = $before
+                remote_version   = if ($remote) { $remote } else { $newVer }
+                package_version  = $newVer
+                message          = "Already up to date (v$before). Downloaded package is v$newVer — not newer; install skipped."
+                restart_required = $false
+                rolled_back      = $false
+                skipped_reason   = 'package-not-newer'
+            }
+        }
 
         New-Item -ItemType Directory -Path $userModules -Force | Out-Null
         New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
@@ -7033,9 +7061,28 @@ function Start-PromptParleLocalServer {
 
                 if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/update') {
                     try {
-                        Write-Host '  update: safe update (validate → backup → install → re-validate)...' -ForegroundColor Cyan
-                        # Pass RestartPort only after success path inside Update-PromptParleClient
-                        $result = Update-PromptParleClient -Force -RestartPort $Port
+                        # Version-aware by default. force=1 only for explicit reinstall (UI confirms).
+                        $forceUpd = $false
+                        try {
+                            $q = [string]$req.Url.Query
+                            if ($q -match '(?i)(?:^|[?&])force=(1|true|yes)\b') { $forceUpd = $true }
+                        } catch { }
+                        if (-not $forceUpd) {
+                            try {
+                                if ($req.HasEntityBody) {
+                                    $srBody = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
+                                    $rawBody = $srBody.ReadToEnd()
+                                    if ($rawBody -and $rawBody -match '(?i)"force"\s*:\s*true') { $forceUpd = $true }
+                                }
+                            } catch { }
+                        }
+                        if ($forceUpd) {
+                            Write-Host '  update: FORCE reinstall (validate → backup → install → re-validate)...' -ForegroundColor Yellow
+                            $result = Update-PromptParleClient -Force -RestartPort $Port
+                        } else {
+                            Write-Host '  update: version-aware (skip if already current)...' -ForegroundColor Cyan
+                            $result = Update-PromptParleClient -RestartPort $Port
+                        }
 
                         $ok = $true
                         try { $ok = [bool](Get-PromptParleProp $result 'ok' $true) } catch { $ok = $true }
@@ -7072,6 +7119,8 @@ function Start-PromptParleLocalServer {
 
                         $restartLog = $null
                         try { $restartLog = Get-PromptParleProp $result 'restart_log' $null } catch { $restartLog = $null }
+                        $skipReason = $null
+                        try { $skipReason = Get-PromptParleProp $result 'skipped_reason' $null } catch { $skipReason = $null }
                         $payload = @{
                             ok               = $true
                             updated          = $updated
@@ -7084,6 +7133,8 @@ function Start-PromptParleLocalServer {
                             url              = "http://127.0.0.1:$Port/"
                             rolled_back      = $false
                             restart_log      = $restartLog
+                            skipped_reason   = $skipReason
+                            forced           = [bool]$forceUpd
                         } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
 
