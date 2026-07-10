@@ -1,6 +1,7 @@
 import type { OptimizationProfileId } from "./constants";
 import { estimateTokens } from "./tokens";
 import { maskSecrets } from "./secrets";
+import { compressDocument, looksLikeDocument } from "./document-compress";
 
 export type OptimizeInput = {
   prompt: string;
@@ -25,10 +26,7 @@ export type OptimizeResult = {
 
 /**
  * Build the payload that actually goes to the model.
- *
- * Keep this LEAN and never larger than cleaned prompt+context without reason.
- * Do NOT embed metadata notes in the model payload (that inflated stats, e.g.
- * 9766 → 9768 from a "Context:" label / Note: lines).
+ * Notes stay in metadata only — never bake labels that inflate token counts.
  */
 function buildPayload(
   userPrompt: string,
@@ -37,7 +35,6 @@ function buildPayload(
   const p = userPrompt.trim();
   const c = context?.trim();
   if (!c) return p;
-  // Same shape as raw join — no "Context:" banner (that alone was +2 tokens)
   return `${p}\n\n${c}`;
 }
 
@@ -78,7 +75,6 @@ function dedupeLines(text: string, aggressive: boolean): string {
       const key = normalized.trim();
       const c = (counts.get(key) || 0) + 1;
       counts.set(key, c);
-      // keep first 2 occurrences of identical lines
       if (c > 2) continue;
     }
     out.push(line);
@@ -119,9 +115,7 @@ function finalizeStats(
     if (expanded) {
       finalNotes = ["Could not compress further without losing content"];
     } else if (saved === 0) {
-      finalNotes = [
-        "Already compact (unique document text — little/no duplicate noise to remove)",
-      ];
+      finalNotes = ["No reduction applied"];
     }
   }
 
@@ -139,9 +133,12 @@ function finalizeStats(
 }
 
 /**
- * Context optimizer — MVP rules engine.
- * Goal: never make the payload *worse*; shrink real noisy context when possible.
- * Unique prose/docs often land at 0% — that is correct, not a bug.
+ * Context optimizer.
+ *
+ * Paths:
+ *  - Logs / repetitive noise → aggressive line dedupe
+ *  - Well-formed documents → query-aware section keep + densify + chrome strip
+ *  - Always refuse to expand the payload vs the user input
  */
 export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   const profile = input.profile || "general";
@@ -171,23 +168,52 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     context = collapseBlankLines(stripChattyFiller(context));
   }
 
-  // 3) Profile-specific dedupe
-  const aggressive =
+  // 3) Path selection: document compress vs log dedupe
+  const aggressiveLog =
     profile === "log-analysis" || profile === "security-review";
+
   if (context) {
-    const before = context.length;
-    context = dedupeLines(context, aggressive);
-    if (context.length < before) {
-      notes.push(
-        aggressive
-          ? "Deduplicated repetitive log/context lines"
-          : "Removed consecutive duplicate lines"
-      );
+    const docMode =
+      profile === "documentation" ||
+      profile === "executive-summary" ||
+      looksLikeDocument(context);
+
+    if (docMode && !aggressiveLog) {
+      const doc = compressDocument(context, {
+        prompt,
+        profile,
+      });
+      if (doc.applied) {
+        context = doc.text;
+        notes.push(...doc.notes);
+      } else if (doc.notes.length) {
+        notes.push(...doc.notes);
+      }
+      // light consecutive dedupe still helps after doc compress
+      context = dedupeLines(context, false);
+    } else {
+      const before = context.length;
+      context = dedupeLines(context, aggressiveLog);
+      if (context.length < before) {
+        notes.push(
+          aggressiveLog
+            ? "Deduplicated repetitive log/context lines"
+            : "Removed consecutive duplicate lines"
+        );
+      }
+      // If it still looks like a long unique doc after mild dedupe, run doc path
+      if (looksLikeDocument(context) && context.length > 1500) {
+        const doc = compressDocument(context, { prompt, profile });
+        if (doc.applied) {
+          context = doc.text;
+          notes.push(...doc.notes);
+        }
+      }
     }
   }
   prompt = dedupeLines(prompt, false);
 
-  // 4) Lean payload — notes stay in metadata only (not baked into model text)
+  // 4) Lean payload
   let optimized = buildPayload(prompt, context);
 
   // 5) Token budget
@@ -228,15 +254,16 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     }
   }
 
-  // Absolute guard: if still expanded, ship original cleaned join at original size floor
   if (result.expanded && result.optimizedTokens > originalTokens) {
     const safe = truncateToTokenBudget(rawCombined.trim(), maxTokens);
     result = finalizeStats(safe, originalTokens, profile, secretFindings, [
       ...notes,
       "Pass-through original (optimizer refused to expand)",
     ]);
-    // force non-expanded display if estimate noise is 1 token
-    if (result.optimizedTokens > originalTokens && result.optimizedTokens - originalTokens <= 2) {
+    if (
+      result.optimizedTokens > originalTokens &&
+      result.optimizedTokens - originalTokens <= 2
+    ) {
       result = {
         ...result,
         optimizedTokens: originalTokens,

@@ -76,12 +76,12 @@ export const OPTIMIZATION_PROFILES = [
   {
     id: "documentation",
     name: "Documentation",
-    description: "Organize notes into structure",
+    description: "Query-aware section keep, outline, densify prose",
   },
   {
     id: "executive-summary",
     name: "Executive Summary",
-    description: "Business-readable context",
+    description: "Aggressive doc compress — outline + high-signal excerpts",
   },
 ] as const;
 
