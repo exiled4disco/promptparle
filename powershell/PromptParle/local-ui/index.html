@@ -85,10 +85,82 @@
       white-space: nowrap;
     }
     .side-head h1 .brand-accent { color: #93b4ff; }
-    .side-legal {
+    /* Pinned bottom of left menu: Activity log (always visible) + legal footer */
+    .side-foot-stack {
       margin-top: auto;
       flex: 0 0 auto;
-      padding: 0.55rem 0.2rem 0.15rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      padding-top: 0.35rem;
+    }
+    .side-activity {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.45rem;
+      width: 100%;
+      margin: 0;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0a0e16;
+      color: var(--text);
+      font: inherit;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+      box-sizing: border-box;
+    }
+    .side-activity:hover {
+      border-color: rgba(91, 140, 255, 0.45);
+      background: rgba(91, 140, 255, 0.08);
+      color: var(--accent);
+    }
+    .side-activity:focus-visible {
+      outline: 2px solid rgba(91, 140, 255, 0.55);
+      outline-offset: 1px;
+    }
+    .side-activity.has-ops {
+      border-color: rgba(91, 140, 255, 0.55);
+      box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.18);
+    }
+    .side-activity-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      min-width: 0;
+    }
+    .side-activity-dot {
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 999px;
+      background: var(--dim);
+      flex: 0 0 auto;
+    }
+    .side-activity.has-ops .side-activity-dot {
+      background: #ff2d2d;
+      box-shadow: 0 0 0 2px rgba(255, 45, 45, 0.2);
+    }
+    .side-activity-badge {
+      display: none;
+      min-width: 1.15rem;
+      height: 1.15rem;
+      padding: 0 0.28rem;
+      border-radius: 999px;
+      background: #ff2d2d;
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      line-height: 1.15rem;
+      text-align: center;
+      flex: 0 0 auto;
+    }
+    .side-activity.has-ops .side-activity-badge { display: inline-block; }
+    .side-legal {
+      flex: 0 0 auto;
+      padding: 0.35rem 0.2rem 0.1rem;
       border-top: 1px solid var(--border);
       font-size: 0.62rem;
       line-height: 1.35;
@@ -1304,9 +1376,19 @@
           </div>
         </div>
 
-        <div class="side-legal" aria-label="Copyright and trademark">
-          <p>© 2026 PromptParle. All rights reserved.</p>
-          <p>PromptParle™ and the PromptParle logo are trademarks of PromptParle.</p>
+        <div class="side-foot-stack">
+          <button type="button" class="side-activity" id="sideActivityLog"
+                  title="Operational messages (updates, SSH, workspace, tools) — not chat">
+            <span class="side-activity-label">
+              <span class="side-activity-dot" aria-hidden="true"></span>
+              Activity log
+            </span>
+            <span class="side-activity-badge" id="sideActivityBadge" aria-hidden="true">0</span>
+          </button>
+          <div class="side-legal" aria-label="Copyright and trademark">
+            <p>© 2026 PromptParle. All rights reserved.</p>
+            <p>PromptParle™ and the PromptParle logo are trademarks of PromptParle.</p>
+          </div>
         </div>
       </div>
     </aside>
@@ -1353,7 +1435,7 @@
         <div class="ops-log-out" id="opsLogOut" role="log" aria-live="polite" aria-relevant="additions"></div>
         <div class="ops-log-foot">
           <span id="opsLogCount">0 events</span>
-          <span>⋯ → Activity log · live stream between windows</span>
+          <span>Left menu Activity log · live stream between windows</span>
         </div>
       </div>
 
@@ -1429,7 +1511,8 @@ Also: /workspace · /git · /github · /ssh [cwd]   (paths &amp; keys stay on th
 Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</pre>
 
       <h3>Activity log</h3>
-      <pre>⋯ menu → Activity log  — opens a separate window for operational messages
+      <pre>Left menu (above footer) → Activity log — always-visible ops stream
+⋯ menu → Activity log  — same window (secondary)
 (updates, SSH, workspace, attach, tools). Chat stays for conversation only.</pre>
       </div>
       </div>
@@ -1923,8 +2006,33 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       } catch (e) { return 0; }
     }
     function updateOpsMenuBadge() {
-      if (!menuBtn || opsLogPopoutMode) return;
+      if (opsLogPopoutMode) return;
       const n = getOpsUnread();
+      const label = n > 0
+        ? (n + ' new activity log event' + (n === 1 ? '' : 's'))
+        : 'Operational messages (updates, SSH, workspace, tools) — not chat';
+
+      // Primary: left-sidebar control (always visible above legal footer)
+      const sideBtn = document.getElementById('sideActivityLog');
+      const sideBadge = document.getElementById('sideActivityBadge');
+      if (sideBtn) {
+        if (n > 0) {
+          sideBtn.classList.add('has-ops');
+          sideBtn.title = label;
+          sideBtn.setAttribute('aria-label', 'Activity log · ' + label);
+        } else {
+          sideBtn.classList.remove('has-ops');
+          sideBtn.title = label;
+          sideBtn.setAttribute('aria-label', 'Activity log');
+        }
+      }
+      if (sideBadge) {
+        sideBadge.textContent = n > 99 ? '99+' : String(n);
+        sideBadge.setAttribute('aria-hidden', n > 0 ? 'false' : 'true');
+      }
+
+      // Secondary: ⋯ menu still shows a badge
+      if (!menuBtn) return;
       let badge = menuBtn.querySelector('.ops-badge');
       if (n > 0) {
         menuBtn.classList.add('has-ops');
@@ -1934,7 +2042,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           menuBtn.appendChild(badge);
         }
         badge.textContent = n > 99 ? '99+' : String(n);
-        menuBtn.title = 'Menu · ' + n + ' new activity log event' + (n === 1 ? '' : 's');
+        menuBtn.title = 'Menu · ' + label;
       } else {
         menuBtn.classList.remove('has-ops');
         if (badge) badge.remove();
@@ -2046,7 +2154,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (!win) {
         logOps('Activity log pop-out blocked by the browser. Allow pop-ups for this site.', { level: 'error' });
         // Fallback: still show messages are in the log buffer
-        alert('Pop-up blocked. Allow pop-ups, then open ⋯ → Activity log again.\n\nOperational messages are stored — they no longer fill the chat.');
+        alert('Pop-up blocked. Allow pop-ups, then open Activity log (left menu, above footer).\n\nOperational messages are stored — they no longer fill the chat.');
         return;
       }
       opsLogPopoutWin = win;
@@ -2985,8 +3093,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
     }
     /**
-     * Prior turns for local [MEM] brief — fidelity without dumping full history.
-     * Excludes the welcome line, sys messages, and the user turn about to send.
+     * Prior turns for continuous [MEM] auto-compact.
+     * Sends a longer window than before; progressive per-turn caps so older
+     * turns cost fewer tokens on the wire. LocalPrep densifies further into [MEM].
+     * User never has to manually compact — this is the continuous memory path.
      */
     function buildHistoryPayload() {
       const out = [];
@@ -3007,11 +3117,25 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         let t = String(m.text);
         // Drop attachment footer noise from history labels
         t = t.replace(/\n\n\[\d+ attachment\(s\)\]\s*$/, '');
-        if (t.length > 4000) t = t.slice(0, 4000) + '…';
+        // Keep more signal for the wire; LocalPrep [MEM] does the real densify
+        if (t.length > 6000) t = t.slice(0, 6000) + '…';
         out.push({ role: r, text: t });
       }
-      // Cap to last 12 turns (local memory brief compresses further)
-      if (out.length > 12) return out.slice(out.length - 12);
+      // Wider window (24 turns) — continuous session awareness; [MEM] densifies
+      const MAX_TURNS = 24;
+      if (out.length > MAX_TURNS) return out.slice(out.length - MAX_TURNS);
+      // Progressive caps: oldest turns cheaper on the JSON wire
+      const n = out.length;
+      for (let i = 0; i < n; i++) {
+        const age = n - 1 - i; // 0 = newest
+        let cap = 6000;
+        if (age >= 12) cap = 900;
+        else if (age >= 6) cap = 1800;
+        else if (age >= 3) cap = 3200;
+        if (out[i].text.length > cap) {
+          out[i].text = out[i].text.slice(0, cap) + '…';
+        }
+      }
       return out;
     }
 
@@ -5118,6 +5242,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         openActivityLogWindow();
       });
     }
+    const sideActivityLog = document.getElementById('sideActivityLog');
+    if (sideActivityLog) {
+      sideActivityLog.addEventListener('click', function () {
+        openActivityLogWindow();
+      });
+      sideActivityLog.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          openActivityLogWindow();
+        }
+      });
+    }
     updateOpsMenuBadge();
 
     if (!termPopoutMode && !opsLogPopoutMode) {
@@ -5127,7 +5263,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       loadAgents().then(loadSession);
       refreshAttachHint();
       // One startup breadcrumb in the ops stream (not chat)
-      logOps('PromptParle local UI ready · operational messages go to ⋯ → Activity log.', { level: 'ok' });
+      logOps('PromptParle local UI ready · Activity log is in the left menu (above footer).', { level: 'ok' });
     }
 
     async function loadProviders() {

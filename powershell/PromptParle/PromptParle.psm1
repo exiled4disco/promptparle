@@ -1134,17 +1134,18 @@ function Get-PromptParleChatSystemPrompt {
     .SYNOPSIS
       Single product system brief — continuous chat, no multi-agent personas.
       Dial owns token shrink; this only sets conversational behavior.
+      Feels like Grok Build / Claude Code: seamless multi-turn, auto-memory.
     #>
     return @(
-        'You are a hands-on engineering partner in a continuous conversation (same energy as Cursor/Claude Code/Grok Build — not a ticket triage bot).',
-        'PromptParle optimizes (shrinks) context before it reaches you — high signal, lower tokens; trust [CONN]/[SSH]/[WEB]/[MEM] and attachments as evidence.',
-        'Default: DO the work. When the user names a feature, bug, or change, implement or ship from evidence immediately.',
-        'HARD BAN: Never assign the user numbered homework (1. run git 2. paste output 3. confirm). Never say "run these commands and paste". Never open with a questionnaire when the ask is clear.',
+        'You are a hands-on engineering partner in ONE continuous session (same feel as Grok Build / Claude Code / Cursor — not a ticket bot, not a multi-agent maze).',
+        'PromptParle sits between the user and you: every turn is optimized (dial) for high-fidelity lower tokens. Trust [CONN] [SSH] [SSH-PRODUCT] [WEB] [MEM] and attachments as live evidence.',
+        '[MEM] is auto-compacted session memory for this window — treat it as what you already know. Never ask the user to re-paste prior turns, summarize the chat, or manually compact context.',
+        'Default: DO the work. Feature/bug/change named → implement or ship from evidence immediately. Seamless follow-ups; keep decisions, paths, versions, and open threads.',
+        'HARD BAN: Never assign the user numbered homework (1. run git 2. paste output 3. confirm). Never say "run these and paste". Never open with a questionnaire when the ask is clear.',
         'If Tools are ON, local/SSH prep already ran this turn — use that evidence. Ask at most one focused question only if truly blocked.',
-        'If you cannot mutate remote files in this channel, still do not dump process: give the complete change (full file or unified diff) plus at most ONE short apply/ship line — or state a single concrete blocker.',
-        'Use session continuity. Prefer concrete edits, paths, versions, and ship steps over filler.',
-        'Do not invent file paths, ship-blockers, or missing evidence. PowerShell ExecutionPolicy is not a security boundary (Microsoft).',
-        'Product issues (savings, update, dial, SSH, UI, rename, build) are work to execute — not empathy and not user errands.'
+        'If you cannot mutate remote files here: deliver the complete change (full file or unified diff) plus at most ONE short apply/ship line — or one concrete blocker.',
+        'Do not invent paths, ship-blockers, or missing evidence. PowerShell ExecutionPolicy is not a security boundary (Microsoft).',
+        'Product issues (savings, update, dial, SSH, UI, memory, build) are work to execute — not empathy and not user errands.'
     ) -join ' '
 }
 
@@ -1965,8 +1966,13 @@ function Invoke-PromptParleErrorBriefLocal {
 function Invoke-PromptParleChatMemoryBrief {
     <#
     .SYNOPSIS
-      Compress prior chat turns into a fidelity-preserving memory brief.
-      Recent turns keep more detail; older turns become fact bullets only.
+      Continuous auto-compact of prior turns into a fidelity-preserving [MEM] brief.
+      Tiered densify (no user manual compaction):
+        - Spine: durable facts across the whole window (paths, versions, decisions)
+        - Deep past: ultra-dense extract bullets
+        - Mid: denser extracts
+        - Recent: near-full body (dial-capped)
+      Goal: same continuous-session feel as Grok Build, fewer tokens.
     #>
     param(
         [object[]]$History,
@@ -1984,7 +1990,12 @@ function Invoke-PromptParleChatMemoryBrief {
             if ($role -match 'sys|system|tool') { continue }
             if ($role -match 'bot|assistant|ai|model') { $role = 'assistant' }
             else { $role = 'user' }
-            $turns.Add([pscustomobject]@{ role = $role; text = $text.Trim() })
+            # Drop pure acknowledgements early
+            $trimT = $text.Trim()
+            if ($trimT -match '(?is)^(thanks|thank you|ok|okay|sure|got it|k|cool|nice)[.!\s]*$' -and $trimT.Length -lt 28) {
+                continue
+            }
+            $turns.Add([pscustomobject]@{ role = $role; text = $trimT })
         }
     } elseif ($HistoryText) {
         # Parse "user: …" / "assistant: …" blocks
@@ -2004,17 +2015,28 @@ function Invoke-PromptParleChatMemoryBrief {
     $charsIn = 0
     foreach ($t in $turns) { $charsIn += $t.text.Length }
 
-    # Keep last 2 turns richer; older → extractive bullets
-    $recentN = if ($Dial -le 2) { 3 } else { 2 }
+    # Tier sizes by dial (more fidelity at low dial; denser at high)
+    $recentN = if ($Dial -le 2) { 4 } elseif ($Dial -eq 3) { 3 } else { 2 }
+    $midN = if ($Dial -le 2) { 6 } elseif ($Dial -eq 3) { 5 } else { 4 }
     $startRecent = [Math]::Max(0, $turns.Count - $recentN)
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('[MEM] prior turns (local brief — high-signal only)')
+    $startMid = [Math]::Max(0, $startRecent - $midN)
 
-    if ($startRecent -gt 0) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('[MEM] continuous session (auto-compact — high-signal only; treat as known context)')
+
+    # Spine: durable facts across ALL turns (paths, versions, decisions, open work)
+    $spine = Get-PromptParleMemorySpine -Turns @($turns.ToArray()) -MaxLen $(if ($Dial -ge 4) { 420 } elseif ($Dial -le 2) { 720 } else { 560 })
+    if ($spine) {
+        $lines.Add('Spine:')
+        $lines.Add($spine)
+    }
+
+    # Deep past (everything before mid)
+    if ($startMid -gt 0) {
         $lines.Add('Earlier:')
-        for ($i = 0; $i -lt $startRecent; $i++) {
+        for ($i = 0; $i -lt $startMid; $i++) {
             $t = $turns[$i]
-            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen 180
+            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 100 } else { 140 })
             if ($extract) {
                 $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
                 $lines.Add("· ${tag}: $extract")
@@ -2022,16 +2044,26 @@ function Invoke-PromptParleChatMemoryBrief {
         }
     }
 
+    # Mid band
+    if ($startMid -lt $startRecent) {
+        $lines.Add('Mid:')
+        for ($i = $startMid; $i -lt $startRecent; $i++) {
+            $t = $turns[$i]
+            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 160 } else { 220 })
+            if ($extract) {
+                $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
+                $lines.Add("· ${tag}: $extract")
+            }
+        }
+    }
+
+    # Recent: near-full densified body
     $lines.Add('Recent:')
     for ($i = $startRecent; $i -lt $turns.Count; $i++) {
         $t = $turns[$i]
         $tag = if ($t.role -eq 'assistant') { 'assistant' } else { 'user' }
         $body = $t.text
-        # Drop pure acknowledgements (no signal)
-        if ($body -match '(?is)^(thanks|thank you|ok|okay|sure|got it)[.!\s]*$' -and $body.Length -lt 24) {
-            continue
-        }
-        $cap = if ($Dial -le 2) { 900 } elseif ($Dial -eq 3) { 600 } else { 360 }
+        $cap = if ($Dial -le 2) { 1100 } elseif ($Dial -eq 3) { 750 } elseif ($Dial -eq 4) { 480 } else { 320 }
         if ($body.Length -gt $cap) {
             $body = Get-PromptParleFidelityTrim -Text $body -MaxChars $cap -Marker '…'
         }
@@ -2041,16 +2073,70 @@ function Invoke-PromptParleChatMemoryBrief {
 
     $out = ($lines -join "`n")
     if ($out.Length -gt $MaxChars) {
+        # Prefer keeping Spine + Recent; trim Mid/Earlier first via fidelity trim
         $out = Get-PromptParleFidelityTrim -Text $out -MaxChars $MaxChars -Marker '…[mem budget]…'
     }
     $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
     return [pscustomobject]@{
         text      = $out
-        notes     = @("memory −${pct}% ($charsIn→$($out.Length))", "turns $($turns.Count)")
+        notes     = @("memory −${pct}% ($charsIn→$($out.Length))", "turns $($turns.Count)", 'auto-compact')
         chars_in  = $charsIn
         chars_out = $out.Length
         turns     = $turns.Count
     }
+}
+
+function Get-PromptParleMemorySpine {
+    <#
+    .SYNOPSIS
+      Rolling durable facts for continuous [MEM] — paths, versions, decisions, open work.
+      Deduped across turns so long sessions stay relevant without full replay.
+    #>
+    param(
+        [object[]]$Turns,
+        [int]$MaxLen = 560
+    )
+    if (-not $Turns -or $Turns.Count -eq 0) { return '' }
+    $bits = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    $add = {
+        param([string]$s)
+        if (-not $s) { return }
+        $k = $s.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { return }
+        $seen[$k] = $true
+        $bits.Add($s)
+    }
+    foreach ($t in $Turns) {
+        $text = [string]$t.text
+        if (-not $text) { continue }
+        # Versions (0.14.x, v1.2.3)
+        foreach ($m in [regex]::Matches($text, '(?i)\b(?:v?\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\b')) {
+            if ($m.Value -match '^\d+\.\d+$' -and [double]$m.Value -lt 1) { continue }
+            & $add $m.Value
+            if ($bits.Count -ge 18) { break }
+        }
+        # Paths / files
+        foreach ($m in [regex]::Matches($text, '(?i)(?:[A-Za-z]:\\|~/|\./|[\w.-]+/)+[\w.-]+\.[\w]+|[\w.-]+\.(?:psm1|psd1|html|ts|tsx|js|php|py|go|md|json|yml)')) {
+            & $add $m.Value
+            if ($bits.Count -ge 22) { break }
+        }
+        # Decision / open-work sentences
+        foreach ($line in ($text -split "`n")) {
+            $ln = $line.Trim()
+            if ($ln.Length -lt 16 -or $ln.Length -gt 160) { continue }
+            if ($ln -match '(?i)\b(decided|ship|version|must|blocker|fixed|todo|in progress|use |don''t |never |always |activity log|auto-compact|\[MEM\])\b') {
+                $s = if ($ln.Length -gt 110) { $ln.Substring(0, 107) + '…' } else { $ln }
+                & $add $s
+                if ($bits.Count -ge 28) { break }
+            }
+        }
+        if ($bits.Count -ge 28) { break }
+    }
+    if ($bits.Count -eq 0) { return '' }
+    $joined = ($bits | Select-Object -First 14) -join ' · '
+    if ($joined.Length -gt $MaxLen) { $joined = $joined.Substring(0, $MaxLen - 1) + '…' }
+    return $joined
 }
 
 function Get-PromptParleMemoryExtract {
@@ -2059,17 +2145,22 @@ function Get-PromptParleMemoryExtract {
     if (-not $Text) { return '' }
     $bits = New-Object System.Collections.Generic.List[string]
     # Paths / files
-    foreach ($m in [regex]::Matches($Text, '(?i)(?:[A-Za-z]:\\|~/|\./|[\w.-]+/)+[\w.-]+\.[\w]+')) {
+    foreach ($m in [regex]::Matches($Text, '(?i)(?:[A-Za-z]:\\|~/|\./|[\w.-]+/)+[\w.-]+\.[\w]+|[\w.-]+\.(?:psm1|psd1|html|ts|tsx|js|php|py|go|md|json|yml)')) {
         $bits.Add($m.Value)
-        if ($bits.Count -ge 4) { break }
+        if ($bits.Count -ge 5) { break }
     }
-    # Error-ish sentences
+    # Versions
+    foreach ($m in [regex]::Matches($Text, '(?i)\b(?:v?\d+\.\d+\.\d+(?:\.\d+)?)\b')) {
+        $bits.Add($m.Value)
+        if ($bits.Count -ge 7) { break }
+    }
+    # Decision / error / action sentences
     foreach ($line in ($Text -split "`n")) {
         $t = $line.Trim()
-        if ($t -match '(?i)\b(error|failed|fixed|decided|use|because|must|cannot|bug|CVE)\b' -and $t.Length -gt 12) {
-            $s = if ($t.Length -gt 100) { $t.Substring(0, 97) + '…' } else { $t }
+        if ($t -match '(?i)\b(error|failed|fixed|decided|ship|use|because|must|cannot|bug|CVE|blocker|version|implement|deploy|todo|open)\b' -and $t.Length -gt 12) {
+            $s = if ($t.Length -gt 110) { $t.Substring(0, 107) + '…' } else { $t }
             $bits.Add($s)
-            if ($bits.Count -ge 5) { break }
+            if ($bits.Count -ge 6) { break }
         }
     }
     if ($bits.Count -eq 0) {
@@ -2077,7 +2168,7 @@ function Get-PromptParleMemoryExtract {
         if ($s.Length -gt $MaxLen) { $s = $s.Substring(0, $MaxLen - 1) + '…' }
         return $s
     }
-    $joined = ($bits | Select-Object -Unique | Select-Object -First 5) -join ' · '
+    $joined = ($bits | Select-Object -Unique | Select-Object -First 6) -join ' · '
     if ($joined.Length -gt $MaxLen) { $joined = $joined.Substring(0, $MaxLen - 1) + '…' }
     return $joined
 }
@@ -2981,11 +3072,13 @@ function Invoke-PromptParleAgentLocalPrep {
         $notes.Add('conn-skip')
     }
 
-    # 0b) Chat memory from prior turns (even tools-off: multi-turn fidelity without full dump)
+    # 0b) Continuous chat memory — auto-compact every turn (no user manual compaction)
     try {
-        $memMax = 2400
-        if ($Dial -le 2) { $memMax = 3600 }
-        if ($Dial -ge 4) { $memMax = 1600 }
+        $memMax = 2800
+        if ($Dial -le 2) { $memMax = 4200 }
+        if ($Dial -eq 3) { $memMax = 3000 }
+        if ($Dial -ge 4) { $memMax = 1800 }
+        if ($Dial -ge 5) { $memMax = 1400 }
         $mem = $null
         # Topic-shift: if this turn is not a security ask, compress prior security-corridor rants in memory
         $histForMem = $History
@@ -7626,7 +7719,7 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        $rtNote = 'Tools path already ran this turn when enabled. Evidence may include [CONN]/[SSH]/[SSH-PRODUCT]/[MEM]. HARD BAN: do not assign the user numbered homework or ask them to run commands and paste. Act on evidence; deliver the complete change or one short ship line.'
+                        $rtNote = 'Tools path already ran this turn when enabled. Evidence may include [CONN]/[SSH]/[SSH-PRODUCT]/[MEM]. [MEM] is auto-compacted continuous session memory — treat as known; never ask the user to re-paste prior turns or compact chat. HARD BAN: no numbered user homework / no paste-this-output. Act on evidence; deliver the complete change or one short ship line.'
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Local notes: ' + (($localNotes | Select-Object -First 12) -join ', ') + '.'
                         }
