@@ -573,16 +573,17 @@ function Get-PromptParleActiveAgentId {
 function Get-PromptParleSessionState {
     $path = Get-PromptParleSessionStatePath
     $state = [ordered]@{
-        active_agent    = 'default'
-        provider        = 'openai'
-        profile         = 'general'
-        dial            = 3
-        model           = $null
-        optimize_only   = $false
-        workspace_path  = ''
-        workspace_kind  = 'none'
-        ssh_target      = ''
-        ssh_port        = 22
+        active_agent      = 'default'
+        provider          = 'openai'
+        profile           = 'general'
+        dial              = 3
+        model             = $null
+        optimize_only     = $false
+        workspace_path    = ''
+        workspace_kind    = 'none'
+        workspace_recent  = @()
+        ssh_target        = ''
+        ssh_port          = 22
     }
     if (Test-Path -LiteralPath $path) {
         try {
@@ -597,6 +598,14 @@ function Get-PromptParleSessionState {
             if ($null -ne $o) { $state.optimize_only = [bool]$o }
             $sp = Get-PromptParleProp $s 'ssh_port'
             if ($null -ne $sp) { try { $state.ssh_port = [int]$sp } catch { } }
+            $rec = Get-PromptParleProp $s 'workspace_recent'
+            if ($null -ne $rec) {
+                $list = @()
+                foreach ($item in @($rec)) {
+                    if ($item -and "$item".Trim()) { $list += [string]$item }
+                }
+                $state.workspace_recent = $list
+            }
         } catch { }
     }
     # Apply agent defaults when agent selected
@@ -630,21 +639,36 @@ function New-PromptParleSessionSnapshot {
         $OptimizeOnly = $null,
         [string]$WorkspacePath,
         [string]$WorkspaceKind,
+        $WorkspaceRecent = $null,
         [string]$SshTarget,
         $SshPort = $null
     )
     if (-not $Base) { $Base = Get-PromptParleSessionState }
+    $recent = @()
+    if ($null -ne $WorkspaceRecent) {
+        foreach ($item in @($WorkspaceRecent)) {
+            if ($item -and "$item".Trim()) { $recent += [string]$item }
+        }
+    } else {
+        $baseRec = Get-PromptParleProp $Base 'workspace_recent'
+        if ($null -ne $baseRec) {
+            foreach ($item in @($baseRec)) {
+                if ($item -and "$item".Trim()) { $recent += [string]$item }
+            }
+        }
+    }
     $out = [ordered]@{
-        active_agent   = if ($PSBoundParameters.ContainsKey('ActiveAgent') -and $ActiveAgent) { $ActiveAgent } else { [string](Get-PromptParleProp $Base 'active_agent' 'default') }
-        provider       = if ($PSBoundParameters.ContainsKey('Provider') -and $Provider) { $Provider } else { [string](Get-PromptParleProp $Base 'provider' 'openai') }
-        profile        = if ($PSBoundParameters.ContainsKey('Profile') -and $Profile) { $Profile } else { [string](Get-PromptParleProp $Base 'profile' 'general') }
-        dial           = if ($Dial -ge 1) { $Dial } else { [int](Get-PromptParleProp $Base 'dial' 3) }
-        model          = if ($PSBoundParameters.ContainsKey('Model')) { $Model } else { Get-PromptParleProp $Base 'model' $null }
-        optimize_only  = if ($null -ne $OptimizeOnly) { [bool]$OptimizeOnly } else { [bool](Get-PromptParleProp $Base 'optimize_only' $false) }
-        workspace_path = if ($PSBoundParameters.ContainsKey('WorkspacePath')) { [string]$WorkspacePath } else { [string](Get-PromptParleProp $Base 'workspace_path' '') }
-        workspace_kind = if ($PSBoundParameters.ContainsKey('WorkspaceKind')) { [string]$WorkspaceKind } else { [string](Get-PromptParleProp $Base 'workspace_kind' 'none') }
-        ssh_target     = if ($PSBoundParameters.ContainsKey('SshTarget')) { [string]$SshTarget } else { [string](Get-PromptParleProp $Base 'ssh_target' '') }
-        ssh_port       = if ($null -ne $SshPort) { [int]$SshPort } else { [int](Get-PromptParleProp $Base 'ssh_port' 22) }
+        active_agent     = if ($PSBoundParameters.ContainsKey('ActiveAgent') -and $ActiveAgent) { $ActiveAgent } else { [string](Get-PromptParleProp $Base 'active_agent' 'default') }
+        provider         = if ($PSBoundParameters.ContainsKey('Provider') -and $Provider) { $Provider } else { [string](Get-PromptParleProp $Base 'provider' 'openai') }
+        profile          = if ($PSBoundParameters.ContainsKey('Profile') -and $Profile) { $Profile } else { [string](Get-PromptParleProp $Base 'profile' 'general') }
+        dial             = if ($Dial -ge 1) { $Dial } else { [int](Get-PromptParleProp $Base 'dial' 3) }
+        model            = if ($PSBoundParameters.ContainsKey('Model')) { $Model } else { Get-PromptParleProp $Base 'model' $null }
+        optimize_only    = if ($null -ne $OptimizeOnly) { [bool]$OptimizeOnly } else { [bool](Get-PromptParleProp $Base 'optimize_only' $false) }
+        workspace_path   = if ($PSBoundParameters.ContainsKey('WorkspacePath')) { [string]$WorkspacePath } else { [string](Get-PromptParleProp $Base 'workspace_path' '') }
+        workspace_kind   = if ($PSBoundParameters.ContainsKey('WorkspaceKind')) { [string]$WorkspaceKind } else { [string](Get-PromptParleProp $Base 'workspace_kind' 'none') }
+        workspace_recent = $recent
+        ssh_target       = if ($PSBoundParameters.ContainsKey('SshTarget')) { [string]$SshTarget } else { [string](Get-PromptParleProp $Base 'ssh_target' '') }
+        ssh_port         = if ($null -ne $SshPort) { [int]$SshPort } else { [int](Get-PromptParleProp $Base 'ssh_port' 22) }
     }
     return [pscustomobject]$out
 }
@@ -656,18 +680,26 @@ function Save-PromptParleSessionState {
     if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
+    $recent = @()
+    $recRaw = Get-PromptParleProp $State 'workspace_recent'
+    if ($null -ne $recRaw) {
+        foreach ($item in @($recRaw)) {
+            if ($item -and "$item".Trim()) { $recent += [string]$item }
+        }
+    }
     $out = [ordered]@{
-        active_agent   = [string](Get-PromptParleProp $State 'active_agent' 'default')
-        provider       = [string](Get-PromptParleProp $State 'provider' 'openai')
-        profile        = [string](Get-PromptParleProp $State 'profile' 'general')
-        dial           = [int](Get-PromptParleProp $State 'dial' 3)
-        model          = Get-PromptParleProp $State 'model' $null
-        optimize_only  = [bool](Get-PromptParleProp $State 'optimize_only' $false)
-        workspace_path = [string](Get-PromptParleProp $State 'workspace_path' '')
-        workspace_kind = [string](Get-PromptParleProp $State 'workspace_kind' 'none')
-        ssh_target     = [string](Get-PromptParleProp $State 'ssh_target' '')
-        ssh_port       = [int](Get-PromptParleProp $State 'ssh_port' 22)
-        updated_at     = (Get-Date).ToString('o')
+        active_agent     = [string](Get-PromptParleProp $State 'active_agent' 'default')
+        provider         = [string](Get-PromptParleProp $State 'provider' 'openai')
+        profile          = [string](Get-PromptParleProp $State 'profile' 'general')
+        dial             = [int](Get-PromptParleProp $State 'dial' 3)
+        model            = Get-PromptParleProp $State 'model' $null
+        optimize_only    = [bool](Get-PromptParleProp $State 'optimize_only' $false)
+        workspace_path   = [string](Get-PromptParleProp $State 'workspace_path' '')
+        workspace_kind   = [string](Get-PromptParleProp $State 'workspace_kind' 'none')
+        workspace_recent = $recent
+        ssh_target       = [string](Get-PromptParleProp $State 'ssh_target' '')
+        ssh_port         = [int](Get-PromptParleProp $State 'ssh_port' 22)
+        updated_at       = (Get-Date).ToString('o')
     }
     ($out | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
 }
@@ -738,6 +770,25 @@ function Test-PromptParlePathIsGitRepo {
     return (Test-Path -LiteralPath $gitDir)
 }
 
+function Add-PromptParleWorkspaceRecent {
+    param([string]$Path, [int]$Max = 12)
+    if (-not $Path) { return @() }
+    $state = Get-PromptParleSessionState
+    $list = @()
+    $list += $Path
+    $existing = Get-PromptParleProp $state 'workspace_recent'
+    if ($null -ne $existing) {
+        foreach ($item in @($existing)) {
+            $s = [string]$item
+            if (-not $s) { continue }
+            if ($s.Equals($Path, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (Test-Path -LiteralPath $s -PathType Container) { $list += $s }
+        }
+    }
+    if ($list.Count -gt $Max) { $list = $list[0..($Max - 1)] }
+    return $list
+}
+
 function Set-PromptParleWorkspace {
     <#
     .SYNOPSIS
@@ -749,22 +800,37 @@ function Set-PromptParleWorkspace {
         [Parameter(Mandatory)][string]$Path
     )
     $resolved = $null
+    # Expand ~ and environment-style paths
+    $raw = $Path.Trim().Trim('"').Trim("'")
+    if ($raw -eq '~' -or $raw -eq '~/') {
+        $raw = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    } elseif ($raw.StartsWith('~/') -or $raw.StartsWith('~\')) {
+        $home = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+        $raw = Join-Path $home $raw.Substring(2)
+    }
     try {
-        $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+        $resolved = (Resolve-Path -LiteralPath $raw -ErrorAction Stop).Path
     } catch {
-        throw "Path not found: $Path"
+        # try as relative to current location
+        try {
+            $resolved = (Resolve-Path -Path $raw -ErrorAction Stop).Path
+        } catch {
+            throw "Path not found: $Path"
+        }
     }
     if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
         throw "Workspace must be a directory: $resolved"
     }
     $kind = if (Test-PromptParlePathIsGitRepo -Path $resolved) { 'git' } else { 'local' }
+    $recent = Add-PromptParleWorkspaceRecent -Path $resolved
     $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $resolved -WorkspaceKind $kind
+    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $resolved -WorkspaceKind $kind -WorkspaceRecent $recent
     Save-PromptParleSessionState -State $state
     return [pscustomobject]@{
-        path = $resolved
-        kind = $kind
-        is_git = ($kind -eq 'git')
+        path     = $resolved
+        kind     = $kind
+        is_git   = ($kind -eq 'git')
+        recent   = $recent
     }
 }
 
@@ -795,6 +861,14 @@ function Get-PromptParleWorkspace {
     } elseif ($path) {
         $kind = 'missing'
     }
+    $recent = @()
+    $recRaw = Get-PromptParleProp $state 'workspace_recent'
+    if ($null -ne $recRaw) {
+        foreach ($item in @($recRaw)) {
+            $s = [string]$item
+            if ($s -and (Test-Path -LiteralPath $s -PathType Container)) { $recent += $s }
+        }
+    }
     return [pscustomobject]@{
         path       = $path
         kind       = $kind
@@ -802,9 +876,165 @@ function Get-PromptParleWorkspace {
         is_git     = $isGit
         branch     = $branch
         remote     = $remote
+        recent     = $recent
         ssh_target = [string](Get-PromptParleProp $state 'ssh_target' '')
         ssh_port   = [int](Get-PromptParleProp $state 'ssh_port' 22)
     }
+}
+
+function Get-PromptParleFsRoots {
+    <#
+    .SYNOPSIS
+      Common starting places for the local folder browser (this PC only).
+    #>
+    $roots = New-Object System.Collections.Generic.List[object]
+    function Add-Root([string]$Label, [string]$Path) {
+        if (-not $Path) { return }
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+        $full = (Resolve-Path -LiteralPath $Path).Path
+        $roots.Add([pscustomobject]@{ label = $Label; path = $full; kind = 'root' })
+    }
+    $home = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($HOME) { $HOME } else { $null }
+    Add-Root 'Home' $home
+    if ($home) {
+        Add-Root 'Documents' (Join-Path $home 'Documents')
+        Add-Root 'Desktop' (Join-Path $home 'Desktop')
+        Add-Root 'Downloads' (Join-Path $home 'Downloads')
+        Add-Root 'src' (Join-Path $home 'src')
+        Add-Root 'Projects' (Join-Path $home 'Projects')
+        Add-Root 'repos' (Join-Path $home 'repos')
+    }
+    if ($script:PromptParleIsWindows) {
+        try {
+            Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | ForEach-Object {
+                $rootPath = $_.Root
+                if ($rootPath -and (Test-Path -LiteralPath $rootPath)) {
+                    Add-Root ("Drive " + $_.Name + ":") $rootPath
+                }
+            }
+        } catch { }
+    } else {
+        Add-Root '/' '/'
+        Add-Root '/home' '/home'
+        Add-Root '/opt' '/opt'
+        Add-Root '/var' '/var'
+    }
+    $ws = Get-PromptParleWorkspace
+    if ($ws.path -and $ws.exists) {
+        Add-Root 'Current workspace' $ws.path
+    }
+    foreach ($r in @($ws.recent)) {
+        Add-Root ('Recent: ' + [IO.Path]::GetFileName($r.TrimEnd('\', '/'))) $r
+    }
+    # de-dupe by path
+    $seen = @{}
+    $out = @()
+    foreach ($r in $roots) {
+        $key = $r.path.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $out += $r
+    }
+    return $out
+}
+
+function Get-PromptParleFsList {
+    <#
+    .SYNOPSIS
+      List a local directory for the folder browser (dirs + light file info).
+    #>
+    param(
+        [string]$Path,
+        [int]$Max = 400
+    )
+    if (-not $Path -or -not $Path.Trim()) {
+        return [pscustomobject]@{
+            path    = ''
+            parent  = $null
+            entries = @(Get-PromptParleFsRoots | ForEach-Object {
+                [pscustomobject]@{
+                    name     = $_.label
+                    path     = $_.path
+                    is_dir   = $true
+                    is_git   = (Test-PromptParlePathIsGitRepo -Path $_.path)
+                    size     = $null
+                }
+            })
+            roots   = $true
+        }
+    }
+    $raw = $Path.Trim().Trim('"').Trim("'")
+    if (-not (Test-Path -LiteralPath $raw)) {
+        throw "Path not found: $raw"
+    }
+    $full = (Resolve-Path -LiteralPath $raw).Path
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+        throw "Not a directory: $full"
+    }
+    $parent = $null
+    try {
+        $p = Split-Path -Parent $full
+        if ($p -and (Test-Path -LiteralPath $p)) { $parent = (Resolve-Path -LiteralPath $p).Path }
+    } catch { }
+
+    $skip = $script:PromptParleSkipDirNames
+    $entries = New-Object System.Collections.Generic.List[object]
+    $items = @(Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            if ($_.PSIsContainer -and ($skip -contains $_.Name)) { return $false }
+            if (-not $_.PSIsContainer -and ($_.Name -eq '.env' -or $_.Name -like '.env.*')) { return $false }
+            return $true
+        } |
+        Sort-Object { -not $_.PSIsContainer }, Name |
+        Select-Object -First $Max)
+
+    foreach ($item in $items) {
+        $entries.Add([pscustomobject]@{
+            name   = $item.Name
+            path   = $item.FullName
+            is_dir = [bool]$item.PSIsContainer
+            is_git = if ($item.PSIsContainer) { Test-PromptParlePathIsGitRepo -Path $item.FullName } else { $false }
+            size   = if (-not $item.PSIsContainer) { [long]$item.Length } else { $null }
+        })
+    }
+
+    return [pscustomobject]@{
+        path    = $full
+        parent  = $parent
+        entries = @($entries)
+        roots   = $false
+        is_git  = (Test-PromptParlePathIsGitRepo -Path $full)
+        count   = $entries.Count
+    }
+}
+
+function Get-PromptParleDirListingText {
+    param(
+        [string]$RelativePath = ''
+    )
+    $ws = Get-PromptParleWorkspace
+    if (-not $ws.exists) { throw 'No workspace attached. /workspace <path> or Browse folders in the UI.' }
+    $target = $ws.path
+    if ($RelativePath -and $RelativePath.Trim() -and $RelativePath.Trim() -ne '.') {
+        $target = Resolve-PromptParleWorkspacePath -RelativePath $RelativePath
+    }
+    if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+        throw "Not a directory: $RelativePath"
+    }
+    $list = Get-PromptParleFsList -Path $target -Max 200
+    $lines = @("Directory: $($list.path)")
+    if ($list.is_git) { $lines += '(git repository)' }
+    foreach ($e in $list.entries) {
+        if ($e.is_dir) {
+            $mark = if ($e.is_git) { ' [git]' } else { '' }
+            $lines += ("  [dir]  {0}/{1}" -f $e.name, $mark)
+        } else {
+            $kb = if ($null -ne $e.size) { [math]::Round($e.size / 1KB, 1) } else { 0 }
+            $lines += ("  [file] {0}  ({1} KB)" -f $e.name, $kb)
+        }
+    }
+    if ($list.entries.Count -eq 0) { $lines += '  (empty)' }
+    return ($lines -join "`n")
 }
 
 function Resolve-PromptParleWorkspacePath {
@@ -1222,15 +1452,20 @@ Commands (type in chat instead of a normal message):
   /clear                Clear chat (UI) / screen (CLI)
   /quit                 Stop (CLI)
 
-Workspace & code (local paths — never uploaded as credentials):
+Workspace & local directories (paths stay on this PC):
   /workspace            Show attached folder/repo
-  /workspace <path>     Attach local project (git-aware)
+  /workspace <path>     Attach any local directory (git-aware if .git)
+  /workspace ~\src\app  ~ expands to your home folder
   /workspace clear      Detach
+  /workspace recent     Recently attached folders
+  /workspace ls [sub]   List directory (local)
+  /workspace cd <sub>   Attach a subfolder of the current workspace
   /workspace tree [n]   File tree (depth 1–5)
   /workspace cat <file> Load file into chat attachments
   /workspace find <pat> Find files (e.g. *.ps1)
   /workspace pack <pat> Attach up to 12 matching files
   /ws                   Alias for /workspace
+  UI: Browse folders button opens a local directory picker
 
 Git / GitHub (uses git + your SSH keys / gh auth on this PC):
   /git status|diff|log|branch
@@ -1450,15 +1685,16 @@ Session
                     $ws = Get-PromptParleWorkspace
                     if (-not $ws.path) {
                         $message = @"
-No workspace attached.
+No local folder attached.
 
-  /workspace C:\path\to\project     attach local folder
+  Browse folders in the UI, or:
+  /workspace C:\path\to\project     any local directory
+  /workspace ~\Documents\code       ~ = home
+  /workspace recent                 re-open recent folders
   /github clone owner/repo          clone then attach
-  /workspace tree                   show files
-  /workspace cat src\app.ts         load file into chat
-  /workspace pack *.ps1             attach matching files
+  /workspace ls · tree · cat · pack
 
-Credentials (git SSH keys, gh tokens) stay on this PC.
+Paths and credentials stay on this PC.
 "@
                     } else {
                         $message = Get-PromptParleGitStatusText
@@ -1472,6 +1708,34 @@ Credentials (git SSH keys, gh tokens) stay on this PC.
                     $message = 'Workspace detached.'
                 } elseif ($arg -match '^(status)$') {
                     $message = Get-PromptParleGitStatusText
+                } elseif ($arg -match '^(recent)$') {
+                    $ws = Get-PromptParleWorkspace
+                    if (-not $ws.recent -or @($ws.recent).Count -eq 0) {
+                        $message = "No recent folders yet.`nAttach with /workspace C:\path or use Browse folders in the UI."
+                    } else {
+                        $lines = @('Recent local folders (re-attach: /workspace <path>):')
+                        $i = 1
+                        foreach ($r in @($ws.recent)) {
+                            $kind = if (Test-PromptParlePathIsGitRepo -Path $r) { 'git' } else { 'local' }
+                            $lines += ("  {0}. [{1}] {2}" -f $i, $kind, $r)
+                            $i++
+                        }
+                        $message = $lines -join "`n"
+                    }
+                } elseif ($arg -match '^(ls|dir)(?:\s+(.+))?$') {
+                    $sub = if ($Matches[2]) { $Matches[2].Trim().Trim('"').Trim("'") } else { '' }
+                    $message = Get-PromptParleDirListingText -RelativePath $sub
+                } elseif ($arg -match '^(cd)\s+(.+)$') {
+                    $sub = $Matches[2].Trim().Trim('"').Trim("'")
+                    $ws = Get-PromptParleWorkspace
+                    if (-not $ws.exists) { throw 'No workspace yet. Attach a parent folder first, or /workspace C:\full\path' }
+                    $full = Resolve-PromptParleWorkspacePath -RelativePath $sub
+                    if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+                        throw "Not a directory: $sub"
+                    }
+                    $wsSet = Set-PromptParleWorkspace -Path $full
+                    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $wsSet.path -WorkspaceKind $wsSet.kind -WorkspaceRecent $wsSet.recent
+                    $message = "Workspace now: $($wsSet.path) ($($wsSet.kind))"
                 } elseif ($arg -match '^(tree)(?:\s+(\d+))?$') {
                     $depth = 2
                     if ($Matches[2]) { $depth = [int]$Matches[2] }
@@ -1489,7 +1753,7 @@ Credentials (git SSH keys, gh tokens) stay on this PC.
                         }
                     } catch { }
                     $message = "Attached $($files[0].name) ($($file.chars) chars)$(if ($file.truncated) { ' truncated' } else { '' }). Send a question or /review."
-                } elseif ($arg -match '^(find|ls|search)\s+(.+)$') {
+                } elseif ($arg -match '^(find|search)\s+(.+)$') {
                     $pat = $Matches[2].Trim().Trim('"').Trim("'")
                     $message = Find-PromptParleWorkspaceFiles -Pattern $pat
                 } elseif ($arg -match '^(pack|attach)\s+(.+)$') {
@@ -1502,15 +1766,17 @@ Credentials (git SSH keys, gh tokens) stay on this PC.
                         $message = "Attached $($packed.Count) file(s) matching '$pat'. Ask a question or /review."
                     }
                 } else {
-                    # Treat arg as path to attach
+                    # Treat arg as path to attach (any local directory)
                     $pathArg = $arg.Trim().Trim('"').Trim("'")
                     $wsSet = Set-PromptParleWorkspace -Path $pathArg
-                    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $wsSet.path -WorkspaceKind $wsSet.kind
+                    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $wsSet.path -WorkspaceKind $wsSet.kind -WorkspaceRecent $wsSet.recent
                     $extra = ''
                     if ($wsSet.is_git) {
                         try { $extra = "`n" + (Get-PromptParleGitStatusText) } catch { }
+                    } else {
+                        try { $extra = "`n" + (Get-PromptParleDirListingText) } catch { }
                     }
-                    $message = "Workspace attached: $($wsSet.path) ($($wsSet.kind))$extra"
+                    $message = "Local folder attached: $($wsSet.path) ($($wsSet.kind))$extra"
                 }
             } catch {
                 $message = "Workspace error: $_"
@@ -1719,11 +1985,12 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
         dial            = [int]$state.dial
         model           = $state.model
         optimize_only   = [bool]$state.optimize_only
-        workspace_path  = [string]$wsOut.path
-        workspace_kind  = [string]$wsOut.kind
+        workspace_path   = [string]$wsOut.path
+        workspace_kind   = [string]$wsOut.kind
         workspace_branch = $wsOut.branch
-        ssh_target      = [string]$wsOut.ssh_target
-        ssh_port        = [int]$wsOut.ssh_port
+        workspace_recent = @($wsOut.recent)
+        ssh_target       = [string]$wsOut.ssh_target
+        ssh_port         = [int]$wsOut.ssh_port
         agent_name      = if ($agentOut) { $agentOut.name } else { $state.active_agent }
         agent_system    = if ($agentOut) { $agentOut.system } else { '' }
         agent_commands  = @()
@@ -2982,6 +3249,7 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                             workspace_path   = [string]$ws.path
                             workspace_kind   = [string]$ws.kind
                             workspace_branch = $ws.branch
+                            workspace_recent = @($ws.recent)
                             ssh_target       = [string]$ws.ssh_target
                             ssh_port         = [int]$ws.ssh_port
                             agent_name       = if ($ag) { $ag.name } else { $st.active_agent }
@@ -2992,6 +3260,84 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                     } catch {
                         $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                # Local filesystem browser (this PC only — never sent to cloud)
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/fs/list') {
+                    try {
+                        $q = [string]$req.Url.Query
+                        $fsPath = ''
+                        if ($q -and $q -match '(?:^|[?&])path=([^&]*)') {
+                            $fsPath = [Uri]::UnescapeDataString(($Matches[1] -replace '\+', ' '))
+                        }
+                        $listing = Get-PromptParleFsList -Path $fsPath
+                        $json = ($listing | ConvertTo-Json -Depth 6 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/fs/roots') {
+                    try {
+                        $roots = @(Get-PromptParleFsRoots)
+                        $payload = @{ ok = $true; roots = $roots } | ConvertTo-Json -Depth 5 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if (($req.HttpMethod -eq 'GET' -or $req.HttpMethod -eq 'POST') -and $path -eq '/api/workspace') {
+                    try {
+                        if ($req.HttpMethod -eq 'GET') {
+                            $ws = Get-PromptParleWorkspace
+                            $payload = @{
+                                ok       = $true
+                                path     = $ws.path
+                                kind     = $ws.kind
+                                exists   = $ws.exists
+                                is_git   = $ws.is_git
+                                branch   = $ws.branch
+                                remote   = $ws.remote
+                                recent   = @($ws.recent)
+                            } | ConvertTo-Json -Depth 5 -Compress
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                        } else {
+                            $encW = $req.ContentEncoding
+                            if (-not $encW) { $encW = [System.Text.Encoding]::UTF8 }
+                            $readerW = New-Object System.IO.StreamReader($req.InputStream, $encW)
+                            $rawW = $readerW.ReadToEnd()
+                            $readerW.Close()
+                            $bodyW = ConvertFrom-PromptParleJson -Json $rawW
+                            $action = [string](Get-PromptParleProp $bodyW 'action' 'set')
+                            if ($action -eq 'clear') {
+                                Clear-PromptParleWorkspace
+                                $payload = @{ ok = $true; path = ''; kind = 'none'; message = 'Workspace detached.' } | ConvertTo-Json -Compress
+                            } else {
+                                $wp = [string](Get-PromptParleProp $bodyW 'path' '')
+                                if (-not $wp) { throw 'Missing path' }
+                                $wsSet = Set-PromptParleWorkspace -Path $wp
+                                $payload = @{
+                                    ok     = $true
+                                    path   = $wsSet.path
+                                    kind   = $wsSet.kind
+                                    is_git = $wsSet.is_git
+                                    recent = @($wsSet.recent)
+                                    message = "Attached $($wsSet.path)"
+                                } | ConvertTo-Json -Depth 5 -Compress
+                            }
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                        }
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
                     continue
                 }

@@ -97,7 +97,13 @@ pp
 Coding context stays on your PC. PromptParle cloud never receives SSH private keys, git credentials, or `gh` tokens.
 
 ```text
-/workspace C:\Users\you\src\myapp     attach a folder (git-aware)
+# UI: sidebar → Browse folders (Home / drives / recent → Attach this folder)
+
+/workspace C:\Users\you\src\myapp     attach any local directory (git optional)
+/workspace ~\Documents\code           ~ expands to home
+/workspace recent                     re-open recent folders
+/workspace ls [sub]                   list directory
+/workspace cd src                     attach a subfolder
 /workspace tree                       file tree
 /workspace cat src\app.ts             load file into chat attachments
 /workspace pack *.ps1                 attach matching files (cap 12)

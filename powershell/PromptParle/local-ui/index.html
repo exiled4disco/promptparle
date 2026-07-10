@@ -358,6 +358,32 @@
     .pill.off { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.1); }
     .info-loading, .info-error { color: var(--muted); font-size: .85rem; padding: .5rem 0; }
     .info-error { color: #fecaca; }
+    .fs-path {
+      display: flex; gap: .35rem; align-items: center; margin-bottom: .55rem;
+    }
+    .fs-path input {
+      flex: 1; font-size: .8rem; padding: .4rem .5rem;
+    }
+    .fs-list {
+      border: 1px solid var(--border); border-radius: 10px; background: #0a0e16;
+      max-height: 340px; overflow: auto; margin: 0; padding: .25rem;
+    }
+    .fs-list button {
+      display: flex; width: 100%; text-align: left; gap: .45rem; align-items: center;
+      background: transparent; border: 0; color: var(--text); padding: .4rem .5rem;
+      border-radius: 8px; cursor: pointer; font: inherit; font-size: .82rem;
+    }
+    .fs-list button:hover { background: var(--accent-soft); }
+    .fs-list .ico { color: var(--dim); width: 1.4rem; flex: 0 0 auto; font-size: .75rem; }
+    .fs-list .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fs-list .meta { color: var(--dim); font-size: .72rem; }
+    .recent-chip {
+      display: inline-block; margin: .15rem .25rem .15rem 0; font-size: .7rem;
+      padding: .15rem .45rem; border-radius: 999px; border: 1px solid var(--border);
+      background: #0a0e16; color: var(--muted); cursor: pointer; max-width: 100%;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .recent-chip:hover { border-color: var(--accent); color: var(--accent); }
   </style>
 </head>
 <body>
@@ -387,10 +413,15 @@
         </div>
 
         <div class="side-section">
-          <h2>Workspace</h2>
+          <h2>Local folder</h2>
           <div class="ver-line" id="workspaceLine">No folder attached</div>
           <div class="ver-line" id="sshLine" style="margin-top:.25rem">SSH: none</div>
-          <div class="ver-line" style="margin-top:.35rem">/workspace · /github clone · /ssh</div>
+          <div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.45rem">
+            <button type="button" class="secondary" id="browseFolderBtn" style="padding:.35rem .65rem;font-size:.78rem">Browse folders</button>
+            <button type="button" class="secondary" id="clearFolderBtn" style="padding:.35rem .65rem;font-size:.78rem">Detach</button>
+          </div>
+          <div id="recentFolders" style="margin-top:.4rem"></div>
+          <div class="ver-line" style="margin-top:.35rem">or /workspace path · /github · /ssh</div>
         </div>
 
         <div class="side-section">
@@ -477,14 +508,14 @@
 /agents · /agent &lt;name&gt;
 /dial 1-5 · /provider · /optimize · /usage · /clear</pre>
 
-      <h3>Workspace · Git · GitHub · SSH</h3>
-      <pre>/workspace &lt;path&gt;     attach local project
-/workspace tree|cat|find|pack
+      <h3>Local folders · Git · GitHub · SSH</h3>
+      <pre>/workspace &lt;path&gt;     attach any local directory
+/workspace recent|ls|cd|tree
+/workspace cat|find|pack
 /git status|diff|log|branch
-/github               tooling + auth status
 /github clone owner/repo
 /ssh user@host        keys stay on THIS PC
-/ssh ls|cat|run …</pre>
+UI: Browse folders (local disk via pp server)</pre>
 
       <h3>Agent shortcuts (examples)</h3>
       <pre>security:  /audit  /threats
@@ -501,6 +532,25 @@ code:      /review  /explain</pre>
       </div>
       <div class="row-actions">
         <button type="button" class="secondary" id="helpClose">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local directory browser (served by local PowerShell — disk never leaves PC) -->
+  <div class="modal-backdrop" id="fsModal" role="dialog" aria-modal="true" aria-labelledby="fsTitle">
+    <div class="modal" style="width:min(640px,100%)">
+      <h2 id="fsTitle">Browse local folders</h2>
+      <div class="sub">This PC only. Pick a project directory to attach as workspace (git optional).</div>
+      <div class="fs-path">
+        <button type="button" class="secondary" id="fsUp" title="Parent folder">↑</button>
+        <button type="button" class="secondary" id="fsHome" title="Quick places">Home</button>
+        <input type="text" id="fsPathInput" placeholder="C:\Users\… or /home/…" spellcheck="false" />
+        <button type="button" class="secondary" id="fsGo">Go</button>
+      </div>
+      <div class="fs-list" id="fsList"></div>
+      <div class="row-actions">
+        <button type="button" class="primary" id="fsAttach" style="border-radius:999px;padding:.55rem 1rem">Attach this folder</button>
+        <button type="button" class="secondary" id="fsClose">Close</button>
       </div>
     </div>
   </div>
@@ -545,7 +595,14 @@ code:      /review  /explain</pre>
     const agentMeta = document.getElementById('agentMeta');
     const workspaceLine = document.getElementById('workspaceLine');
     const sshLine = document.getElementById('sshLine');
+    const recentFolders = document.getElementById('recentFolders');
+    const browseFolderBtn = document.getElementById('browseFolderBtn');
+    const clearFolderBtn = document.getElementById('clearFolderBtn');
+    const fsModal = document.getElementById('fsModal');
+    const fsList = document.getElementById('fsList');
+    const fsPathInput = document.getElementById('fsPathInput');
     const helpBtn = document.getElementById('helpBtn');
+    let fsBrowsePath = '';
     const menuBtn = document.getElementById('menuBtn');
     const appMenu = document.getElementById('appMenu');
     const helpModal = document.getElementById('helpModal');
@@ -1011,7 +1068,7 @@ code:      /review  /explain</pre>
       });
     }
 
-    addMsg('sys', 'Chat, /commands, or attach files. Coding: /workspace path · /github clone owner/repo · /ssh user@host (keys stay on this PC). Only this pane scrolls.');
+    addMsg('sys', 'Chat or /commands. Local folders: Browse folders (sidebar) or /workspace C:\\path. Also /github clone · /ssh (keys stay on this PC).');
 
     function shortPath(p) {
       if (!p) return '';
@@ -1026,7 +1083,7 @@ code:      /review  /explain</pre>
       const kind = s.workspace_kind || s.workspaceKind || '';
       const branch = s.workspace_branch || s.workspaceBranch || '';
       if (!path) {
-        workspaceLine.textContent = 'No folder — /workspace path or /github clone';
+        workspaceLine.textContent = 'No folder — Browse or /workspace path';
       } else {
         const bits = [shortPath(path)];
         if (kind && kind !== 'none') bits.push(kind);
@@ -1039,6 +1096,190 @@ code:      /review  /explain</pre>
         const port = s.ssh_port || s.sshPort || 22;
         sshLine.textContent = t ? ('SSH ' + t + (port && port !== 22 ? ':' + port : '')) : 'SSH: none — /ssh user@host';
       }
+      renderRecentFolders(s.workspace_recent || s.workspaceRecent || s.recent || []);
+    }
+
+    function renderRecentFolders(list) {
+      if (!recentFolders) return;
+      const arr = Array.isArray(list) ? list : [];
+      recentFolders.innerHTML = '';
+      arr.slice(0, 6).forEach(function (p) {
+        if (!p) return;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'recent-chip';
+        b.title = p;
+        b.textContent = shortPath(p);
+        b.addEventListener('click', function () { attachWorkspacePath(p); });
+        recentFolders.appendChild(b);
+      });
+    }
+
+    async function attachWorkspacePath(path) {
+      if (!path) return;
+      try {
+        const res = await fetch('/api/workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: path })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || data.Error || ('HTTP ' + res.status));
+        applyWorkspaceUi({
+          workspace_path: data.path,
+          workspace_kind: data.kind,
+          workspace_recent: data.recent
+        });
+        addMsg('sys', 'Local folder attached: ' + data.path + ' (' + (data.kind || 'local') + ')');
+        closeFsModal();
+        // refresh full session for branch etc.
+        loadSession();
+      } catch (e) {
+        addMsg('sys', 'Could not attach folder: ' + (e.message || e), null, true);
+      }
+    }
+
+    async function clearWorkspace() {
+      try {
+        const res = await fetch('/api/workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'clear' })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'clear failed');
+        applyWorkspaceUi({ workspace_path: '', workspace_kind: 'none', workspace_recent: [] });
+        loadSession();
+        addMsg('sys', 'Workspace detached.');
+      } catch (e) {
+        addMsg('sys', 'Detach failed: ' + (e.message || e), null, true);
+      }
+    }
+
+    function closeFsModal() {
+      if (fsModal) fsModal.classList.remove('open');
+    }
+    function openFsModal() {
+      if (!fsModal) return;
+      closeMenu();
+      closeHelp();
+      fsModal.classList.add('open');
+      // start at current workspace or roots
+      const start = (workspaceLine && workspaceLine.title) ? workspaceLine.title.split(' @ ')[0] : '';
+      loadFsList(start || '');
+    }
+
+    async function loadFsList(path) {
+      fsBrowsePath = path || '';
+      if (fsPathInput) fsPathInput.value = fsBrowsePath;
+      if (fsList) {
+        fsList.innerHTML = '<div class="info-loading" style="padding:.6rem">Loading…</div>';
+      }
+      try {
+        const q = fsBrowsePath ? ('?path=' + encodeURIComponent(fsBrowsePath)) : '';
+        const res = await fetch('/api/fs/list' + q, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || data.Error || ('HTTP ' + res.status));
+        const cur = data.path || data.Path || '';
+        fsBrowsePath = cur;
+        if (fsPathInput) fsPathInput.value = cur;
+        fsList.innerHTML = '';
+        const entries = data.entries || data.Entries || [];
+        if (!entries.length) {
+          fsList.innerHTML = '<div class="info-loading" style="padding:.6rem">(empty)</div>';
+          return;
+        }
+        entries.forEach(function (e) {
+          const isDir = !!(e.is_dir != null ? e.is_dir : e.isDir != null ? e.isDir : e.Is_dir);
+          // PowerShell ConvertTo-Json may use Is_dir or is_dir
+          const dirFlag = e.is_dir === true || e.Is_dir === true || e.isDir === true || e.IsDir === true;
+          const name = e.name || e.Name || '';
+          const p = e.path || e.Path || '';
+          const isGit = e.is_git === true || e.Is_git === true || e.isGit === true;
+          const size = e.size != null ? e.size : e.Size;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          const ico = document.createElement('span');
+          ico.className = 'ico';
+          ico.textContent = dirFlag ? 'DIR' : 'FILE';
+          const nm = document.createElement('span');
+          nm.className = 'nm';
+          nm.textContent = name + (dirFlag ? '/' : '');
+          const meta = document.createElement('span');
+          meta.className = 'meta';
+          if (dirFlag && isGit) meta.textContent = 'git';
+          else if (!dirFlag && size != null) meta.textContent = Math.round(Number(size) / 1024) + ' KB';
+          btn.appendChild(ico);
+          btn.appendChild(nm);
+          btn.appendChild(meta);
+          if (dirFlag) {
+            btn.addEventListener('click', function () { loadFsList(p); });
+            btn.addEventListener('dblclick', function () { attachWorkspacePath(p); });
+          } else {
+            btn.disabled = true;
+            btn.style.opacity = '0.65';
+            btn.title = 'Open parent folder, then Attach — or /workspace cat after attach';
+          }
+          fsList.appendChild(btn);
+        });
+      } catch (e) {
+        if (fsList) {
+          fsList.innerHTML = '<div class="info-error" style="padding:.6rem">' + String(e.message || e) + '</div>';
+        }
+      }
+    }
+
+    if (browseFolderBtn) browseFolderBtn.addEventListener('click', openFsModal);
+    if (clearFolderBtn) clearFolderBtn.addEventListener('click', clearWorkspace);
+    if (document.getElementById('fsClose')) {
+      document.getElementById('fsClose').addEventListener('click', closeFsModal);
+    }
+    if (fsModal) {
+      fsModal.addEventListener('click', function (e) {
+        if (e.target === fsModal) closeFsModal();
+      });
+    }
+    if (document.getElementById('fsUp')) {
+      document.getElementById('fsUp').addEventListener('click', async function () {
+        if (!fsBrowsePath) {
+          loadFsList('');
+          return;
+        }
+        try {
+          const res = await fetch('/api/fs/list?path=' + encodeURIComponent(fsBrowsePath), { cache: 'no-store' });
+          const data = await res.json();
+          const parent = data.parent || data.Parent || '';
+          loadFsList(parent || '');
+        } catch (e) {
+          loadFsList('');
+        }
+      });
+    }
+    if (document.getElementById('fsHome')) {
+      document.getElementById('fsHome').addEventListener('click', function () { loadFsList(''); });
+    }
+    if (document.getElementById('fsGo')) {
+      document.getElementById('fsGo').addEventListener('click', function () {
+        loadFsList((fsPathInput && fsPathInput.value) ? fsPathInput.value.trim() : '');
+      });
+    }
+    if (fsPathInput) {
+      fsPathInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          loadFsList(fsPathInput.value.trim());
+        }
+      });
+    }
+    if (document.getElementById('fsAttach')) {
+      document.getElementById('fsAttach').addEventListener('click', function () {
+        const p = (fsPathInput && fsPathInput.value) ? fsPathInput.value.trim() : fsBrowsePath;
+        if (!p) {
+          addMsg('sys', 'Navigate into a folder first, then Attach.', null, true);
+          return;
+        }
+        attachWorkspacePath(p);
+      });
     }
 
     function attachFilesFromCommand(fileList) {
@@ -1408,6 +1649,7 @@ code:      /review  /explain</pre>
     });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
+        closeFsModal();
         closeInfo();
         closeHelp();
         closeMenu();

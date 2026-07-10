@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.10.0'
+    ModuleVersion     = '0.10.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -48,6 +48,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.10.1: Local directory browser UI + recent folders; /workspace ls|cd|recent
 0.10.0: Local workspace + git/GitHub clone + SSH (keys stay on PC); /workspace /git /github /ssh
 0.9.3: Fix Update button — do not unload module mid self-update (Get-PromptParleClientVersion error)
 0.9.2: Account glance modals via API (Providers/Usage/API keys) — portal only for edit
