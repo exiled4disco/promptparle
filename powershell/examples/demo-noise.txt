@@ -1,0 +1,92 @@
+# Synthetic noisy context for PromptParle savings demo
+# Many repeated lines on purpose — optimizer should collapse these.
+
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+ERROR login failed user=admin src=203.0.113.10
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+WARN  port scan detected src=198.51.100.22 dst=10.0.0.5
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+INFO  heartbeat ok sensor=edge-1
+ALERT allow any any from 0.0.0.0/0 to 10.0.0.0/8
+ALERT geo allow CN to SCADA zone
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 100 permit ip any any
+rule 200 deny tcp any any eq 23
+rule 200 deny tcp any any eq 23
+rule 200 deny tcp any any eq 23
+rule 200 deny tcp any any eq 23
+rule 200 deny tcp any any eq 23
+Please kindly review this carefully thanks in advance
+As an AI I hope this helps
