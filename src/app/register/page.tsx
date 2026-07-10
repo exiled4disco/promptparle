@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Logo } from "@/components/Logo";
+import { SiteFooter } from "@/components/SiteFooter";
 import { RegisterForm } from "./RegisterForm";
 import { getSessionUser } from "@/lib/auth";
 
@@ -32,6 +33,7 @@ export default async function RegisterPage() {
           </p>
         </div>
       </main>
+      <SiteFooter showBrand={false} />
     </div>
   );
 }

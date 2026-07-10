@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { CountUpStats } from "@/components/CountUpStats";
 import { ComingSoonButton } from "@/components/ComingSoonButton";
+import { SiteFooter } from "@/components/SiteFooter";
 import { getSessionUser } from "@/lib/auth";
 import { TAGLINE } from "@/lib/constants";
 
@@ -146,14 +147,16 @@ export default async function LandingPage() {
 
         {/* How it works */}
         <section id="how-it-works" className="border-t border-[var(--border)] py-16">
-          <div className="container text-center">
-            <h2 className="page-title text-center">The flow</h2>
-            <p className="page-sub mx-auto max-w-xl text-center">
-              One path from your terminal to any AI provider — with optimization
-              and secret masking in the middle.
-            </p>
-            <div className="mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] text-center">
-              <pre className="overflow-x-auto p-6 text-center text-sm leading-7 text-[var(--text-muted)] mono">
+          <div className="container">
+            <header className="mx-auto max-w-2xl text-center">
+              <h2 className="page-title">The flow</h2>
+              <p className="page-sub">
+                One path from your terminal to any AI provider — with optimization
+                and secret masking in the middle.
+              </p>
+            </header>
+            <div className="mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)]">
+              <pre className="overflow-x-auto p-6 text-center text-sm leading-7 text-[var(--text-muted)] mono whitespace-pre-wrap">
 {`You (local PowerShell UI or script)
   ↓  desktop key pp_live_…
 PromptParle API  →  auth · secret scan · optimize (dial 1–5)
@@ -166,7 +169,7 @@ Response + original → optimized token savings`}
 
             <div className="mx-auto mt-8 max-w-3xl card p-6 text-center">
               <p className="text-sm font-medium text-[var(--text-dim)]">Example savings</p>
-              <pre className="mt-3 overflow-x-auto text-center text-sm leading-7 mono text-[#c7d7f5]">
+              <pre className="mt-3 overflow-x-auto text-center text-sm leading-7 mono text-[#c7d7f5] whitespace-pre-wrap">
 {`Set-PromptParleApiKey -ApiKey "pp_live_xxxxx"
 
 Get-Content .\\firewall-rules.txt -Raw |
@@ -186,11 +189,13 @@ Get-Content .\\firewall-rules.txt -Raw |
         {/* Registration path + desktop coming soon */}
         <section id="get-started" className="border-t border-[var(--border)] py-16">
           <div className="container">
-            <h2 className="page-title text-center">Get started</h2>
-            <p className="page-sub mx-auto max-w-xl text-center">
-              Create a free account now. Desktop install is coming soon —
-              register so you&apos;re ready when it ships.
-            </p>
+            <header className="mx-auto max-w-2xl text-center">
+              <h2 className="page-title">Get started</h2>
+              <p className="page-sub">
+                Create a free account now. Desktop install is coming soon —
+                register so you&apos;re ready when it ships.
+              </p>
+            </header>
 
             <div className="mx-auto mt-10 grid max-w-4xl gap-4 md:grid-cols-2">
               <div className="card flex flex-col items-center p-6 text-center">
@@ -258,12 +263,7 @@ Get-Content .\\firewall-rules.txt -Raw |
         </section>
       </main>
 
-      <footer className="border-t border-[var(--border)] py-8">
-        <div className="container flex flex-col items-center justify-between gap-3 text-sm text-[var(--text-dim)] md:flex-row">
-          <Logo size="sm" />
-          <p>promptparle.com · {TAGLINE}</p>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }

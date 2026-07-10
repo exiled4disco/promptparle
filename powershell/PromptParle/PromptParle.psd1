@@ -1,10 +1,10 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.10.8'
+    ModuleVersion     = '0.10.9'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
-    Copyright         = '(c) PromptParle. All rights reserved.'
+    Copyright         = '(c) 2026 PromptParle. All rights reserved. PromptParle and the PromptParle logo are trademarks of PromptParle.'
     Description       = 'PowerShell client for PromptParle - AI context optimization gateway. Trim the prompt. Keep the signal.'
     PowerShellVersion = '5.1'
     FunctionsToExport = @(

@@ -85,6 +85,29 @@
       white-space: nowrap;
     }
     .side-head h1 .brand-accent { color: #93b4ff; }
+    .side-legal {
+      margin-top: auto;
+      flex: 0 0 auto;
+      padding: 0.55rem 0.2rem 0.15rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.62rem;
+      line-height: 1.35;
+      color: var(--dim);
+      text-align: center;
+    }
+    .side-legal p { margin: 0 0 0.2rem; }
+    .side-legal p:last-child { margin-bottom: 0; }
+    .help-legal {
+      margin-top: 1rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.72rem;
+      line-height: 1.4;
+      color: var(--dim);
+      text-align: center;
+    }
+    .help-legal p { margin: 0 0 0.25rem; }
+    .help-legal p:last-child { margin-bottom: 0; }
     .badge {
       display: inline-block; font-size: .68rem; padding: .18rem .45rem; border-radius: 999px;
       border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1);
@@ -632,6 +655,11 @@
             </div>
           </div>
         </div>
+
+        <div class="side-legal" aria-label="Copyright and trademark">
+          <p>© 2026 PromptParle. All rights reserved.</p>
+          <p>PromptParle™ and the PromptParle logo are trademarks of PromptParle.</p>
+        </div>
       </div>
     </aside>
 
@@ -717,6 +745,10 @@ code:      /review  /explain</pre>
       </div>
       <div class="row-actions">
         <button type="button" class="secondary" id="helpClose">Close</button>
+      </div>
+      <div class="help-legal" aria-label="Copyright and trademark">
+        <p>© 2026 PromptParle. All rights reserved.</p>
+        <p>PromptParle™ and the PromptParle logo are trademarks of PromptParle.</p>
       </div>
     </div>
   </div>

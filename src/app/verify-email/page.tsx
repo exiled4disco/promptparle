@@ -1,4 +1,5 @@
 import { Logo } from "@/components/Logo";
+import { SiteFooter } from "@/components/SiteFooter";
 import { VerifyEmailClient } from "./VerifyEmailClient";
 
 export const metadata = { title: "Verify email" };
@@ -37,6 +38,7 @@ export default async function VerifyEmailPage({
           </div>
         </div>
       </main>
+      <SiteFooter showBrand={false} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Logo } from "@/components/Logo";
 import { LogoutButton } from "@/components/LogoutButton";
+import { SiteFooter } from "@/components/SiteFooter";
 import { getSessionUser } from "@/lib/auth";
 
 const NAV = [
@@ -25,7 +26,7 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="min-h-full">
+    <div className="flex min-h-full flex-col">
       <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[rgba(7,9,15,0.85)] backdrop-blur-md">
         <div className="container flex items-center justify-between gap-4 py-3">
           <div className="flex items-center gap-8">
@@ -66,7 +67,8 @@ export default async function AppLayout({
           ))}
         </div>
       </header>
-      <main className="container py-8">{children}</main>
+      <main className="container flex-1 py-8">{children}</main>
+      <SiteFooter showBrand={false} className="py-5" />
     </div>
   );
 }

@@ -3,6 +3,12 @@ export const TAGLINE = "Trim the prompt. Keep the signal.";
 export const SESSION_COOKIE = "pp_session";
 export const SESSION_DAYS = 30;
 
+/** Legal notices shown in website and product footers. */
+export const COPYRIGHT_YEAR = 2026;
+export const COPYRIGHT_LINE = `© ${COPYRIGHT_YEAR} PromptParle. All rights reserved.`;
+export const TRADEMARK_LINE =
+  "PromptParle™ and the PromptParle logo are trademarks of PromptParle.";
+
 /**
  * AI providers users can attach keys for.
  * `routing` = supported by POST /v1/prompt adapters.

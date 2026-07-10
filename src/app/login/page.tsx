@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Logo } from "@/components/Logo";
+import { SiteFooter } from "@/components/SiteFooter";
 import { LoginForm } from "./LoginForm";
 import { getSessionUser } from "@/lib/auth";
 
@@ -30,6 +31,7 @@ export default async function LoginPage() {
           </p>
         </div>
       </main>
+      <SiteFooter showBrand={false} />
     </div>
   );
 }
