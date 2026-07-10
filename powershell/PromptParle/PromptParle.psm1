@@ -1151,9 +1151,9 @@ function Get-PromptParleChatSystemPrompt {
         '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
         'Normal client behavior: answer questions directly. When the user wants work done (do it / implement / lets go / just get it done / stop asking and do it): DO IT in this turn — zero clarifying questions unless a single fact is blocking and cannot be chosen safely.',
         'Default to the most secure reasonable choice yourself when options exist. Do not interview the user.',
-        'File changes: emit ```apply path=rel/or/abs/file``` with FULL file contents (never "// ... rest of file"); desktop writes over SSH under [PROJECT] source_root.',
-        'Start every implement reply with plain English: what you changed, which paths, whether it is only on disk vs migrated/deployed. The client also prefixes a What changed block after applies.',
-        'Never dump multi-step homework instead of apply blocks. Do not claim shipped without apply blocks or file evidence. local-ui is vanilla HTML/CSS/JS when in evidence.'
+        'File changes: ```apply path=rel``` with FULL file contents only (never "// ... rest"). Client writes ONLY under [PROJECT] source_root, auto-backups prior file, refuses stubs/destructive shrinks, NEVER writes live /var/www.',
+        'After work: plain English what changed + paths. Client prefixes ## What changed. Do not claim live-deployed/migrated/committed unless evidence. local-ui is vanilla HTML/CSS/JS when in evidence.',
+        'Never dump multi-step homework instead of apply blocks when implement is requested.'
     ) -join ' '
 }
 
@@ -4787,69 +4787,116 @@ function Invoke-PromptParleSsh {
 function Set-PromptParleSshFileContent {
     <#
     .SYNOPSIS
-      Write a text file on the SSH host under product bind (base64 pipe). Used by apply blocks.
-      Refuses stub overwrites that would destroy larger existing files (e.g. schema.prisma gutting).
+      Safe write under product SOURCE root only (never live /var/www deploy root).
+      - Backup existing file to *.pp-bak-<utc> before overwrite
+      - Refuse stubs / destructive shrinks
+      - Refuse paths outside product_root (no "trash the server" path)
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$RemotePath,
         [Parameter(Mandatory)][string]$Content,
-        [int]$TimeoutSec = 60
+        [int]$TimeoutSec = 90
     )
     $bind = Resolve-PromptParleProductBind
-    $root = [string]$bind.root
+    $root = ([string]$bind.root).TrimEnd('/\')
+    $live = ([string]$bind.live).TrimEnd('/\')
     $rp = $RemotePath.Trim()
     if (-not $rp) { throw 'Empty remote path' }
     if ($rp -notmatch '^(?:/|[A-Za-z]:)') {
-        $rp = ($root.TrimEnd('/') + '/' + $rp.TrimStart('/\'))
+        $rp = ($root + '/' + $rp.TrimStart('/\'))
     }
-    $live = [string]$bind.live
-    $okRoot = $rp.StartsWith($root) -or $rp.StartsWith($live)
-    if (-not $okRoot) {
-        throw "Refuse write outside product bind: $rp (root=$root live=$live)"
+    # Normalize // 
+    $rp = ($rp -replace '/+', '/')
+
+    # HARD: never write live deploy tree via apply (source only; deploy is explicit later)
+    if ($live -and ($rp -eq $live -or $rp.StartsWith($live + '/'))) {
+        throw "Refuse write to LIVE deploy root ($live). Apply only to source_root ($root). Deploy is a separate, explicit step."
     }
+    if (-not $rp.StartsWith($root + '/') -and $rp -ne $root) {
+        throw "Refuse write outside product source_root: $rp (allowed under $root only)"
+    }
+    # Extra denylist: never touch secrets / system
+    if ($rp -match '(?i)/(?:\.env|id_rsa|id_ed25519|\.ssh/|shadow|passwd)$') {
+        throw "Refuse write to sensitive path: $rp"
+    }
+
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
     if ($bytes.Length -gt 1500000) { throw "File too large to apply ($($bytes.Length) bytes): $rp" }
     if ($bytes.Length -lt 8) { throw "Refuse empty/tiny apply for: $rp" }
 
     $bodyTrim = $Content.Trim()
-    if ($bodyTrim -match '(?i)\.\.\.\s*rest of|\.\.\.\s*existing|\.\.\.\s*other (fields|models|code)|TODO:\s*implement') {
-        throw "Refuse stub apply (contains placeholder ellipsis): $rp"
+    if ($bodyTrim -match '(?i)\.\.\.\s*rest of|\.\.\.\s*existing|\.\.\.\s*other (fields|models|code)|//\s*\.\.\.|/\*\s*\.\.\.|TODO:\s*implement|placeholder') {
+        throw "Refuse stub apply (placeholder / ellipsis body): $rp — emit the FULL file."
+    }
+    # Truncated prisma / config smell
+    if ($rp -match '(?i)schema\.prisma$' -and $bodyTrim -notmatch 'generator\s+client' -and $bodyTrim -notmatch 'datasource\s+') {
+        throw "Refuse incomplete prisma schema (missing generator/datasource): $rp"
     }
 
     $rpQ = $rp -replace "'", "'\''"
-    try {
-        $sz = Invoke-PromptParleSsh -RemoteCommand "if [ -f '$rpQ' ]; then wc -c < '$rpQ'; else echo 0; fi" -TimeoutSec 20 -SkipSessionCwd
-        $oldSize = 0
-        if ($sz.text -match '(\d+)') { $oldSize = [int]$Matches[1] }
-        if ($oldSize -gt 400 -and $bytes.Length -lt [int]($oldSize * 0.35)) {
-            throw "Refuse destructive shrink of $rp (existing ${oldSize}B → new $($bytes.Length)B). Emit FULL file contents."
-        }
-    } catch {
-        if ("$_" -match 'Refuse destructive|Refuse stub|Refuse empty') { throw }
-    }
+    $rootQ = $root -replace "'", "'\''"
 
+    # Size check + backup + write in one remote script
     $b64 = [Convert]::ToBase64String($bytes)
+    $newLen = $bytes.Length
     $remote = @"
-set -e
+set -euo pipefail
 path='$rpQ'
+root='$rootQ'
+newlen=$newLen
+# must stay under root
+case "`$path" in
+  "`$root"/*) ;;
+  *) echo "REFUSE outside root"; exit 9 ;;
+esac
+# backup if exists
+if [ -f "`$path" ]; then
+  old=`$(wc -c < "`$path" | tr -d ' ')
+  # destructive shrink guard (35%)
+  minkeep=`$(( old * 35 / 100 ))
+  if [ "`$old" -gt 400 ] && [ "`$newlen" -lt "`$minkeep" ]; then
+    echo "REFUSE destructive shrink old=`$old new=`$newlen"
+    exit 10
+  fi
+  bak="`$path.pp-bak-`$(date -u +%Y%m%d%H%M%S)"
+  cp -a "`$path" "`$bak"
+  echo "BACKUP `$bak (`$old bytes)"
+else
+  echo "NEW_FILE"
+fi
 mkdir -p "`$(dirname "`$path")"
 base64 -d > "`$path" <<'PPB64'
 $b64
 PPB64
-echo "WROTE `$path `$(wc -c < "`$path")"
+echo "WROTE `$path `$(wc -c < "`$path" | tr -d ' ')"
 "@
     $r = Invoke-PromptParleSsh -RemoteCommand $remote -TimeoutSec $TimeoutSec -SkipSessionCwd
+    $out = [string]$r.text
     if ($r.exit_code -ne 0) {
-        throw "SSH write failed ($($r.exit_code)): $($r.text)"
+        if ($out -match 'REFUSE destructive') {
+            throw "Refuse destructive shrink of $rp (backup not needed; file unchanged). Emit FULL file contents."
+        }
+        if ($out -match 'REFUSE outside') {
+            throw "Refuse write outside source_root: $rp"
+        }
+        throw "SSH write failed ($($r.exit_code)): $out"
     }
-    return [pscustomobject]@{ ok = $true; path = $rp; bytes = $bytes.Length; text = [string]$r.text }
+    $bakPath = $null
+    if ($out -match 'BACKUP\s+(\S+)') { $bakPath = $Matches[1] }
+    return [pscustomobject]@{
+        ok      = $true
+        path    = $rp
+        bytes   = $bytes.Length
+        backup  = $bakPath
+        text    = $out
+    }
 }
 
 function Invoke-PromptParleApplyResponseBlocks {
     <#
     .SYNOPSIS
-      Parse ```apply path=... blocks, write via SSH, return response with clear WHAT-CHANGED header.
+      Parse ```apply path=... blocks, safe-write under source_root only, clear WHAT-CHANGED header.
     #>
     [CmdletBinding()]
     param(
@@ -4857,14 +4904,15 @@ function Invoke-PromptParleApplyResponseBlocks {
     )
     $text = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
     $applied = New-Object System.Collections.Generic.List[string]
+    $backups = New-Object System.Collections.Generic.List[string]
     $errors = New-Object System.Collections.Generic.List[string]
     if (-not $text) {
-        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); count = 0 }
+        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); count = 0 }
     }
     $rx = [regex]::new('(?ms)```apply\s+path\s*[=:]\s*([^\s\r\n`]+)[ \t]*\r?\n(.*?)```')
     $ms = $rx.Matches($text)
     if ($ms.Count -eq 0) {
-        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); count = 0 }
+        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); backups = @(); count = 0 }
     }
     foreach ($m in $ms) {
         $rel = $m.Groups[1].Value.Trim().Trim('"').Trim("'")
@@ -4873,6 +4921,7 @@ function Invoke-PromptParleApplyResponseBlocks {
         try {
             $w = Set-PromptParleSshFileContent -RemotePath $rel -Content $body
             $applied.Add([string]$w.path)
+            if ($w.backup) { $backups.Add([string]$w.backup) }
         } catch {
             $errors.Add(("$rel : $_"))
         }
@@ -4881,16 +4930,21 @@ function Invoke-PromptParleApplyResponseBlocks {
     $headerLines = New-Object System.Collections.Generic.List[string]
     $headerLines.Add('## What changed')
     if ($applied.Count -gt 0) {
-        $headerLines.Add("**Landed on server (SSH write): $($applied.Count) file(s)**")
+        $headerLines.Add("**Landed on SOURCE tree only (not live deploy): $($applied.Count) file(s)**")
         foreach ($p in $applied) { $headerLines.Add("- ``$p``") }
+        if ($backups.Count -gt 0) {
+            $headerLines.Add('')
+            $headerLines.Add("**Backups (auto, before overwrite):**")
+            foreach ($b in $backups) { $headerLines.Add("- ``$b``") }
+        }
         $headerLines.Add('')
-        $headerLines.Add('_Paths under product bind. Not git-committed or live-deployed unless a deploy step is shown._')
+        $headerLines.Add('_Source only under product_root. Not git commit, not /var/www deploy, not DB migrate — unless you do those next._')
     } else {
-        $headerLines.Add('**No files landed.** Apply blocks were present but every write was refused or failed.')
+        $headerLines.Add('**No files landed.** Apply blocks were refused or failed (your tree was left unchanged for those paths).')
     }
     if ($errors.Count -gt 0) {
         $headerLines.Add('')
-        $headerLines.Add('**Apply errors (nothing silent):**')
+        $headerLines.Add('**Apply errors (refused — no silent trash):**')
         foreach ($e in $errors) { $headerLines.Add("- $e") }
     }
     $headerLines.Add('')
@@ -4901,6 +4955,7 @@ function Invoke-PromptParleApplyResponseBlocks {
     return [pscustomobject]@{
         text    = $header + $text
         applied = @($applied.ToArray())
+        backups = @($backups.ToArray())
         errors  = @($errors.ToArray())
         count   = $applied.Count
     }
