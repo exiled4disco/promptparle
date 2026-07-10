@@ -5499,64 +5499,100 @@ function Remove-PromptParleClientAuditSections {
     return $t.TrimEnd()
 }
 
+function Test-PromptParleGroundingTheaterClaim {
+    <#
+    .SYNOPSIS
+      0.22.2: true for self-referential grounding lines (not product facts).
+      e.g. "All statements above are taken strictly from [OBSERVE]/[WEB]…"
+    #>
+    param([string]$Text = '')
+    if (-not $Text) { return $false }
+    $s = $Text.ToLowerInvariant()
+    if ($s -match '\[observe\]|\[web\]|\[hands\]|\[evidence') { return $true }
+    if ($s -match '\b(taken strictly from|from the provided|directly from (the )?(site|page|evidence|search)|statements above|no additional (capabilities|details|facts)|not invent|did not invent|haven''t invent|additional resources are available at|all statements above)\b') { return $true }
+    if ($s -match '\b(quality gate|evidence-backed|unverified rows|client self-check)\b') { return $true }
+    return $false
+}
+
 function Get-PromptParleCheckableClaims {
     <#
     .SYNOPSIS
       Extract 3–8 factual claims from a model reply for evidence matching.
-      Prefers product/site assertions; skips meta/chat/filler.
+      Prefers product/site assertions; skips meta/chat/filler/grounding theater.
+      0.22.2: do not skip markdown-bold bullets (was dropping real product claims).
     #>
     param(
         [string]$Response = '',
         [int]$MaxClaims = 8
     )
-    $out = New-Object System.Collections.Generic.List[string]
+    $candidates = New-Object System.Collections.Generic.List[object]
     $seen = @{}
     if (-not $Response) { return @() }
     $body = Remove-PromptParleClientAuditSections -Text $Response
     # Drop fenced code (apply/file/run/hands) — not product claims
     $body = [regex]::Replace($body, '(?ms)```[\s\S]*?```', ' ')
     $body = [regex]::Replace($body, '(?m)^\s{0,3}#{1,6}\s+.*$', ' ')
+    # Strip list markers and markdown emphasis (keep text) — was wrongly skipping **bold** lines
     $body = [regex]::Replace($body, '(?m)^\s*[-*+]\s+', '')
+    $body = [regex]::Replace($body, '\*\*([^*]+)\*\*', '$1')
+    $body = [regex]::Replace($body, '(?<!\*)\*([^*]+)\*(?!\*)', '$1')
+    $body = [regex]::Replace($body, '__([^_]+)__', '$1')
+    $body = [regex]::Replace($body, '`([^`]+)`', '$1')
 
-    $priorityRx = '(?i)\b(honeypot|decoy|zero-?day|patent|certified|certification|guaranteed|distributed|firewall|ransomware|ai-powered|machine learning|compliance|nist|fips|ot\b|scada|modbus|federation|amtd|vpatch|sensor|deception|capability|capabilities|feature|features|offers|provides|includes|supports|enables|integrates|platform|solution)\b'
+    $priorityRx = '(?i)\b(honeypot|decoy|zero-?day|patent|certified|certification|guaranteed|distributed|firewall|ransomware|ai-powered|machine learning|compliance|nist|fips|ot\b|ics|scada|modbus|federation|amtd|vpatch|sensor|sensors|deception|deceptive|capability|capabilities|feature|features|offers|provides|includes|supports|enables|integrates|platform|solution|enforcement|inline|wire.?speed|unmappable|alertbox|threat reach|secure control)\b'
     $metaRx = '(?i)^(i (can|will|would|think|believe|am|have)|here''s|heres|let me|sure[,.]|of course|based on (the )?(above|context)|as an ai|hope (this|that)|feel free|please (let|note)|note that|importantly)\b'
-    # 0.22.1: denial / empty-search meta is not a product claim (avoids 0% gate spam)
+    # 0.22.1/0.22.2: denial + grounding theater are not product claims
     $denialRx = '(?i)\b(no web results|no (brief )?hits|no product facts|no (local )?(workspace|ssh) evidence|not present in (the )?(session|evidence|results|provided)|cannot be cited|requested research data is not present|all statements are therefore limited|quality gate \(client|evidence-backed \(|unverified rows|do not treat unverified|ask "where does it say)\b'
 
-    # Sentence-ish splits
+    # Sentence-ish + line splits (bullets often lack terminal periods)
     $parts = [regex]::Split($body, '(?<=[.!?])\s+|\r?\n+')
     foreach ($raw in $parts) {
-        if ($out.Count -ge $MaxClaims) { break }
         $s = [regex]::Replace(([string]$raw).Trim(), '\s+', ' ')
-        if ($s.Length -lt 18 -or $s.Length -gt 220) { continue }
+        # "Label: claim body" → keep full line (product bullets)
+        if ($s.Length -lt 18 -or $s.Length -gt 280) { continue }
         if ($s -match $metaRx) { continue }
         if ($s -match $denialRx) { continue }
-        if ($s -match '(?i)^(what changed|applied|download|hands ran|client )') { continue }
-        if ($s -match '^\s*[_*`]') { continue }
-        # Must look like a factual assertion
+        if (Test-PromptParleGroundingTheaterClaim -Text $s) { continue }
+        if ($s -match '(?i)^(what changed|applied|download|hands ran|client |additional resources|key strengths|latest news)\b') { continue }
+        if ($s -match '^\s*https?://') { continue }
+        # Must look like a factual assertion or labeled product capability
         $isPriority = [bool]($s -match $priorityRx)
-        $isAssert = [bool]($s -match '(?i)\b(is|are|was|were|has|have|offers|provides|includes|supports|enables|uses|used|features|allows|can|will|delivers|protects|detects|blocks|prevents)\b')
+        $isLabeled = [bool]($s -match '^[A-Za-z][^:]{2,60}:\s+\S')
+        $isAssert = [bool]($s -match '(?i)\b(is|are|was|were|has|have|offers|provides|includes|supports|enables|uses|used|features|allows|can|will|delivers|protects|detects|blocks|prevents|enforces|enforce|makes|make|rotating|stops|cuts|surfaces|combines|positions|centered|emphasizes|reduces|stops)\b')
         $hasNum = [bool]($s -match '\d')
-        if (-not ($isPriority -or ($isAssert -and ($hasNum -or $s.Length -ge 40)))) { continue }
-        if (-not $isAssert -and -not $isPriority) { continue }
+        if (-not ($isPriority -or $isLabeled -or ($isAssert -and ($hasNum -or $s.Length -ge 40)))) { continue }
         $k = $s.ToLowerInvariant()
         if ($seen.ContainsKey($k)) { continue }
         $seen[$k] = $true
-        [void]$out.Add($s)
+        # Score for ranking: product-labeled / priority first; deprioritize vague platform lines
+        $rank = 0
+        if ($isLabeled -and $isPriority) { $rank = 100 }
+        elseif ($isPriority) { $rank = 80 }
+        elseif ($isLabeled) { $rank = 60 }
+        elseif ($isAssert) { $rank = 40 }
+        if ($s -match '(?i)\b(single (integrated )?stack|point solutions|work together)\b') { $rank = [Math]::Max(20, $rank - 30) }
+        [void]$candidates.Add([pscustomobject]@{ text = $s; rank = $rank })
     }
 
     # Fallback: high-value n-grams if few sentences
-    if ($out.Count -lt 2) {
+    if ($candidates.Count -lt 2) {
         foreach ($m in [regex]::Matches($body, '(?i)\b[a-z][a-z0-9]+(?:\s+[a-z][a-z0-9]+){1,5}\b')) {
-            if ($out.Count -ge $MaxClaims) { break }
             $ph = $m.Value.Trim()
             if ($ph.Length -lt 10 -or $ph.Length -gt 80) { continue }
             if ($ph -notmatch $priorityRx) { continue }
+            if (Test-PromptParleGroundingTheaterClaim -Text $ph) { continue }
             $k = $ph.ToLowerInvariant()
             if ($seen.ContainsKey($k)) { continue }
             $seen[$k] = $true
-            [void]$out.Add($ph)
+            [void]$candidates.Add([pscustomobject]@{ text = $ph; rank = 70 })
         }
+    }
+
+    $sorted = @($candidates | Sort-Object -Property @{ Expression = 'rank'; Descending = $true }, @{ Expression = { $_.text.Length }; Descending = $false })
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $sorted) {
+        if ($out.Count -ge $MaxClaims) { break }
+        [void]$out.Add([string]$c.text)
     }
     return @($out.ToArray())
 }
@@ -5566,16 +5602,40 @@ function Get-PromptParleClaimMatchStatus {
     .SYNOPSIS
       Match one claim against evidence corpus.
       Returns: supported | partial | unsupported | skip
+      0.22.2: multi-word phrase hits + product-token support; skip grounding theater.
     #>
     param(
         [string]$Claim = '',
         [string]$Evidence = ''
     )
     if (-not $Claim) { return 'skip' }
+    if (Test-PromptParleGroundingTheaterClaim -Text $Claim) { return 'skip' }
     if (-not $Evidence -or $Evidence.Length -lt 20) { return 'skip' }
     $c = $Claim.ToLowerInvariant()
     $ev = $Evidence.ToLowerInvariant()
-    if ($ev.Contains($c)) { return 'supported' }
+    # Normalize light punctuation for contains checks
+    $cNorm = [regex]::Replace($c, '[\u2013\u2014\-_/]+', ' ')
+    $cNorm = [regex]::Replace($cNorm, '[^a-z0-9\s]+', ' ')
+    $cNorm = [regex]::Replace($cNorm, '\s+', ' ').Trim()
+    $evNorm = [regex]::Replace($ev, '[\u2013\u2014\-_/]+', ' ')
+    $evNorm = [regex]::Replace($evNorm, '[^a-z0-9\s]+', ' ')
+    $evNorm = [regex]::Replace($evNorm, '\s+', ' ')
+
+    if ($ev.Contains($c) -or ($cNorm.Length -ge 20 -and $evNorm.Contains($cNorm))) { return 'supported' }
+
+    # Multi-word phrase hits (product labels often exact on page)
+    $phraseHits = 0
+    foreach ($m in [regex]::Matches($c, '(?i)\b[a-z][a-z0-9]+(?:\s+[a-z][a-z0-9]+){1,4}\b')) {
+        $ph = $m.Value.ToLowerInvariant()
+        if ($ph.Length -lt 8 -or $ph.Length -gt 60) { continue }
+        if ($ph -match '^(the |and |for |with |that |this |from )') { continue }
+        if ($ev.Contains($ph) -or $evNorm.Contains($ph)) { $phraseHits++ }
+    }
+    if ($phraseHits -ge 2) { return 'supported' }
+    if ($phraseHits -eq 1 -and $c.Length -lt 120) {
+        # One strong product phrase + any second distinctive token
+    }
+
     # all-token / partial token match
     $stop = @{
         'the'=$true;'and'=$true;'for'=$true;'with'=$true;'that'=$true;'this'=$true;'from'=$true
@@ -5591,19 +5651,34 @@ function Get-PromptParleClaimMatchStatus {
         'platform'=$true;'solution'=$true;'solutions'=$true;'security'=$true;'network'=$true
         'system'=$true;'systems'=$true;'product'=$true;'products'=$true;'company'=$true
         'examplecorp'=$true;'website'=$true;'page'=$true;'site'=$true;'http'=$true;'https'=$true
+        'environments'=$true;'environment'=$true;'organizations'=$true;'rather'=$true;'these'=$true
+        'capabilities'=$true;'capability'=$true;'features'=$true;'feature'=$true;'above'=$true
+        'additional'=$true;'details'=$true;'claimed'=$true;'statements'=$true;'taken'=$true
+        'strictly'=$true;'provided'=$true;'evidence'=$true;'emphasizes'=$true;'combines'=$true
     }
-    $toks = @([regex]::Matches($c, '[a-z0-9]{3,}') | ForEach-Object { $_.Value } | Where-Object { -not $stop.ContainsKey($_) })
+    $toks = @([regex]::Matches($cNorm, '[a-z0-9]{3,}') | ForEach-Object { $_.Value } | Where-Object { -not $stop.ContainsKey($_) })
     if ($toks.Count -eq 0) { return 'skip' }
     $hit = 0
-    foreach ($t in $toks) { if ($ev.Contains($t)) { $hit++ } }
+    $productHit = 0
+    $productRx = '^(amtd|deception|deceptive|sensor|sensors|federation|alertbox|modbus|scada|ntcip|honeypot|decoy|vpatch|unmappable|ot|ics|ipv6|omb|wire|enforcement|inline|rotating|responders|siem)$'
+    foreach ($t in $toks) {
+        if ($evNorm.Contains($t) -or $ev.Contains($t)) {
+            $hit++
+            if ($t -match $productRx -or $t.Length -ge 6) { $productHit++ }
+        }
+    }
     $ratio = $hit / [double]$toks.Count
+    # Strong: most distinctive tokens present OR multi-word phrase + product tokens
+    if ($phraseHits -ge 1 -and $productHit -ge 2) { return 'supported' }
+    if ($ratio -ge 0.75 -and $hit -ge 3) { return 'supported' }
     if ($ratio -ge 0.85 -and $hit -eq $toks.Count) { return 'supported' }
-    if ($ratio -ge 0.6 -and $hit -ge 2) { return 'partial' }
+    if ($ratio -ge 0.55 -and $hit -ge 2) { return 'partial' }
+    if ($phraseHits -ge 1 -and $hit -ge 2) { return 'partial' }
     # priority invention keywords missing from evidence → hard unsupported
     $priorityMissing = $false
     foreach ($t in $toks) {
         if ($t -match '^(honeypot|honeypots|decoy|decoys|zero.?day|ransomware|certified|patent|fips|nist)$') {
-            if (-not $ev.Contains($t)) { $priorityMissing = $true; break }
+            if (-not $ev.Contains($t) -and -not $evNorm.Contains($t)) { $priorityMissing = $true; break }
         }
     }
     if ($priorityMissing) { return 'unsupported' }
@@ -5797,36 +5872,54 @@ function Invoke-PromptParleQualityGate {
         }
     }
 
-    $show = $AlwaysShowScore -or ($nUnsup -gt 0) -or ($nPart -gt 0) -or $corrected -or ($score -lt 100)
-    # Always show compact score on source-backed product turns when we scored anything
-    if (-not $show -and $checked -ge 1) { $show = $true }
+    # 0.22.2: only surface the gate when there is real risk (unverified product claims
+    # or soft-correct). Clean source-backed research stays silent — no spam tables.
+    $show = $AlwaysShowScore -or $corrected -or ($nUnsup -gt 0)
+    if (-not $show -and $score -lt 50 -and $checked -ge 2) { $show = $true }
+    if ($nUnsup -eq 0 -and $score -ge 70 -and -not $corrected -and -not $AlwaysShowScore) {
+        $show = $false
+    }
+
+    # Build plain claim rows (avoid List[pscustomobject] → pscustomobject cast errors on PS 5.1/7)
+    $claimArrSilent = @()
+    foreach ($r in $results) {
+        $claimArrSilent += [pscustomobject]@{
+            claim  = [string]$r.claim
+            status = [string]$r.status
+        }
+    }
 
     if (-not $show) {
-        return [pscustomobject]@{
-            text = $raw; applied = $false; reason = 'clean-silent'
-            claims = @($results); supported = $nSup; partial = $nPart; unsupported = $nUnsup
-            score_pct = $score; corrected = $false
-        }
+        $silent = New-Object psobject
+        $silent | Add-Member -NotePropertyName text -NotePropertyValue $raw
+        $silent | Add-Member -NotePropertyName applied -NotePropertyValue $false
+        $silent | Add-Member -NotePropertyName reason -NotePropertyValue $(if ($score -ge 70) { 'clean-silent' } else { 'partial-silent' })
+        $silent | Add-Member -NotePropertyName claims -NotePropertyValue $claimArrSilent
+        $silent | Add-Member -NotePropertyName supported -NotePropertyValue ([int]$nSup)
+        $silent | Add-Member -NotePropertyName partial -NotePropertyValue ([int]$nPart)
+        $silent | Add-Member -NotePropertyName unsupported -NotePropertyValue ([int]$nUnsup)
+        $silent | Add-Member -NotePropertyName score_pct -NotePropertyValue ([int]$score)
+        $silent | Add-Member -NotePropertyName corrected -NotePropertyValue $false
+        $silent | Add-Member -NotePropertyName checked -NotePropertyValue ([int]$checked)
+        return $silent
     }
 
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('')
     [void]$lines.Add('---')
-    [void]$lines.Add(('## Quality gate (client 0.22.1) — {0}% evidence-backed ({1}/{2} claims)' -f $score, $nSup, $checked))
+    [void]$lines.Add(('## Quality gate (client 0.22.2) — {0}% evidence-backed ({1}/{2} claims)' -f $score, $nSup, $checked))
     [void]$lines.Add(('_Client self-check vs fetched [OBSERVE]/[WEB]/[HANDS] evidence — 0 AI tokens. supported={0} partial={1} unverified={2}_' -f $nSup, $nPart, $nUnsup))
-    if ($nUnsup -gt 0 -or $nPart -gt 0) {
+    # Table: unverified product claims only (partials alone do not spam the user)
+    if ($nUnsup -gt 0) {
         [void]$lines.Add('')
         [void]$lines.Add('| Claim | Status |')
         [void]$lines.Add('| --- | --- |')
         foreach ($r in $results) {
-            if ($r.status -eq 'supported') { continue }
+            if ($r.status -ne 'unsupported') { continue }
             $short = [string]$r.claim
             if ($short.Length -gt 90) { $short = $short.Substring(0, 87) + '...' }
             $short = $short.Replace('|', '/')
-            $label = [string]$r.status
-            if ($label -eq 'partial') { $label = 'partial (weak match)' }
-            elseif ($label -eq 'unsupported') { $label = '**unverified**' }
-            [void]$lines.Add(('| {0} | {1} |' -f $short, $label))
+            [void]$lines.Add(('| {0} | **unverified** |' -f $short))
         }
     }
     if ($corrected) {
