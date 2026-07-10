@@ -30,6 +30,8 @@ type Props = {
   upgradeHint: string | null;
   storePrompts: boolean;
   retentionPolicy: string;
+  /** Tighter row density for dual-column Usage layout */
+  compact?: boolean;
 };
 
 export function UsageHistory({
@@ -38,6 +40,7 @@ export function UsageHistory({
   upgradeHint,
   storePrompts,
   retentionPolicy,
+  compact = false,
 }: Props) {
   const [openId, setOpenId] = useState<string | null>(
     rows.find((r) => r.hasCompare)?.id ?? null
@@ -45,7 +48,7 @@ export function UsageHistory({
 
   if (rows.length === 0) {
     return (
-      <p className="p-6 text-sm text-[var(--text-muted)]">
+      <p className="p-5 text-sm text-[var(--text-muted)]">
         No usage yet. Send a request from PowerShell with{" "}
         <span className="mono">Invoke-PromptParle</span>, then refresh this page
         to see before/after text.
@@ -53,10 +56,12 @@ export function UsageHistory({
     );
   }
 
+  const pad = compact ? "px-3 py-2.5 sm:px-4" : "px-4 py-4 sm:px-6";
+
   return (
     <div>
       {(!storePrompts || retentionPolicy === "none") && (
-        <div className="border-b border-[var(--border)] bg-[var(--warning)]/10 px-6 py-3 text-sm text-[var(--warning)]">
+        <div className="border-b border-[var(--border)] bg-[var(--warning)]/10 px-4 py-2.5 text-xs text-[var(--warning)] sm:px-5">
           Prompt text storage is off. Token counts still appear, but before/after
           text will not. Enable storage under{" "}
           <a href="/app/settings" className="underline">
@@ -66,7 +71,7 @@ export function UsageHistory({
         </div>
       )}
       {upgradeHint && (
-        <div className="border-b border-[var(--border)] bg-[var(--accent-soft)] px-6 py-3 text-sm text-[var(--text-muted)]">
+        <div className="border-b border-[var(--border)] bg-[var(--accent-soft)] px-4 py-2.5 text-xs text-[var(--text-muted)] sm:px-5">
           <span className="font-medium text-[var(--text)]">{planLabel} plan.</span>{" "}
           {upgradeHint}
         </div>
@@ -76,86 +81,81 @@ export function UsageHistory({
         {rows.map((row) => {
           const open = openId === row.id;
           return (
-            <div key={row.id} className="px-4 py-4 sm:px-6">
+            <div key={row.id} className={pad}>
               <button
                 type="button"
-                className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 text-left"
+                className="flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 text-left"
                 onClick={() => setOpenId(open ? null : row.id)}
                 aria-expanded={open}
               >
-                <span className="text-sm text-[var(--text-dim)]">
+                <span className="w-3 text-xs text-[var(--text-dim)]">
                   {open ? "▾" : "▸"}
                 </span>
-                <span className="text-sm text-[var(--text-muted)] whitespace-nowrap">
+                <span className="text-xs text-[var(--text-muted)] whitespace-nowrap">
                   {formatDate(row.createdAt)}
                 </span>
-                <span className="font-medium">
+                <span className="text-sm font-medium">
                   {providerLabel(row.provider)}
                 </span>
-                <span className="mono text-xs text-[var(--text-dim)]">
+                <span className="mono text-[0.7rem] text-[var(--text-dim)]">
                   {row.model || "—"}
                 </span>
-                <span className="badge">{row.optimizationProfile}</span>
-                <span className="mono text-sm">
+                <span className="badge text-[0.65rem]">
+                  {row.optimizationProfile}
+                </span>
+                <span className="mono text-xs sm:text-sm">
                   {formatNumber(row.originalTokens)} →{" "}
                   {formatNumber(row.optimizedTokens)}
                 </span>
                 {row.optimizedTokens > row.originalTokens ? (
                   <span
-                    className="badge badge-warn"
+                    className="badge badge-warn text-[0.65rem]"
                     title="Payload grew vs raw input (should be rare)"
                   >
                     expanded
                   </span>
                 ) : row.reductionPercent > 0 ? (
-                  <span className="badge badge-success">
+                  <span className="badge badge-success text-[0.65rem]">
                     −{row.reductionPercent}%
                   </span>
                 ) : (
                   <span
-                    className="badge"
+                    className="badge text-[0.65rem]"
                     title="Already compact — unique prose/docs often show 0%. Savings show up on noisy logs, dupes, and filler."
                   >
-                    0% compact
+                    0%
                   </span>
                 )}
                 <span
-                  className={`badge ${
+                  className={`badge text-[0.65rem] ${
                     row.status === "completed" ? "badge-success" : "badge-warn"
                   }`}
                 >
                   {row.status}
                 </span>
-                {row.hasCompare ? (
-                  <span className="text-xs text-[var(--accent-strong)]">
-                    before/after
-                  </span>
-                ) : (
-                  <span className="text-xs text-[var(--text-dim)]">
-                    metadata only
-                  </span>
-                )}
               </button>
 
               {open && (
-                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
                   <ComparePane
-                    title="Before (original)"
-                    subtitle={`${formatNumber(row.originalTokens)} tokens`}
+                    title="Before"
+                    subtitle={`${formatNumber(row.originalTokens)} tok`}
                     text={row.originalText ?? null}
                     truncated={Boolean(row.originalTruncated)}
                     emptyHint="No original text stored for this request."
+                    compact={compact}
                   />
                   <ComparePane
-                    title="After (optimized)"
-                    subtitle={`${formatNumber(row.optimizedTokens)} tokens · saved ${formatNumber(row.tokensSaved)}`}
+                    title="After"
+                    subtitle={`${formatNumber(row.optimizedTokens)} tok · −${formatNumber(row.tokensSaved)}`}
                     text={row.optimizedText ?? null}
                     truncated={Boolean(row.optimizedTruncated)}
                     emptyHint="No optimized text stored for this request."
                     accent
+                    compact={compact}
                   />
                   {row.errorMessage && (
-                    <div className="lg:col-span-2 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-4 text-sm text-[var(--danger)]">
+                    <div className="md:col-span-2 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-3 text-sm text-[var(--danger)]">
                       Error: {row.errorMessage}
                     </div>
                   )}
@@ -176,6 +176,7 @@ function ComparePane({
   truncated,
   emptyHint,
   accent,
+  compact,
 }: {
   title: string;
   subtitle: string;
@@ -183,10 +184,11 @@ function ComparePane({
   truncated: boolean;
   emptyHint: string;
   accent?: boolean;
+  compact?: boolean;
 }) {
   return (
     <div
-      className={`rounded-xl border p-4 ${
+      className={`rounded-xl border ${compact ? "p-3" : "p-4"} ${
         accent
           ? "border-[var(--success)]/30 bg-[var(--success-soft)]/30"
           : "border-[var(--border)] bg-[var(--bg)]/50"
@@ -198,7 +200,11 @@ function ComparePane({
       </div>
       {text ? (
         <>
-          <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/30 p-3 font-mono text-xs leading-relaxed text-[var(--text)]">
+          <pre
+            className={`mt-2 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/30 p-3 font-mono text-xs leading-relaxed text-[var(--text)] ${
+              compact ? "max-h-64" : "max-h-96"
+            }`}
+          >
             {text}
           </pre>
           {truncated && (
@@ -208,7 +214,7 @@ function ComparePane({
           )}
         </>
       ) : (
-        <p className="mt-3 text-sm text-[var(--text-muted)]">{emptyHint}</p>
+        <p className="mt-2 text-sm text-[var(--text-muted)]">{emptyHint}</p>
       )}
     </div>
   );
