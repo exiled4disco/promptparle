@@ -1123,13 +1123,14 @@
       justify-content: space-between;
       gap: .5rem;
     }
-    /* 0.14.12: no numeric count on ⋯ — subtle accent when ops pending */
-    #menuBtn.has-ops {
-      border-color: rgba(91, 140, 255, 0.55) !important;
-      color: var(--accent) !important;
-      box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.2);
-    }
+    /* 0.14.13: ⋯ menu never shows ops count/dot — Activity log (left) is the only indicator */
     #menuBtn .ops-badge { display: none !important; }
+    #menuBtn.has-ops {
+      /* strip any leftover accent from older sessions */
+      border-color: inherit;
+      color: inherit;
+      box-shadow: none;
+    }
     #menuBtn { position: relative; }
     .term-head {
       flex: 0 0 auto;
@@ -2067,16 +2068,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         }
       }
 
-      // Secondary: ⋯ menu — subtle highlight only, no number
-      if (!menuBtn) return;
-      const oldBadge = menuBtn.querySelector('.ops-badge');
-      if (oldBadge) oldBadge.remove();
-      if (n > 0) {
-        menuBtn.classList.add('has-ops');
-        menuBtn.title = 'Menu · new activity in log';
-      } else {
+      // Upper-right ⋯: never show ops number or accent (user asked it gone)
+      if (menuBtn) {
         menuBtn.classList.remove('has-ops');
         menuBtn.title = 'Menu';
+        const oldBadge = menuBtn.querySelector('.ops-badge');
+        if (oldBadge) oldBadge.remove();
+        // Belt: strip any leftover numeric text nodes that old clients injected
+        Array.prototype.slice.call(menuBtn.childNodes).forEach(function (node) {
+          if (node.nodeType === 1 && node.classList && node.classList.contains('ops-badge')) {
+            node.remove();
+          }
+        });
       }
     }
     /**
