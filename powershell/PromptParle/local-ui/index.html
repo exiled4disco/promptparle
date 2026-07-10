@@ -907,6 +907,52 @@
       min-height: 0 !important;
     }
     .conn-actions { flex-wrap: wrap; justify-content: flex-end; }
+    .ssh-cwd-field { position: relative; }
+    .ssh-suggest {
+      position: absolute;
+      left: 0; right: 0;
+      top: calc(100% - 2px);
+      z-index: 30;
+      max-height: 11rem;
+      overflow-y: auto;
+      background: #0a0e16;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0,0,0,.45);
+      padding: .2rem;
+    }
+    .ssh-suggest[hidden] { display: none !important; }
+    .ssh-suggest button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      color: var(--text);
+      font: inherit;
+      font-size: .78rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      padding: .35rem .5rem;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ssh-suggest button:hover,
+    .ssh-suggest button.active {
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+    }
+    .ssh-cwd-status {
+      margin-top: .35rem;
+      font-size: .72rem;
+      line-height: 1.35;
+      color: var(--muted);
+    }
+    .ssh-cwd-status.ok { color: var(--success); }
+    .ssh-cwd-status.err { color: #fecaca; }
+    .ssh-cwd-status.loading { color: var(--dim); }
     .mini-primary {
       background: var(--accent-soft) !important;
       border: 1px solid rgba(91,140,255,.4) !important;
@@ -1246,9 +1292,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         <label for="sshTargetInput">Host</label>
         <input type="text" id="sshTargetInput" placeholder="user@hostname  or  user@host:2222" spellcheck="false" />
       </div>
-      <div class="field-row">
+      <div class="field-row ssh-cwd-field">
         <label for="sshCwdInput">Working directory (optional)</label>
-        <input type="text" id="sshCwdInput" placeholder="/var/www/app  or  ~/project — leave blank for login home" spellcheck="false" />
+        <input type="text" id="sshCwdInput" placeholder="Start typing — e.g. /home or ~/pro — remote folders appear below" spellcheck="false" autocomplete="off" />
+        <div class="ssh-suggest" id="sshCwdSuggest" hidden role="listbox" aria-label="Remote directories"></div>
+        <div class="ssh-cwd-status" id="sshCwdStatus" hidden></div>
       </div>
       <div class="row-actions">
         <button type="button" class="primary" id="sshModalConnect" style="border-radius:999px;padding:.55rem 1rem">Connect</button>
@@ -1340,10 +1388,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const gitModal = document.getElementById('gitModal');
     const sshTargetInput = document.getElementById('sshTargetInput');
     const sshCwdInput = document.getElementById('sshCwdInput');
+    const sshCwdSuggest = document.getElementById('sshCwdSuggest');
+    const sshCwdStatus = document.getElementById('sshCwdStatus');
     const sshHostRow = document.getElementById('sshHostRow');
     const sshModalSub = document.getElementById('sshModalSub');
     const sshModalConnect = document.getElementById('sshModalConnect');
     const sshTitleEl = document.getElementById('sshTitle');
+    let sshSuggestTimer = null;
+    let sshSuggestSeq = 0;
+    let sshSuggestItems = [];
+    let sshSuggestIdx = -1;
     const gitRepoInput = document.getElementById('gitRepoInput');
     const gitDestInput = document.getElementById('gitDestInput');
     const helpBtn = document.getElementById('helpBtn');
@@ -2458,6 +2512,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     function closeSshModal() {
       if (sshModal) sshModal.classList.remove('open');
+      hideSshSuggest();
+      setSshCwdStatus('', '');
     }
     function openSshModal(mode) {
       if (entitlements && entitlements.project_ssh === false) {
@@ -2493,9 +2549,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (sshCwdInput) {
         sshCwdInput.value = currentSshCwd || '';
         if (sshModalMode === 'cwd') {
-          setTimeout(function () { sshCwdInput.focus(); sshCwdInput.select(); }, 50);
+          setTimeout(function () {
+            sshCwdInput.focus();
+            sshCwdInput.select();
+            scheduleSshDirSuggest(true);
+          }, 50);
         }
       }
+      hideSshSuggest();
+      setSshCwdStatus('', '');
       if (sshModal) sshModal.classList.add('open');
     }
 
@@ -2505,6 +2567,131 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return;
       }
       openSshModal('cwd');
+    }
+
+    function hideSshSuggest() {
+      if (sshCwdSuggest) {
+        sshCwdSuggest.hidden = true;
+        sshCwdSuggest.innerHTML = '';
+      }
+      sshSuggestItems = [];
+      sshSuggestIdx = -1;
+    }
+
+    function setSshCwdStatus(kind, text) {
+      if (!sshCwdStatus) return;
+      if (!text) {
+        sshCwdStatus.hidden = true;
+        sshCwdStatus.textContent = '';
+        sshCwdStatus.className = 'ssh-cwd-status';
+        return;
+      }
+      sshCwdStatus.hidden = false;
+      sshCwdStatus.className = 'ssh-cwd-status' + (kind ? (' ' + kind) : '');
+      sshCwdStatus.textContent = text;
+    }
+
+    function renderSshSuggest(dirs) {
+      if (!sshCwdSuggest) return;
+      sshSuggestItems = dirs || [];
+      sshSuggestIdx = -1;
+      if (!sshSuggestItems.length) {
+        hideSshSuggest();
+        return;
+      }
+      sshCwdSuggest.innerHTML = '';
+      sshSuggestItems.forEach(function (d, i) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'option');
+        b.textContent = d;
+        b.title = d;
+        b.addEventListener('mousedown', function (e) {
+          e.preventDefault(); // keep focus on input
+          applySshSuggest(d);
+        });
+        sshCwdSuggest.appendChild(b);
+      });
+      sshCwdSuggest.hidden = false;
+    }
+
+    function applySshSuggest(path) {
+      if (!sshCwdInput || !path) return;
+      // Trailing slash helps next keystroke list children
+      var next = path;
+      if (!/\/$/.test(next)) next = next + '/';
+      sshCwdInput.value = next;
+      hideSshSuggest();
+      setSshCwdStatus('ok', 'Selected — keep typing or Save');
+      scheduleSshDirSuggest(true);
+      sshCwdInput.focus();
+    }
+
+    function highlightSshSuggest() {
+      if (!sshCwdSuggest) return;
+      var buttons = sshCwdSuggest.querySelectorAll('button');
+      for (var i = 0; i < buttons.length; i++) {
+        if (i === sshSuggestIdx) buttons[i].classList.add('active');
+        else buttons[i].classList.remove('active');
+      }
+      if (sshSuggestIdx >= 0 && buttons[sshSuggestIdx]) {
+        try { buttons[sshSuggestIdx].scrollIntoView({ block: 'nearest' }); } catch (e) { /* ignore */ }
+      }
+    }
+
+    function scheduleSshDirSuggest(immediate) {
+      if (sshSuggestTimer) clearTimeout(sshSuggestTimer);
+      var hostOk = currentSshTarget || (sshTargetInput && sshTargetInput.value.trim());
+      if (!hostOk && sshModalMode !== 'cwd') {
+        // Still allow typing; complete needs an active SSH session
+        return;
+      }
+      if (!currentSshTarget && sshModalMode === 'connect') {
+        setSshCwdStatus('loading', 'Connect host first — then directory suggestions appear while typing.');
+        return;
+      }
+      sshSuggestTimer = setTimeout(function () {
+        fetchSshDirSuggest();
+      }, immediate ? 80 : 280);
+    }
+
+    async function fetchSshDirSuggest() {
+      if (!sshCwdInput) return;
+      if (!currentSshTarget) {
+        setSshCwdStatus('loading', 'SSH host not connected yet.');
+        hideSshSuggest();
+        return;
+      }
+      var partial = sshCwdInput.value || '';
+      var seq = ++sshSuggestSeq;
+      setSshCwdStatus('loading', 'Looking up remote folders…');
+      try {
+        const res = await fetch('/api/ssh/complete?path=' + encodeURIComponent(partial) + '&t=' + Date.now(), {
+          cache: 'no-store'
+        });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (seq !== sshSuggestSeq) return; // stale
+        const dirs = data.dirs || data.Dirs || [];
+        if (!res.ok && data.error) {
+          setSshCwdStatus('err', data.error || data.Error || 'Could not list remote dirs');
+          hideSshSuggest();
+          return;
+        }
+        if (!dirs.length) {
+          hideSshSuggest();
+          if (partial && data.error) setSshCwdStatus('err', data.error);
+          else if (partial) setSshCwdStatus('loading', 'No matching remote folders');
+          else setSshCwdStatus('', '');
+          return;
+        }
+        renderSshSuggest(dirs);
+        setSshCwdStatus('ok', dirs.length + ' folder' + (dirs.length === 1 ? '' : 's') + ' — click or ↑↓ Enter');
+      } catch (e) {
+        if (seq !== sshSuggestSeq) return;
+        hideSshSuggest();
+        setSshCwdStatus('err', 'Suggest failed: ' + (e.message || e));
+      }
     }
 
     function refreshTermHeader() {
@@ -2816,11 +3003,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return;
       }
       const cwd = (sshCwdInput && sshCwdInput.value || '').trim();
+      if (sshModalConnect) sshModalConnect.disabled = true;
+      setSshCwdStatus(cwd ? 'loading' : '', cwd ? 'Checking remote directory…' : '');
       try {
         if (sshModalMode === 'cwd') {
-          // Edit working directory only (host already connected)
+          // Edit working directory only (host already connected) — server validates path
           const line = cwd ? ('/ssh cwd ' + cwd) : '/ssh cwd clear';
           await postCommand(line);
+          setSshCwdStatus('ok', cwd ? ('Saved: ' + cwd) : 'Using login home');
           closeSshModal();
           loadSession();
           if (termTarget === 'ssh') refreshTermHeader();
@@ -2829,6 +3019,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         const target = (sshTargetInput && sshTargetInput.value || '').trim();
         if (!target) {
           addMsg('sys', 'Enter user@host first.', null, true);
+          setSshCwdStatus('', '');
           return;
         }
         const line = cwd ? ('/ssh ' + target + ' ' + cwd) : ('/ssh ' + target);
@@ -2836,7 +3027,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         closeSshModal();
         loadSession();
       } catch (e) {
-        addMsg('sys', (sshModalMode === 'cwd' ? 'SSH directory failed: ' : 'SSH connect failed: ') + (e.message || e), null, true);
+        const msg = String(e.message || e);
+        setSshCwdStatus('err', msg);
+        addMsg('sys', (sshModalMode === 'cwd' ? 'SSH directory failed: ' : 'SSH connect failed: ') + msg, null, true);
+      } finally {
+        if (sshModalConnect) sshModalConnect.disabled = false;
       }
     }
 
@@ -2988,8 +3183,47 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
     }
     if (sshCwdInput) {
+      sshCwdInput.addEventListener('input', function () {
+        scheduleSshDirSuggest(false);
+      });
+      sshCwdInput.addEventListener('focus', function () {
+        if (currentSshTarget) scheduleSshDirSuggest(true);
+      });
+      sshCwdInput.addEventListener('blur', function () {
+        // Delay so click on suggestion still registers
+        setTimeout(function () { hideSshSuggest(); }, 180);
+      });
       sshCwdInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); connectSsh(); }
+        if (e.key === 'ArrowDown' && sshSuggestItems.length) {
+          e.preventDefault();
+          sshSuggestIdx = Math.min(sshSuggestItems.length - 1, sshSuggestIdx + 1);
+          highlightSshSuggest();
+          return;
+        }
+        if (e.key === 'ArrowUp' && sshSuggestItems.length) {
+          e.preventDefault();
+          sshSuggestIdx = Math.max(0, sshSuggestIdx - 1);
+          highlightSshSuggest();
+          return;
+        }
+        if (e.key === 'Tab' && sshSuggestItems.length) {
+          e.preventDefault();
+          var pick = sshSuggestIdx >= 0 ? sshSuggestItems[sshSuggestIdx] : sshSuggestItems[0];
+          applySshSuggest(pick);
+          return;
+        }
+        if (e.key === 'Escape') {
+          hideSshSuggest();
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (sshSuggestIdx >= 0 && sshSuggestItems[sshSuggestIdx]) {
+            applySshSuggest(sshSuggestItems[sshSuggestIdx]);
+            return;
+          }
+          connectSsh();
+        }
       });
     }
     if (sshCwdBtn) {

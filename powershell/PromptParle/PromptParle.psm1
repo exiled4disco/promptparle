@@ -2305,11 +2305,199 @@ function Get-PromptParleGitHubStatusText {
     return ($lines -join "`n")
 }
 
+function Test-PromptParleSshPathSafe {
+    param([string]$Path)
+    if ($null -eq $Path) { return $true }
+    $p = $Path.Trim()
+    if (-not $p) { return $true }
+    # Reject shell metacharacters — path only
+    if ($p -match '[;|&`$<>\n\r]') { return $false }
+    return $true
+}
+
+function Get-PromptParleSshCdPrefix {
+    <#
+    .SYNOPSIS
+      Bash snippet: expand ~ and cd into path, fail with clear message if missing.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    $safe = ($Path.Trim() -replace "'", "'\''")
+    # Expand ~ (single-quoted ~ never expands in bash). `$ → literal $ for remote shell.
+    return @"
+_pp_d='$safe'
+case "`$_pp_d" in
+  '~') _pp_d="`$HOME" ;;
+  '~/'*) _pp_d="`$HOME/`${_pp_d#~/}" ;;
+esac
+if [ ! -d "`$_pp_d" ]; then
+  echo "SSH working directory not found: `$_pp_d" >&2
+  echo "Hint: path is case-sensitive; use autocomplete for remote folders." >&2
+  exit 1
+fi
+cd "`$_pp_d" || exit 1
+"@
+}
+
+function Test-PromptParleSshWorkingDirectory {
+    <#
+    .SYNOPSIS
+      Verify a remote path exists as a directory; return resolved absolute path.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Target,
+        [int]$Port = 0,
+        [int]$TimeoutSec = 20
+    )
+    $p = if ($null -eq $Path) { '' } else { $Path.Trim() }
+    if (-not $p) {
+        return [pscustomobject]@{ ok = $true; path = ''; resolved = ''; error = $null }
+    }
+    if (-not (Test-PromptParleSshPathSafe -Path $p)) {
+        return [pscustomobject]@{
+            ok       = $false
+            path     = $p
+            resolved = ''
+            error    = 'Invalid path characters (no ; | & ` $ < >).'
+        }
+    }
+    $script = (Get-PromptParleSshCdPrefix -Path $p) + "`npwd"
+    $r = Invoke-PromptParleSsh -RemoteCommand $script -Target $Target -Port $Port -WorkingDirectory '' -TimeoutSec $TimeoutSec
+    $text = [string]$r.text
+    if ($r.exit_code -ne 0) {
+        $err = $text.Trim()
+        if (-not $err) { $err = "Remote directory not found: $p" }
+        # Prefer the clear line we print
+        if ($err -match 'SSH working directory not found: (.+)') {
+            $err = "Directory does not exist on remote host: $($Matches[1].Trim())"
+        }
+        return [pscustomobject]@{
+            ok       = $false
+            path     = $p
+            resolved = ''
+            error    = $err
+        }
+    }
+    $resolved = ($text -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
+    if (-not $resolved) { $resolved = $p }
+    return [pscustomobject]@{
+        ok       = $true
+        path     = $p
+        resolved = $resolved
+        error    = $null
+    }
+}
+
+function Get-PromptParleSshDirCompletions {
+    <#
+    .SYNOPSIS
+      List remote directories matching a partial path (for UI autocomplete).
+    #>
+    param(
+        [string]$Partial = '',
+        [string]$Target,
+        [int]$Port = 0,
+        [int]$TimeoutSec = 15,
+        [int]$Limit = 40
+    )
+    if (-not (Test-PromptParleSshPathSafe -Path $Partial)) {
+        return [pscustomobject]@{ ok = $false; path = $Partial; dirs = @(); error = 'Invalid path characters' }
+    }
+    $p = if ($null -eq $Partial) { '' } else { $Partial.Trim() }
+    $lim = [Math]::Max(5, [Math]::Min(80, $Limit))
+
+    # Empty → common roots under home + /
+    if (-not $p) {
+        $cmd = @"
+printf '%s\n' "`$HOME" / /home /var /opt /etc /tmp 2>/dev/null
+ls -1A "`$HOME" 2>/dev/null | head -n 30 | while IFS= read -r n; do
+  [ -d "`$HOME/`$n" ] && printf '%s\n' "`$HOME/`$n"
+done
+"@
+    } else {
+        $safe = ($p -replace "'", "'\''")
+        $endsSlash = $p.EndsWith('/') -or $p.EndsWith('\')
+        if ($endsSlash) {
+            $cmd = @"
+_pp_p='$safe'
+case "`$_pp_p" in
+  '~') _pp_p="`$HOME" ;;
+  '~/'*) _pp_p="`$HOME/`${_pp_p#~/}" ;;
+esac
+_pp_base=`${_pp_p%/}
+if [ ! -d "`$_pp_base" ]; then
+  echo "Parent not found: `$_pp_base" >&2
+  exit 0
+fi
+ls -1A "`$_pp_base" 2>/dev/null | head -n 80 | while IFS= read -r n; do
+  [ -z "`$n" ] && continue
+  [ -d "`$_pp_base/`$n" ] && printf '%s\n' "`$_pp_base/`$n"
+done
+"@
+        } else {
+            $cmd = @"
+_pp_p='$safe'
+case "`$_pp_p" in
+  '~') _pp_p="`$HOME" ;;
+  '~/'*) _pp_p="`$HOME/`${_pp_p#~/}" ;;
+esac
+if [ -d "`$_pp_p" ]; then
+  printf '%s\n' "`$_pp_p"
+  ls -1A "`$_pp_p" 2>/dev/null | head -n 40 | while IFS= read -r n; do
+    [ -d "`$_pp_p/`$n" ] && printf '%s\n' "`$_pp_p/`$n"
+  done
+else
+  _pp_parent=`$(dirname -- "`$_pp_p")
+  _pp_base=`$(basename -- "`$_pp_p")
+  [ "`$_pp_parent" = '.' ] && _pp_parent='/'
+  if [ ! -d "`$_pp_parent" ]; then
+    echo "Parent not found: `$_pp_parent" >&2
+    exit 0
+  fi
+  ls -1A "`$_pp_parent" 2>/dev/null | head -n 200 | while IFS= read -r n; do
+    case "`$n" in
+      "`$_pp_base"*)
+        if [ -d "`$_pp_parent/`$n" ]; then
+          if [ "`$_pp_parent" = '/' ]; then printf '/%s\n' "`$n"
+          else printf '%s/%s\n' "`$_pp_parent" "`$n"
+          fi
+        fi
+        ;;
+    esac
+  done
+fi
+"@
+        }
+    }
+
+    try {
+        $r = Invoke-PromptParleSsh -RemoteCommand $cmd -Target $Target -Port $Port -WorkingDirectory '' -TimeoutSec $TimeoutSec
+    } catch {
+        return [pscustomobject]@{ ok = $false; path = $p; dirs = @(); error = "$_" }
+    }
+    $dirs = New-Object System.Collections.Generic.List[string]
+    foreach ($line in (@([string]$r.text -split "`n"))) {
+        $s = $line.Trim()
+        if (-not $s) { continue }
+        if ($s -match '^(Parent not found|bash:|ssh:)') { continue }
+        if ($dirs.Count -ge $lim) { break }
+        if (-not $dirs.Contains($s)) { [void]$dirs.Add($s) }
+    }
+    return [pscustomobject]@{
+        ok    = ($r.exit_code -eq 0 -or $dirs.Count -gt 0)
+        path  = $p
+        dirs  = @($dirs)
+        error = if ($r.exit_code -ne 0 -and $dirs.Count -eq 0) { [string]$r.text } else { $null }
+    }
+}
+
 function Set-PromptParleSshTarget {
     param(
         [Parameter(Mandatory)][string]$Target,
         [int]$Port = 22,
-        [string]$WorkingDirectory = ''
+        [string]$WorkingDirectory = '',
+        # Validate remote cwd exists (default true when path provided)
+        [bool]$ValidateCwd = $true
     )
     $t = $Target.Trim()
     if ($t -match '^ssh\s+(.+)$') { $t = $Matches[1].Trim() }
@@ -2323,6 +2511,13 @@ function Set-PromptParleSshTarget {
         throw 'SSH target should look like user@host (or host).'
     }
     $cwd = if ($null -eq $WorkingDirectory) { '' } else { $WorkingDirectory.Trim() }
+    if ($cwd -and $ValidateCwd) {
+        $check = Test-PromptParleSshWorkingDirectory -Path $cwd -Target $t -Port $port
+        if (-not $check.ok) {
+            throw $check.error
+        }
+        if ($check.resolved) { $cwd = [string]$check.resolved }
+    }
     $state = Get-PromptParleSessionState
     $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $t -SshPort $port -SshCwd $cwd
     Save-PromptParleSessionState -State $state
@@ -2341,7 +2536,9 @@ function Invoke-PromptParleSsh {
         [string]$Target,
         [int]$Port = 0,
         [string]$WorkingDirectory = '',
-        [int]$TimeoutSec = 45
+        [int]$TimeoutSec = 45,
+        # When false, do not prepend session ssh_cwd (used for path checks themselves)
+        [switch]$SkipSessionCwd
     )
     if (-not (Test-PromptParleCommandAvailable -Name 'ssh')) {
         throw 'ssh not found. On Windows install OpenSSH Client (Optional Features) or Git for Windows.'
@@ -2351,16 +2548,17 @@ function Invoke-PromptParleSsh {
         $ws = Get-PromptParleWorkspace
         $Target = $ws.ssh_target
         if ($Port -le 0) { $Port = [int]$ws.ssh_port }
-        if (-not $cwd) { $cwd = [string](Get-PromptParleProp $ws 'ssh_cwd' '') }
+        if (-not $SkipSessionCwd -and -not $cwd) {
+            $cwd = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
+        }
     }
     if (-not $Target) { throw 'No SSH target. /ssh user@host' }
     if ($Port -le 0) { $Port = 22 }
 
     $remote = $RemoteCommand
     if ($cwd -and $cwd.Trim()) {
-        # Quote path for remote shell; run command in working directory
-        $safe = ($cwd.Trim() -replace "'", "'\''")
-        $remote = "cd '$safe' && $RemoteCommand"
+        # Expand ~ and fail clearly if directory missing (single-quoted ~ never expands in bash)
+        $remote = (Get-PromptParleSshCdPrefix -Path $cwd.Trim()) + "`n" + $RemoteCommand
     }
 
     # Non-interactive: use BatchMode so missing keys fail fast (never prompt for password in server)
@@ -2395,7 +2593,7 @@ function Invoke-PromptParleSsh {
 
 function Test-PromptParleSsh {
     param([string]$Target, [int]$Port = 0)
-    $r = Invoke-PromptParleSsh -Target $Target -Port $Port -RemoteCommand 'echo promptparle-ssh-ok && uname -a 2>/dev/null || ver' -TimeoutSec 15
+    $r = Invoke-PromptParleSsh -Target $Target -Port $Port -RemoteCommand 'echo promptparle-ssh-ok && uname -a 2>/dev/null || ver' -TimeoutSec 15 -WorkingDirectory ''
     return $r
 }
 
@@ -3059,12 +3257,13 @@ Requires OpenSSH client on this PC. Private keys stay local.
                     $ws = Get-PromptParleWorkspace
                     if (-not $ws.ssh_target) { throw 'No SSH target. /ssh user@host first.' }
                     $cwdIn = if ($null -ne $Matches[2]) { $Matches[2].Trim().Trim('"').Trim("'") } else { '' }
-                    if ($cwdIn -match '^(clear|none|off|~|/home)$') { $cwdIn = '' }
+                    if ($cwdIn -match '^(clear|none|off)$') { $cwdIn = '' }
                     if ($cwdIn -and $cwdIn -match '[;|&`$]') { throw 'Invalid remote path' }
-                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory $cwdIn
+                    # Validates remote dir exists; stores resolved absolute path
+                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory $cwdIn -ValidateCwd $true
                     $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd
                     if ($set.cwd) {
-                        $message = "SSH working directory: $($set.cwd) (on $($set.target))"
+                        $message = "SSH working directory OK: $($set.cwd) (on $($set.target))"
                     } else {
                         $message = "SSH working directory cleared (login home on $($set.target))."
                     }
@@ -3119,7 +3318,8 @@ Requires OpenSSH client on this PC. Private keys stay local.
                         $port = [int]$Matches[2]
                     }
                     if ($cwdArg -and $cwdArg -match '[;|&`$]') { throw 'Invalid remote working directory' }
-                    $set = Set-PromptParleSshTarget -Target $targetArg -Port $port -WorkingDirectory $cwdArg
+                    # Save host first (cwd validated when non-empty)
+                    $set = Set-PromptParleSshTarget -Target $targetArg -Port $port -WorkingDirectory $cwdArg -ValidateCwd ([bool]$cwdArg)
                     $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd
                     $r = Test-PromptParleSsh -Target $set.target -Port $set.port
                     $cwdMsg = if ($set.cwd) { "`nWorking dir: $($set.cwd)" } else { '' }
@@ -4647,6 +4847,24 @@ try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
                     continue
                 }
 
+                # SSH remote directory autocomplete (for working-dir field)
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/ssh/complete') {
+                    try {
+                        $q = [string]$req.Url.Query
+                        $partial = ''
+                        if ($q -and $q -match '(?:^|[?&])path=([^&]*)') {
+                            $partial = [Uri]::UnescapeDataString(($Matches[1] -replace '\+', ' '))
+                        }
+                        $resultC = Get-PromptParleSshDirCompletions -Partial $partial
+                        $jsonC = ($resultC | ConvertTo-Json -Depth 5 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $jsonC
+                    } catch {
+                        $err = @{ ok = $false; error = "$_"; dirs = @() } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 # Desktop terminal panel (local workspace or SSH) — stays on this PC
                 if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/terminal') {
                     try {
@@ -5535,6 +5753,8 @@ Export-ModuleMember -Function @(
     'Set-PromptParleSshTarget',
     'Clear-PromptParleSshTarget',
     'Invoke-PromptParleSsh',
+    'Test-PromptParleSshWorkingDirectory',
+    'Get-PromptParleSshDirCompletions',
     'Invoke-PromptParleTerminal',
     'Invoke-PromptParleGitClone'
 ) -Alias @(
