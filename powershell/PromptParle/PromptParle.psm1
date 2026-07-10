@@ -3659,11 +3659,11 @@ function Get-PromptParleClientVersion {
 function Get-PromptParleRemoteClientVersion {
     <#
     .SYNOPSIS
-      Latest client version published on GitHub main.
+      Latest client version from portal (deployed) then GitHub main.
     #>
     [CmdletBinding()]
     param()
-    # Prefer portal (shipped with deploy) so Update lights up without waiting on GitHub.
+    # Portal is authoritative for ship — GitHub can lag until push.
     $urls = @(
         'https://promptparle.com/PromptParle.psd1',
         'https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1'
@@ -3771,48 +3771,88 @@ function Update-PromptParleClient {
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('pp-update-' + [guid]::NewGuid().ToString('n'))
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     $zipPath = Join-Path $temp 'promptparle-main.zip'
+    $tgzPath = Join-Path $temp 'PromptParle-PowerShell.tgz'
     $extract = Join-Path $temp 'extract'
 
     try {
         Write-Host 'Downloading latest PromptParle client...' -ForegroundColor Cyan
-        $zipUrl = 'https://github.com/exiled4disco/promptparle/archive/refs/heads/main.zip'
-        # Prefer site tarball if present (faster); fall back to GitHub zip
+        # Portal tarball is what we deploy — prefer it so Update is not blocked on unpushed GitHub.
         $tgzUrl = 'https://promptparle.com/PromptParle-PowerShell.tgz'
+        $zipUrl = 'https://github.com/exiled4disco/promptparle/archive/refs/heads/main.zip'
         $used = $null
-        try {
-            Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
-            $used = 'github-zip'
-        } catch {
-            throw "Download failed: $_"
-        }
-
-        Write-Host 'Extracting...' -ForegroundColor DarkGray
-        New-Item -ItemType Directory -Path $extract -Force | Out-Null
-        if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
-            Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
-        } else {
-            throw 'Expand-Archive not available. Update PowerShell or install manually.'
-        }
-
         $source = $null
-        $candidates = @(
-            (Join-Path $extract 'promptparle-main\powershell\PromptParle'),
-            (Join-Path $extract 'promptparle-main/powershell/PromptParle')
-        )
-        # Also scan one level deep
-        Get-ChildItem -LiteralPath $extract -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $candidates += (Join-Path $_.FullName 'powershell\PromptParle')
-            $candidates += (Join-Path $_.FullName 'powershell/PromptParle')
+        New-Item -ItemType Directory -Path $extract -Force | Out-Null
+
+        # 1) Portal .tgz (PromptParle/ at root)
+        try {
+            Invoke-WebRequest -Uri $tgzUrl -OutFile $tgzPath -UseBasicParsing -TimeoutSec 120
+            if ((Test-Path -LiteralPath $tgzPath) -and ((Get-Item -LiteralPath $tgzPath).Length -gt 1000)) {
+                Write-Host 'Extracting portal package...' -ForegroundColor DarkGray
+                $tarOk = $false
+                if (Get-Command tar -ErrorAction SilentlyContinue) {
+                    try {
+                        & tar -xzf $tgzPath -C $extract 2>$null
+                        if ($LASTEXITCODE -eq 0) { $tarOk = $true }
+                    } catch { $tarOk = $false }
+                }
+                if ($tarOk) {
+                    $tgzCandidates = @(
+                        (Join-Path $extract 'PromptParle'),
+                        (Join-Path $extract 'powershell\PromptParle'),
+                        (Join-Path $extract 'powershell/PromptParle')
+                    )
+                    Get-ChildItem -LiteralPath $extract -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                        if ($_.Name -eq 'PromptParle') { $tgzCandidates = @($_.FullName) + $tgzCandidates }
+                    }
+                    foreach ($c in $tgzCandidates) {
+                        if ($c -and (Test-Path -LiteralPath (Join-Path $c 'PromptParle.psd1'))) {
+                            $source = $c
+                            $used = 'portal-tgz'
+                            break
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-Host ("Portal package unavailable ({0}); trying GitHub..." -f $_) -ForegroundColor DarkYellow
         }
-        foreach ($c in $candidates) {
-            if ($c -and (Test-Path -LiteralPath (Join-Path $c 'PromptParle.psd1'))) {
-                $source = $c
-                break
+
+        # 2) GitHub zip fallback
+        if (-not $source) {
+            try {
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+                $used = 'github-zip'
+            } catch {
+                throw "Download failed (portal + GitHub): $_"
+            }
+
+            Write-Host 'Extracting GitHub archive...' -ForegroundColor DarkGray
+            if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
+                Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
+            } else {
+                throw 'Expand-Archive not available. Update PowerShell or install manually from https://promptparle.com/PromptParle-PowerShell.tgz'
+            }
+
+            $candidates = @(
+                (Join-Path $extract 'promptparle-main\powershell\PromptParle'),
+                (Join-Path $extract 'promptparle-main/powershell/PromptParle')
+            )
+            Get-ChildItem -LiteralPath $extract -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $candidates += (Join-Path $_.FullName 'powershell\PromptParle')
+                $candidates += (Join-Path $_.FullName 'powershell/PromptParle')
+            }
+            foreach ($c in $candidates) {
+                if ($c -and (Test-Path -LiteralPath (Join-Path $c 'PromptParle.psd1'))) {
+                    $source = $c
+                    break
+                }
             }
         }
+
         if (-not $source) {
             throw 'Downloaded archive did not contain powershell/PromptParle'
         }
+        Write-Host ("Source: {0}" -f $used) -ForegroundColor DarkGray
 
         $newVer = Read-PromptParleVersionFromManifest -ManifestPath (Join-Path $source 'PromptParle.psd1')
         if (-not $newVer) { $newVer = $remote }

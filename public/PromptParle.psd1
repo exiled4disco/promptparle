@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.12.1'
+    ModuleVersion     = '0.12.2'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -53,6 +53,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.12.2: Fix Update to install portal tarball first (not stale GitHub zip); push pipeline
 0.12.1: Compact portal Settings; SSH edit cwd; terminal panel under chat (local + SSH)
 0.12.0: Uniform top chrome; soft Update glow + poll; SSH/Git working dir; portal feature lockdown; Free 1 desktop seat
 0.11.2: Brief-first local shrink (mask→brief→budget; one pack max); tighter tool outputs
