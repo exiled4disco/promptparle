@@ -1842,6 +1842,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     /** @type {{id:string,kind:'text'|'image',name:string,text?:string,mediaType?:string,dataBase64?:string,previewUrl?:string}[]} */
     let attachments = [];
+    /** Bumped on every composer clear — discards in-flight compress/add after submit */
+    let attachEpoch = 0;
     let idSeq = 1;
 
     const TEXT_EXT = new Set([
@@ -3081,7 +3083,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     async function addFiles(fileList) {
       const files = Array.prototype.slice.call(fileList || []);
+      // Snapshot epoch so a submit mid-compress cannot re-attach after clear
+      const epochAtStart = attachEpoch;
+      let added = 0;
       for (let i = 0; i < files.length; i++) {
+        if (epochAtStart !== attachEpoch) {
+          // User submitted (or cleared) while we were still reading/compressing
+          return;
+        }
         const file = files[i];
         if (!canAddMore()) {
           addMsg('sys', 'Attachment limit reached (' + MAX_FILES + ').', null, true);
@@ -3100,26 +3109,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
               quality: multi ? 0.75 : 0.82,
               forceJpeg: multi || true
             });
+            if (epochAtStart !== attachEpoch) return; // cleared during compress
             attachments.push({
               id: 'a' + (idSeq++), kind: 'image', name: img.name,
               mediaType: img.mediaType, dataBase64: img.dataBase64, previewUrl: img.previewUrl
             });
+            added++;
           } else if (isTextFile(file)) {
             let text = await readAsText(file);
+            if (epochAtStart !== attachEpoch) return;
             if (text.length > MAX_TEXT_CHARS) {
               text = text.slice(0, MAX_TEXT_CHARS) + '\n\n…[truncated local attach limit]';
             }
             attachments.push({
               id: 'a' + (idSeq++), kind: 'text', name: file.name || 'file.txt', text: text
             });
+            added++;
           } else {
             addMsg('sys', 'Skipped binary: ' + file.name, null, true);
           }
         } catch (err) {
+          if (epochAtStart !== attachEpoch) return;
           addMsg('sys', String(err.message || err), null, true);
         }
       }
-      renderChips();
+      if (epochAtStart !== attachEpoch) return;
+      if (added > 0 || files.length) renderChips();
     }
 
     attachBtn.addEventListener('click', function () { fileInput.click(); });
@@ -3182,18 +3197,56 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return { media_type: a.mediaType, data_base64: a.dataBase64, name: a.name };
       });
     }
-    /** Clear composer chips after submit (images + text files). Previews revoked. */
-    function clearComposerAttachments() {
+    /**
+     * Clear composer chips (images + text) after submit.
+     * Bumps attachEpoch so in-flight paste/compress cannot re-add chips.
+     * Payload must already be captured before calling this.
+     */
+    function clearComposerAttachments(reason) {
+      const n = attachments.length;
+      const kinds = { image: 0, text: 0 };
       try {
         attachments.forEach(function (a) {
-          if (a && a.previewUrl) {
+          if (!a) return;
+          if (a.kind === 'image') kinds.image++;
+          else if (a.kind === 'text') kinds.text++;
+          // Only revoke blob: URLs (preview is usually data: from canvas)
+          if (a.previewUrl && String(a.previewUrl).indexOf('blob:') === 0) {
             try { URL.revokeObjectURL(a.previewUrl); } catch (e) { /* ignore */ }
           }
         });
       } catch (e) { /* ignore */ }
+
+      attachEpoch++; // invalidate any async addFiles still running
       attachments = [];
-      try { renderChips(); } catch (e) { /* ignore */ }
+
+      // Hard wipe DOM — do not rely only on renderChips
+      try {
+        if (chipsEl) {
+          chipsEl.innerHTML = '';
+          chipsEl.setAttribute('data-cleared', String(Date.now()));
+        }
+      } catch (e) { /* ignore */ }
+      try {
+        if (fileInput) fileInput.value = '';
+      } catch (e) { /* ignore */ }
       try { refreshAttachHint(); } catch (e) { /* ignore */ }
+
+      // Visible feedback: activity log (not chat) so user sees it worked
+      if (n > 0) {
+        var bits = [];
+        if (kinds.image) bits.push(kinds.image + ' image' + (kinds.image === 1 ? '' : 's'));
+        if (kinds.text) bits.push(kinds.text + ' file' + (kinds.text === 1 ? '' : 's'));
+        try {
+          logOps(
+            'Composer cleared after send: ' + (bits.join(' + ') || (n + ' attachment(s)')) +
+            (reason ? ' · ' + reason : '') +
+            ' · chips empty for next message.',
+            { level: 'ok', source: 'ui' }
+          );
+        } catch (e) { /* ignore */ }
+      }
+      return n;
     }
     /**
      * Prior turns for continuous [MEM] auto-compact.
@@ -5492,8 +5545,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         (attachCount ? '\n\n[' + attachCount + ' attachment(s)]' : '');
       addMsg('user', userLabel, null, false, thumbUrls);
       inputEl.value = '';
-      // Clear composer chips immediately on submit (payload already captured)
-      clearComposerAttachments();
+      // Clear composer chips immediately — payload already captured in context/images
+      // (epoch bump also cancels in-flight paste compress that would re-add chips)
+      const clearedN = clearComposerAttachments('submit');
       sendBtn.disabled = true;
       sendBtn.textContent = 'Working…';
 
@@ -5506,6 +5560,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         ? 'Optimizing (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ')…'
         : 'Sending (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · optimize on)' +
           (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') +
+          (images.length ? ' · ' + images.length + ' img' : '') +
+          (clearedN ? ' · composer cleared' : '') +
           (hist.length ? ' · mem ' + hist.length : '') + '…';
       chat.appendChild(wait);
       scrollChatToBottom();
@@ -5571,6 +5627,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (timer) clearTimeout(timer);
         const w = document.getElementById('waiting');
         if (w) w.remove();
+        // Belt-and-suspenders: never leave chips after a send attempt
+        if (attachments.length > 0) clearComposerAttachments('post-send');
         sendBtn.disabled = false;
         sendBtn.textContent = 'Send';
         inputEl.focus();
