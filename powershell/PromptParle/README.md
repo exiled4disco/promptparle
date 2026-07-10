@@ -80,21 +80,54 @@ Environment overrides:
 | `PROMPTPARLE_BASE_URL` | Default `https://promptparle.com` |
 | `PROMPTPARLE_CONFIG_DIR` | Override config directory |
 
+## Start chatting (recommended)
+
+```powershell
+Import-Module PromptParle
+pp
+# aliases: Start-PromptParle   promptparle
+```
+
+1. Lists providers you configured in the portal  
+2. You pick one  
+3. Type normally at `you>`  
+
+```text
+Which AI do you want to use?
+  [1] OpenAI
+provider # (or name)> 1
+you> Tell me about ExampleCorp
+```
+
+In-session: `/help` `/provider` `/profile` `/file` `/context` `/usage` `/quit`
+
+Auto-load every PowerShell window:
+
+```powershell
+Add-Content $PROFILE "Import-Module PromptParle"
+```
+
+Then just type `pp`.
+
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `Start-PromptParle` / `pp` / `promptparle` | **Interactive chat UI** |
 | `Set-PromptParleApiKey` | Save `pp_live_…` key |
 | `Get-PromptParleConfig` | Show config (key masked) |
 | `Get-PromptParleProvider` | List providers + which keys are set |
 | `Get-PromptParleUsage` | Token savings summary |
-| `Invoke-PromptParle` | Optimize + call AI (or optimize only) |
+| `Invoke-PromptParle` | One-shot scripted call (automation) |
 | `Invoke-PromptParleSecurityReview` | Same with `security-review` profile |
 
 ## Examples
 
 ```powershell
-# Basic
+# Interactive (preferred)
+pp
+
+# Scripted one-shot
 Invoke-PromptParle -Provider openai -Prompt 'Explain this script' -Path .\deploy.ps1
 
 # Pipeline context (logs / configs / code)

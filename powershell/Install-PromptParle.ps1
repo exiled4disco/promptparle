@@ -77,7 +77,12 @@ Import-Module PromptParle -Force
 $loaded = Get-Module PromptParle
 Write-Host "Imported PromptParle $($loaded.Version)" -ForegroundColor Green
 Write-Host ''
-Write-Host 'Next:' -ForegroundColor Cyan
+Write-Host 'Start chatting:' -ForegroundColor Cyan
+Write-Host '  pp'
+Write-Host '  # or:  Start-PromptParle   /   promptparle'
+Write-Host ''
+Write-Host 'First-time setup (once):' -ForegroundColor DarkGray
 Write-Host "  Set-PromptParleApiKey -ApiKey 'pp_live_xxxxx'"
-Write-Host '  Get-PromptParleProvider'
-Write-Host "  Invoke-PromptParle -Provider openai -Prompt 'Hello' -Context 'test'"
+Write-Host ''
+Write-Host 'Optional — auto-load in every PowerShell window:' -ForegroundColor DarkGray
+Write-Host "  Add-Content `$PROFILE `"Import-Module PromptParle`""

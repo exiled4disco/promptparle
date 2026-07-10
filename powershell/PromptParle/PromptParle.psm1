@@ -167,18 +167,114 @@ function Write-PromptParleMetadata {
     $prov = $Metadata.provider
     $model = $Metadata.model
     $prof = $Metadata.optimization_profile
+    $expanded = $false
+    if ($null -ne $Metadata.expanded) { $expanded = [bool]$Metadata.expanded }
+    elseif ($null -ne $orig -and $null -ne $opt -and $opt -gt $orig) { $expanded = $true }
 
     Write-Host ''
-    Write-Host 'PromptParle optimized your context:' -ForegroundColor Cyan
+    Write-Host '  --- PromptParle ---' -ForegroundColor DarkCyan
     if ($null -ne $orig)  { Write-Host ("  Original tokens : {0}" -f $orig) }
     if ($null -ne $opt)   { Write-Host ("  Optimized tokens: {0}" -f $opt) }
-    if ($null -ne $pct)   { Write-Host ("  Reduction       : {0}%" -f $pct) -ForegroundColor Green }
+    if ($expanded) {
+        Write-Host '  Size            : expanded (no savings on this message)' -ForegroundColor Yellow
+    } elseif ($null -ne $pct -and $pct -gt 0) {
+        Write-Host ("  Reduction       : {0}%" -f $pct) -ForegroundColor Green
+    } elseif ($null -ne $pct) {
+        Write-Host '  Reduction       : 0% (already compact)'
+    }
     if ($prov)            { Write-Host ("  Provider        : {0}" -f $prov) }
     if ($model)           { Write-Host ("  Model           : {0}" -f $model) }
     if ($prof)            { Write-Host ("  Profile         : {0}" -f $prof) }
     if ($Metadata.secrets_masked) {
         Write-Host '  Secrets masked  : yes' -ForegroundColor Yellow
     }
+    Write-Host ''
+}
+
+function Read-PromptParleLine {
+    param(
+        [string]$PromptText = 'you> ',
+        [ConsoleColor]$Color = 'Green'
+    )
+    Write-Host $PromptText -ForegroundColor $Color -NoNewline
+    return [Console]::ReadLine()
+}
+
+function Select-PromptParleProviderInteractive {
+    param(
+        [object[]]$Providers,
+        [string]$Preferred
+    )
+
+    $configured = @($Providers | Where-Object { $_.Configured })
+    if ($configured.Count -eq 0) {
+        Write-Host ''
+        Write-Host 'No AI providers configured yet.' -ForegroundColor Yellow
+        Write-Host 'Add a key at https://promptparle.com/app/providers' -ForegroundColor Yellow
+        Write-Host 'Then run: Start-PromptParle' -ForegroundColor Cyan
+        return $null
+    }
+
+    if ($Preferred) {
+        $match = $configured | Where-Object { $_.Id -eq $Preferred } | Select-Object -First 1
+        if ($match) { return $match }
+        Write-Host "Preferred provider '$Preferred' is not configured." -ForegroundColor Yellow
+    }
+
+    if ($configured.Count -eq 1) {
+        Write-Host ("Using {0} ({1})" -f $configured[0].Name, $configured[0].Id) -ForegroundColor Cyan
+        return $configured[0]
+    }
+
+    Write-Host ''
+    Write-Host 'Which AI do you want to use?' -ForegroundColor Cyan
+    Write-Host ''
+    for ($i = 0; $i -lt $configured.Count; $i++) {
+        $p = $configured[$i]
+        Write-Host ("  [{0}] {1}" -f ($i + 1), $p.Name) -ForegroundColor White
+        Write-Host ("      id: {0}  default model: {1}" -f $p.Id, $p.DefaultModel) -ForegroundColor DarkGray
+    }
+    Write-Host ''
+
+    while ($true) {
+        $choice = Read-PromptParleLine -PromptText 'provider # (or name)> ' -Color Yellow
+        if ($null -eq $choice) { return $null }
+        $choice = $choice.Trim()
+        if (-not $choice) { continue }
+
+        $num = 0
+        if ([int]::TryParse($choice, [ref]$num)) {
+            if ($num -ge 1 -and $num -le $configured.Count) {
+                return $configured[$num - 1]
+            }
+        }
+
+        $byId = $configured | Where-Object {
+            $_.Id -eq $choice.ToLower() -or $_.Name -like "*$choice*"
+        } | Select-Object -First 1
+        if ($byId) { return $byId }
+
+        Write-Host 'Pick a number from the list, or type openai / anthropic / gemini / grok' -ForegroundColor Yellow
+    }
+}
+
+function Show-PromptParleSessionHelp {
+    Write-Host ''
+    Write-Host 'Commands (type these instead of a normal message):' -ForegroundColor Cyan
+    Write-Host '  /help              Show this help'
+    Write-Host '  /provider          Switch AI provider'
+    Write-Host '  /profile           Change optimization profile'
+    Write-Host '  /model <name>      Set model (blank = provider default)'
+    Write-Host '  /context           Paste multi-line context (end with a line: EOF)'
+    Write-Host '  /file <path>       Load a file as context'
+    Write-Host '  /clearcontext      Clear attached context'
+    Write-Host '  /optimize          Optimize-only next message (no AI spend)'
+    Write-Host '  /usage             Show token savings'
+    Write-Host '  /status            Show session settings'
+    Write-Host '  /clear             Clear the screen'
+    Write-Host '  /quit  or  /exit   Leave PromptParle'
+    Write-Host ''
+    Write-Host 'Otherwise just type normally and press Enter.' -ForegroundColor DarkGray
     Write-Host ''
 }
 
@@ -513,6 +609,276 @@ function Invoke-PromptParleSecurityReview {
     }
 }
 
+function Start-PromptParle {
+    <#
+    .SYNOPSIS
+      Friendly interactive PromptParle session.
+
+    .DESCRIPTION
+      Starts PromptParle like a chat app:
+        1) Picks an AI provider you already configured in the portal
+        2) Gives you a normal prompt line (you> )
+        3) Optimizes + routes each message through PromptParle
+
+      Shortcuts: pp   and   promptparle
+
+    .EXAMPLE
+      Start-PromptParle
+      pp
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateSet('openai', 'anthropic', 'gemini', 'grok')]
+        [string]$Provider,
+
+        [ValidateSet(
+            'general',
+            'developer',
+            'security-review',
+            'log-analysis',
+            'documentation',
+            'executive-summary'
+        )]
+        [string]$Profile = 'general',
+
+        [string]$Model
+    )
+
+    $config = Get-PromptParleConfigInternal
+    if (-not $config.ApiKey) {
+        Write-Host ''
+        Write-Host 'PromptParle is not configured yet.' -ForegroundColor Yellow
+        Write-Host '1) Create a desktop key: https://promptparle.com/app/api-keys' -ForegroundColor White
+        Write-Host "2) Run:  Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
+        Write-Host '3) Run:  Start-PromptParle   (or: pp)' -ForegroundColor White
+        Write-Host ''
+        return
+    }
+
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host '  PromptParle' -ForegroundColor Cyan
+    Write-Host '  Trim the prompt. Keep the signal.' -ForegroundColor DarkGray
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host ''
+
+    try {
+        $allProviders = @(Get-PromptParleProvider)
+    } catch {
+        Write-Host "Could not load providers: $_" -ForegroundColor Red
+        return
+    }
+
+    $selected = Select-PromptParleProviderInteractive -Providers $allProviders -Preferred $Provider
+    if (-not $selected) { return }
+
+    $sessionProvider = [string]$selected.Id
+    $sessionModel = $Model
+    $sessionProfile = $Profile
+    $sessionContext = $null
+    $optimizeOnlyNext = $false
+
+    Write-Host ''
+    Write-Host ("Ready. Talking to {0}." -f $selected.Name) -ForegroundColor Green
+    Write-Host 'Type a message and press Enter.  /help for commands.  /quit to leave.' -ForegroundColor DarkGray
+    Write-Host ''
+
+    while ($true) {
+        $line = Read-PromptParleLine -PromptText 'you> ' -Color Green
+        if ($null -eq $line) {
+            # Ctrl+Z / EOF
+            Write-Host ''
+            Write-Host 'Bye.' -ForegroundColor DarkGray
+            break
+        }
+
+        $trimmed = $line.Trim()
+        if (-not $trimmed) { continue }
+
+        # Slash commands
+        if ($trimmed.StartsWith('/')) {
+            $parts = $trimmed -split '\s+', 2
+            $cmd = $parts[0].ToLowerInvariant()
+            $arg = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+
+            switch ($cmd) {
+                { $_ -in @('/quit', '/exit', '/q') } {
+                    Write-Host 'Bye.' -ForegroundColor DarkGray
+                    return
+                }
+                '/help' {
+                    Show-PromptParleSessionHelp
+                    continue
+                }
+                '/clear' {
+                    Clear-Host
+                    continue
+                }
+                '/status' {
+                    Write-Host ''
+                    Write-Host ("  Provider : {0}" -f $sessionProvider)
+                    Write-Host ("  Model    : {0}" -f $(if ($sessionModel) { $sessionModel } else { '(default)' }))
+                    Write-Host ("  Profile  : {0}" -f $sessionProfile)
+                    Write-Host ("  Context  : {0}" -f $(if ($sessionContext) { "$($sessionContext.Length) chars" } else { '(none)' }))
+                    Write-Host ''
+                    continue
+                }
+                '/usage' {
+                    try {
+                        $u = Get-PromptParleUsage
+                        Write-Host ''
+                        Write-Host ("  Requests     : {0}" -f $u.RequestCount)
+                        Write-Host ("  Tokens saved : {0} ({1}%)" -f $u.TokensSaved, $u.ReductionPercent) -ForegroundColor Green
+                        Write-Host ''
+                    } catch {
+                        Write-Host "Usage error: $_" -ForegroundColor Red
+                    }
+                    continue
+                }
+                '/provider' {
+                    try {
+                        $allProviders = @(Get-PromptParleProvider)
+                        $picked = Select-PromptParleProviderInteractive -Providers $allProviders
+                        if ($picked) {
+                            $sessionProvider = [string]$picked.Id
+                            $sessionModel = $null
+                            Write-Host ("Switched to {0}." -f $picked.Name) -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Host "Provider error: $_" -ForegroundColor Red
+                    }
+                    continue
+                }
+                '/profile' {
+                    $profiles = @(
+                        'general', 'developer', 'security-review',
+                        'log-analysis', 'documentation', 'executive-summary'
+                    )
+                    if ($arg -and $profiles -contains $arg) {
+                        $sessionProfile = $arg
+                        Write-Host ("Profile set to {0}." -f $sessionProfile) -ForegroundColor Green
+                        continue
+                    }
+                    Write-Host ''
+                    Write-Host 'Profiles:' -ForegroundColor Cyan
+                    for ($i = 0; $i -lt $profiles.Count; $i++) {
+                        $mark = if ($profiles[$i] -eq $sessionProfile) { '*' } else { ' ' }
+                        Write-Host ("  [{0}]{1} {2}" -f ($i + 1), $mark, $profiles[$i])
+                    }
+                    $pchoice = Read-PromptParleLine -PromptText 'profile # or name> ' -Color Yellow
+                    if ($pchoice) {
+                        $pchoice = $pchoice.Trim()
+                        $n = 0
+                        if ([int]::TryParse($pchoice, [ref]$n) -and $n -ge 1 -and $n -le $profiles.Count) {
+                            $sessionProfile = $profiles[$n - 1]
+                        } elseif ($profiles -contains $pchoice) {
+                            $sessionProfile = $pchoice
+                        } else {
+                            Write-Host 'Unknown profile.' -ForegroundColor Yellow
+                            continue
+                        }
+                        Write-Host ("Profile set to {0}." -f $sessionProfile) -ForegroundColor Green
+                    }
+                    continue
+                }
+                '/model' {
+                    if ($arg) {
+                        $sessionModel = $arg
+                        Write-Host ("Model set to {0}." -f $sessionModel) -ForegroundColor Green
+                    } else {
+                        $sessionModel = $null
+                        Write-Host 'Model cleared (using provider default).' -ForegroundColor Green
+                    }
+                    continue
+                }
+                '/context' {
+                    Write-Host 'Paste context. End with a line that is only: EOF' -ForegroundColor Cyan
+                    $buf = New-Object System.Collections.Generic.List[string]
+                    while ($true) {
+                        $cl = Read-PromptParleLine -PromptText '... ' -Color DarkGray
+                        if ($null -eq $cl) { break }
+                        if ($cl.Trim() -eq 'EOF') { break }
+                        $buf.Add($cl)
+                    }
+                    if ($buf.Count -gt 0) {
+                        $sessionContext = ($buf -join "`n")
+                        Write-Host ("Context attached ({0} chars)." -f $sessionContext.Length) -ForegroundColor Green
+                    } else {
+                        Write-Host 'No context captured.' -ForegroundColor Yellow
+                    }
+                    continue
+                }
+                '/file' {
+                    if (-not $arg) {
+                        Write-Host 'Usage: /file C:\path\to\file.txt' -ForegroundColor Yellow
+                        continue
+                    }
+                    if (-not (Test-Path -LiteralPath $arg)) {
+                        Write-Host "File not found: $arg" -ForegroundColor Red
+                        continue
+                    }
+                    try {
+                        $sessionContext = Get-Content -LiteralPath $arg -Raw -ErrorAction Stop
+                        Write-Host ("Loaded context from file ({0} chars)." -f $sessionContext.Length) -ForegroundColor Green
+                    } catch {
+                        Write-Host "Could not read file: $_" -ForegroundColor Red
+                    }
+                    continue
+                }
+                '/clearcontext' {
+                    $sessionContext = $null
+                    Write-Host 'Context cleared.' -ForegroundColor Green
+                    continue
+                }
+                '/optimize' {
+                    $optimizeOnlyNext = $true
+                    Write-Host 'Next message will optimize only (no AI call).' -ForegroundColor Yellow
+                    continue
+                }
+                default {
+                    Write-Host "Unknown command: $cmd  (try /help)" -ForegroundColor Yellow
+                    continue
+                }
+            }
+        }
+
+        # Normal chat message
+        Write-Host 'thinking...' -ForegroundColor DarkGray
+        try {
+            $params = @{
+                Prompt   = $trimmed
+                Provider = $sessionProvider
+                Profile  = $sessionProfile
+                Quiet    = $false
+            }
+            if ($sessionModel) { $params.Model = $sessionModel }
+            if ($sessionContext) { $params.Context = $sessionContext }
+            if ($optimizeOnlyNext) {
+                $params.OptimizeOnly = $true
+                $optimizeOnlyNext = $false
+            }
+
+            $result = Invoke-PromptParle @params
+
+            if ($result.OptimizeOnly) {
+                Write-Host 'optimized prompt>' -ForegroundColor Cyan
+                Write-Host $result.OptimizedPrompt
+            } else {
+                Write-Host ("{0}>" -f $sessionProvider) -ForegroundColor Magenta
+                Write-Host $result.Response
+            }
+            Write-Host ''
+        } catch {
+            Write-Host "Error: $_" -ForegroundColor Red
+            Write-Host ''
+        }
+    }
+}
+
+# Friendly entry points
+Set-Alias -Name pp -Value Start-PromptParle -Scope Script -Force
+Set-Alias -Name promptparle -Value Start-PromptParle -Scope Script -Force
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -521,5 +887,9 @@ Export-ModuleMember -Function @(
     'Get-PromptParleProvider',
     'Get-PromptParleUsage',
     'Invoke-PromptParle',
-    'Invoke-PromptParleSecurityReview'
+    'Invoke-PromptParleSecurityReview',
+    'Start-PromptParle'
+) -Alias @(
+    'pp',
+    'promptparle'
 )

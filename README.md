@@ -113,7 +113,7 @@ cd $env:USERPROFILE\src\promptparle
 .\powershell\Install-PromptParle.ps1 -Force
 ```
 
-### Configure & first call
+### Configure & chat
 
 ```powershell
 Import-Module PromptParle -Force
@@ -121,17 +121,15 @@ Import-Module PromptParle -Force
 # Portal: https://promptparle.com → Providers (add AI key) → API Keys (create pp_live_…)
 Set-PromptParleApiKey -ApiKey 'pp_live_xxxxx'
 
-Get-PromptParleConfig
-Get-PromptParleProvider
+# Friendly interactive UI (recommended)
+pp
+# picks your configured provider, then:  you> type normally
+```
 
-# Optimize only (no AI spend)
-Invoke-PromptParle -Provider openai -Prompt 'Summarize' -Context 'noise...' -OptimizeOnly
+Scripted / automation (optional):
 
-# Full call
-Get-Content .\firewall-rules.txt -Raw |
-  Invoke-PromptParle -Provider openai -Profile security-review `
-    -Prompt 'Find risky firewall rules'
-
+```powershell
+Invoke-PromptParle -Provider openai -Prompt 'Summarize' -Context 'noise...'
 Get-PromptParleUsage
 ```
 
