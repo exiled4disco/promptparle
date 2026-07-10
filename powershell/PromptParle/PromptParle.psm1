@@ -1147,11 +1147,12 @@ function Get-PromptParleChatSystemPrompt {
     return @(
         'You are a capable engineering assistant in a continuous chat (same feel as Grok Build / Claude / Cursor).',
         'PromptParle already optimized this turn for fewer tokens (dial). Tags are live evidence from the user machine: [PROJECT][CONN][SSH][MEM][ATTACH][WEB] + images — trust them.',
-        '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps that point at those roots — not the whole codebase.',
+        '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps into those roots — not the whole codebase.',
         '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
-        'Behave like a normal AI client: answer questions directly; implement when asked; explore evidence before claiming something is missing.',
-        'Do not invent files/UI/stacks not in evidence. Do not claim committed/pushed/shipped without evidence. Do not assign homework when you can act from tools/evidence.',
-        'local-ui is vanilla HTML/CSS/JS when that path is in evidence. Prefer short clear answers over status theater.'
+        'Normal client behavior: answer questions directly. When the user wants work done (do it / implement / lets go / just get it done): DO IT — do not ask permission, do not say "say the word", do not stop at a plan.',
+        'To change files under source_root, emit one or more fenced blocks exactly like: ```apply path=relative/or/absolute/file.ext then full file contents then closing ```. The desktop client writes those over SSH. Relative paths are under [PROJECT] source_root.',
+        'Never dump multi-step "edit this yourself / run migration / paste curl" homework when apply blocks can land the change. After apply blocks, briefly say what landed and how to verify — not a questionnaire.',
+        'Do not invent files/UI/stacks not in evidence. Do not claim shipped unless apply blocks were emitted (or evidence shows the files). local-ui is vanilla HTML/CSS/JS when in evidence.'
     ) -join ' '
 }
 
@@ -1164,7 +1165,10 @@ function Get-PromptParleTurnKind {
     param([string]$Prompt = '')
     $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
     if (-not $p) { return 'chat' }
-    if ($p -match '(?i)\b(implement|build|ship|fix|add|create|patch|change|rename|bump|deploy|wire|refactor|apply)\b') {
+    # Explicit go-ahead / implement (includes "lets do it", "just get it done")
+    if ($p -match '(?i)\b(implement|build|ship|fix|add|create|patch|change|rename|bump|deploy|wire|refactor|apply|get it done|make it so)\b' `
+        -or $p -match '(?i)\b(lets? do (it|this|that)|do it|do this|just do|go ahead|ship it|make the change|get it implemented)\b' `
+        -or $p -match '(?i)^\s*(yes[,.]?\s*)?(do it|lets? go|proceed)\s*[.!]?\s*$') {
         return 'implement'
     }
     if ($p -match '(?i)^\s*(where|what|why|how|when|who|which|is |are |can |does |do |did |should |could |would |read |show |explain |list |find )\b' `
@@ -3292,12 +3296,17 @@ function Invoke-PromptParleAgentLocalPrep {
                     $hr = [string](Get-PromptParleProp $h 'role' 'user')
                     $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
                     if ($hr -match '(?i)assistant|bot|ai') {
-                        if ($ht -match '(?i)Ready for the named addition|Name it and I ship|spine locked|Handoff read\.') {
-                            $ht = '[prior status theater omitted]'
+                        if ($ht -match '(?i)Ready for the named addition|Name it and I ship|spine locked|Handoff read\.|Would you like me to actually implement|Just say the word') {
+                            $ht = '[prior permission/status theater omitted]'
+                        } elseif ($ht -match '(?i)The change was never implemented|only \*described\*|hypothetical') {
+                            $ht = '[prior unapplied design essay omitted — implement via apply blocks next]'
                         } elseif ($ht -match '(?i)contain no portal|no portal backend|only the PromptParle desktop|no server-side components|cannot be implemented from the current handoff|no matching paths or code in the evidence') {
                             $ht = '[prior false missing-product claim omitted — use [PROJECT] bind]'
                         } elseif ($ht -match '(?i)do not build|ExecutionPolicy Bypass|ship.?blocker|blocked until|until that change is made') {
                             $ht = '[prior security note compressed]'
+                        } elseif ($ht -match '(?i)Edit `prisma/schema|Run the migration|curl -X POST' -and $ht.Length -gt 800) {
+                            # Homework dumps that never applied — keep a stub so MEM does not re-teach "paste this"
+                            $ht = '[prior homework-style design dump omitted — use ```apply path=``` to land files]'
                         }
                     }
                     $filtered.Add([pscustomobject]@{ role = $hr; text = $ht })
@@ -4718,6 +4727,101 @@ function Invoke-PromptParleSsh {
         exit_code = $code
         text      = $text
         command   = $RemoteCommand
+    }
+}
+
+
+function Set-PromptParleSshFileContent {
+    <#
+    .SYNOPSIS
+      Write a text file on the SSH host under product bind (base64 pipe). Used by apply blocks.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RemotePath,
+        [Parameter(Mandatory)][string]$Content,
+        [int]$TimeoutSec = 60
+    )
+    $bind = Resolve-PromptParleProductBind
+    $root = [string]$bind.root
+    $rp = $RemotePath.Trim()
+    if (-not $rp) { throw 'Empty remote path' }
+    # Relative → under product root
+    if ($rp -notmatch '^(?:/|[A-Za-z]:)') {
+        $rp = ($root.TrimEnd('/') + '/' + $rp.TrimStart('/\'))
+    }
+    # Safety: only write under product root or live app
+    $live = [string]$bind.live
+    $okRoot = $rp.StartsWith($root) -or $rp.StartsWith($live)
+    if (-not $okRoot) {
+        throw "Refuse write outside product bind: $rp (root=$root live=$live)"
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+    if ($bytes.Length -gt 1500000) { throw "File too large to apply ($($bytes.Length) bytes): $rp" }
+    $b64 = [Convert]::ToBase64String($bytes)
+    # Remote: mkdir parent, decode base64 heredoc to file
+    $remote = @"
+set -e
+path='$($rp -replace "'", "'\''")'
+mkdir -p "`$(dirname "`$path")"
+base64 -d > "`$path" <<'PPB64'
+$b64
+PPB64
+echo "WROTE `$path `$(wc -c < "`$path")"
+"@
+    $r = Invoke-PromptParleSsh -RemoteCommand $remote -TimeoutSec $TimeoutSec -SkipSessionCwd
+    if ($r.exit_code -ne 0) {
+        throw "SSH write failed ($($r.exit_code)): $($r.text)"
+    }
+    return [pscustomobject]@{ ok = $true; path = $rp; text = [string]$r.text }
+}
+
+function Invoke-PromptParleApplyResponseBlocks {
+    <#
+    .SYNOPSIS
+      Parse ```apply path=... blocks from model response and write via SSH under product bind.
+      Returns applied paths + remaining display text (blocks kept visible for audit).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ResponseText
+    )
+    $text = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
+    $applied = New-Object System.Collections.Generic.List[string]
+    $errors = New-Object System.Collections.Generic.List[string]
+    if (-not $text) {
+        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); count = 0 }
+    }
+    # ```apply path=foo/file.ext  OR ```apply path: foo
+    $rx = [regex]::new('(?ms)```apply\s+path\s*[=:]\s*([^\s\r\n`]+)[ \t]*\r?\n(.*?)```')
+    $ms = $rx.Matches($text)
+    if ($ms.Count -eq 0) {
+        return [pscustomobject]@{ text = $text; applied = @(); errors = @(); count = 0 }
+    }
+    foreach ($m in $ms) {
+        $rel = $m.Groups[1].Value.Trim().Trim('"').Trim("'")
+        $body = $m.Groups[2].Value
+        # Normalize trailing newline
+        if ($body -match '\r?\n$') { } else { $body = $body + "`n" }
+        try {
+            $w = Set-PromptParleSshFileContent -RemotePath $rel -Content $body
+            $applied.Add([string]$w.path)
+        } catch {
+            $errors.Add(("$rel : $_"))
+        }
+    }
+    $note = ''
+    if ($applied.Count -gt 0) {
+        $note = "`n`n---`n**Applied $($applied.Count) file(s) via SSH under product bind:**`n- " + ($applied -join "`n- ")
+    }
+    if ($errors.Count -gt 0) {
+        $note = $note + "`n`n**Apply errors:**`n- " + ($errors -join "`n- ")
+    }
+    return [pscustomobject]@{
+        text    = $text + $note
+        applied = @($applied.ToArray())
+        errors  = @($errors.ToArray())
+        count   = $applied.Count
     }
 }
 
@@ -8079,7 +8183,14 @@ function Start-PromptParleLocalServer {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
-                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Normal assistant: answer questions; implement when asked; use product bind roots; no invent/false ship/homework.'
+                        $turnForRt = 'chat'
+                        try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt } catch { }
+                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Normal assistant: answer questions; implement when asked; use product bind roots.'
+                        if ($turnForRt -eq 'implement') {
+                            $rtNote = 'IMPLEMENT TURN. User already authorized work — do not ask permission or "say the word". Emit full-file ```apply path=...``` blocks for every changed file under source_root; desktop writes them over SSH. No multi-step user homework. Brief verify steps only after apply blocks.'
+                        } elseif ($turnForRt -eq 'question') {
+                            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/evidence first. No implement theater.'
+                        }
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
                         }
@@ -8152,8 +8263,30 @@ function Start-PromptParleLocalServer {
                                 $metaOut.notes = $mergedNotes
                             }
                         }
+                        $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+                        # 0.15.1: land ```apply path=...``` blocks over SSH (implement path)
+                        $applyInfo = $null
+                        if ($respText -and $respText -match '(?m)```apply\s+path') {
+                            try {
+                                $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText
+                                if ($applyInfo -and $applyInfo.text) { $respText = [string]$applyInfo.text }
+                                if ($applyInfo -and $applyInfo.count -gt 0) {
+                                    Write-Host ("  chat: applied {0} file(s) via SSH" -f $applyInfo.count) -ForegroundColor Green
+                                    if ($metaOut) {
+                                        $metaOut.applied_files = @($applyInfo.applied)
+                                        $metaOut.applied_count = [int]$applyInfo.count
+                                    }
+                                }
+                                if ($applyInfo -and $applyInfo.errors -and $applyInfo.errors.Count -gt 0) {
+                                    Write-Host ("  chat: apply errors: {0}" -f ($applyInfo.errors -join '; ')) -ForegroundColor Yellow
+                                }
+                            } catch {
+                                Write-Host ("  chat: apply failed: {0}" -f $_) -ForegroundColor Yellow
+                                $respText = $respText + "`n`n**Apply failed:** $_"
+                            }
+                        }
                         $payload = [ordered]@{
-                            response         = Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' $null)
+                            response         = $respText
                             optimized_prompt = Get-PromptParleProp $result 'optimized_prompt' (Get-PromptParleProp $result 'OptimizedPrompt' $null)
                             metadata         = $metaOut
                         }

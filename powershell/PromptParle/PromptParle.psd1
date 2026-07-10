@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.15.0'
+    ModuleVersion     = '0.15.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.15.1: Apply path= blocks write via SSH; implement turns no permission theater; 'lets do it' = implement
 0.15.0: Architecture — normal AI client + token optimize; durable product bind; always-on [PROJECT] card; turn-kind prep; drop ban-list moles
 0.14.15: Portal product pack + ban false "handoff has no portal"; handoff is MAP; monorepo paths in brief
 0.14.14: Fix empty ship-mode theater — answer factual/handoff questions first; ban "Ready/Name it and I ship/spine locked"
