@@ -1149,10 +1149,10 @@ function Get-PromptParleChatSystemPrompt {
         'PromptParle already optimized this turn for fewer tokens (dial). Tags are live evidence from the user machine: [PROJECT][CONN][SSH][MEM][ATTACH][WEB] + images — trust them.',
         '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps into those roots — not the whole codebase.',
         '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
-        'Normal client behavior: answer questions directly. When the user wants work done (do it / implement / lets go / just get it done): DO IT — do not ask permission, do not say "say the word", do not stop at a plan.',
-        'To change files under source_root, emit one or more fenced blocks exactly like: ```apply path=relative/or/absolute/file.ext then full file contents then closing ```. The desktop client writes those over SSH. Relative paths are under [PROJECT] source_root.',
-        'Never dump multi-step "edit this yourself / run migration / paste curl" homework when apply blocks can land the change. After apply blocks, briefly say what landed and how to verify — not a questionnaire.',
-        'Do not invent files/UI/stacks not in evidence. Do not claim shipped unless apply blocks were emitted (or evidence shows the files). local-ui is vanilla HTML/CSS/JS when in evidence.'
+        'Normal client behavior: answer questions directly. When the user wants work done (do it / implement / lets go / just get it done / stop asking and do it): DO IT in this turn — zero clarifying questions unless a single fact is blocking and cannot be chosen safely.',
+        'Default to the most secure reasonable choice yourself when options exist. Do not interview the user.',
+        'File changes: emit ```apply path=rel/or/abs/file``` with FULL file contents; desktop writes over SSH under [PROJECT] source_root. That is how work lands — prose plans do not.',
+        'Never dump multi-step homework (edit X, run migration, paste curl) instead of apply blocks. After applies: one short verify note. Do not claim shipped without apply blocks or file evidence. local-ui is vanilla HTML/CSS/JS when in evidence.'
     ) -join ' '
 }
 
@@ -3240,7 +3240,42 @@ function Invoke-PromptParleAgentLocalPrep {
     # Turn kind drives prep depth (architecture — not a persona)
     $turnKind = 'chat'
     try { $turnKind = Get-PromptParleTurnKind -Prompt $pr } catch { $turnKind = 'chat' }
+    # Sticky implement: if recent user turns already asked to build/ship and this is a short go-ahead, force implement
+    try {
+        if ($turnKind -ne 'implement' -and $History -and $History.Count -gt 0) {
+            $recentUser = ''
+            $nLook = 0
+            for ($i = $History.Count - 1; $i -ge 0 -and $nLook -lt 6; $i--) {
+                $hr = [string](Get-PromptParleProp $History[$i] 'role' 'user')
+                $ht = [string](Get-PromptParleProp $History[$i] 'text' (Get-PromptParleProp $History[$i] 'content' ''))
+                if ($hr -match '(?i)user|human') {
+                    $recentUser = $ht + "`n" + $recentUser
+                    $nLook++
+                }
+            }
+            $blob = ($recentUser + "`n" + $pr)
+            if ($blob -match '(?i)\b(implement|add network|ip/?cidr|allowlist|settings|lets? do|get it done|just get it)\b' `
+                -and $pr -match '(?i)^(yes|ok|okay|do it|lets?|go|proceed|please|same|continue|just|get it|wasting|stop asking)') {
+                $turnKind = 'implement'
+                $notes.Add('turn:sticky-implement')
+            }
+        }
+    } catch { }
     $notes.Add("turn:$turnKind")
+
+    # Hard implement directive on the user prompt (cheap, kills permission loops)
+    if ($turnKind -eq 'implement') {
+        $directive = @(
+            '[CLIENT DIRECTIVE — implement turn]',
+            'User already wants the work done. Do NOT ask questions or permission.',
+            'Emit complete file writes as fenced blocks: ```apply path=relative/from/source_root',
+            'Full file body, then closing ```. Desktop applies over SSH. No homework lists. No "say the word".'
+        ) -join ' '
+        if ($pr -notmatch '\[CLIENT DIRECTIVE') {
+            $pr = $pr + "`n`n" + $directive
+            $notes.Add('implement-directive')
+        }
+    }
 
     # 0) Always inject Project Connections brief (tiny; model knows PC/Git/SSH)
     try {
