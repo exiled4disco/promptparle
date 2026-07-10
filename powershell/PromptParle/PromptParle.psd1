@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.17.0'
+    ModuleVersion     = '0.17.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.17.1: Fix doc2 poisoned by doc1 — collapse prior file deliverables in [MEM]/history; THIS-turn ATTACH is primary
 0.17.0: Document deliverables — ```file name=Report.docx``` (pdf/docx/xlsx/csv/md/html/txt/json) builds a real file; chat shows Download buttons via /api/exports/{token}
 0.16.1: Doctrine capability=obligation — homework interceptor, auto prisma follow-through, fail-closed implement, theater detect
 0.16.0: Implement pipeline — read-before-write apply, ```run``` allowlisted remote cmds; portal API IP/CIDR allowlist

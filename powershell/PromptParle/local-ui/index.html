@@ -3385,6 +3385,27 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         let t = String(m.text);
         // Drop attachment footer noise from history labels
         t = t.replace(/\n\n\[\d+ attachment\(s\)\]\s*$/, '');
+        t = t.replace(/\n\n\[ATTACHED THIS TURN:[^\]]*\]\s*$/i, '');
+        // Collapse prior ```file / ```deliver bodies — otherwise doc1 summary re-enters
+        // history and poisons doc2 "executive summary" asks (same session).
+        if (r === 'assistant') {
+          var delivered = [];
+          t.replace(/```(?:file|deliver)\s+(?:name|path|filename)\s*[=:]\s*([^\s\r\n`]+)/gi, function (_, n) {
+            delivered.push(n); return '';
+          });
+          t.replace(/```(?:file|deliver)\s+([A-Za-z0-9._\- ]+\.[A-Za-z0-9]+)/gi, function (_, n) {
+            if (delivered.indexOf(n) < 0) delivered.push(n); return '';
+          });
+          t = t.replace(/```(?:file|deliver)[\s\S]*?```/gi, '');
+          t = t.replace(/^## Downloads ready[\s\S]*?(?=^## |\Z)/m, '');
+          t = t.replace(/\[([^\]]+)\]\(\/api\/exports\/[^)]+\)/g, '$1');
+          if (delivered.length) {
+            t = ('delivered: ' + delivered.slice(0, 6).join(', ') +
+              (t.trim() ? '\n' + t.trim().slice(0, 400) : '')).trim();
+          } else if (t.length > 1200) {
+            t = t.slice(0, 900) + '…[prior assistant compressed]';
+          }
+        }
         // Keep more signal for the wire; LocalPrep [MEM] does the real densify
         if (t.length > 6000) t = t.slice(0, 6000) + '…';
         out.push({ role: r, text: t });

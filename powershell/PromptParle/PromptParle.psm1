@@ -1149,7 +1149,7 @@ function Get-PromptParleChatSystemPrompt {
         'DOCTRINE (non-negotiable): capability = obligation. If this client can read, write, run, or report — YOU make it do that via apply/run blocks. Never dump homework the client could execute. Never ask permission after a clear implement ask. Never "Ready / Name it and I ship / Just say the word" theater.',
         'PromptParle already optimized this turn for fewer tokens (dial). Tags are live evidence from the user machine: [PROJECT][CONN][SSH][MEM][ATTACH][WEB] + images — trust them.',
         '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps into those roots — not the whole codebase. Never claim portal/settings/API missing because only a handoff mirror was in SSH cwd.',
-        '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
+        '[MEM] is auto-compacted prior-turn memory (not the current attachment). Never ask the user to re-paste chat. When [ATTACH]/===== FILE: is present THIS turn, that attachment is PRIMARY evidence — do not reuse a prior document topic or prior executive summary from [MEM] instead of the new file.',
         'When the user wants work done (do it / implement / lets go / just get it done / stop asking): DO IT this turn. Zero clarifying questions unless a single secret fact is blocking and has no secure default.',
         'Default to the most secure reasonable choice yourself. Do not interview the user.',
         'Implement channel (client executes): (1) ```apply path=rel``` FULL file under source_root — client reads-before-write, *.pp-bak backup, refuses stubs/destructive shrinks, NEVER writes live /var/www. (2) ```run``` for allowlisted cmds the client can run (prisma migrate/generate, npm run build/test, git status/diff/log). (3) Client prefixes ## What changed. If migrate is needed after schema edits, emit ```run``` — do not tell the user to run npx.',
@@ -2145,6 +2145,60 @@ function Invoke-PromptParleErrorBriefLocal {
     }
 }
 
+function Reduce-PromptParleTurnTextForMemory {
+    <#
+    .SYNOPSIS
+      Strip prior deliverable bodies / apply dumps so [MEM] does not re-anchor the next document ask
+      on the previous attachment's summary (e.g. doc1 summary poisons doc2 executive brief).
+    #>
+    param(
+        [AllowEmptyString()][string]$Text = '',
+        [string]$Role = 'user'
+    )
+    if (-not $Text) { return '' }
+    $t = [string]$Text
+
+    # Collapse ```file / ```deliver full bodies → one-line note (keep names only)
+    $fileNames = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches($t, '(?ms)```(?:file|deliver)\s+(?:name|path|filename)\s*[=:]\s*([^\s\r\n`]+)[^\n]*\r?\n.*?```')) {
+        $fileNames.Add($m.Groups[1].Value.Trim())
+    }
+    foreach ($m in [regex]::Matches($t, '(?ms)```(?:file|deliver)\s+([A-Za-z0-9._\- ]+\.[A-Za-z0-9]+)[ \t]*\r?\n.*?```')) {
+        $n = $m.Groups[1].Value.Trim()
+        if ($fileNames -notcontains $n) { $fileNames.Add($n) }
+    }
+    $t = [regex]::Replace($t, '(?ms)```(?:file|deliver)[^\n]*\r?\n.*?```', '[prior deliverable body omitted]')
+    # Apply blocks — never keep full file contents in memory
+    $t = [regex]::Replace($t, '(?ms)```apply\s+path\s*[=:][^\n]*\r?\n.*?```', '[prior apply body omitted]')
+    # Downloads ready header block
+    $t = [regex]::Replace($t, '(?ms)^## Downloads ready\r?\n.*?(?=^## |\Z)', '')
+    $t = [regex]::Replace($t, '(?ms)^## What changed\r?\n.*?(?=^## |\Z)', '[prior pipeline report omitted]`n')
+    # Strip export markdown links (noise)
+    $t = [regex]::Replace($t, '\[([^\]]+)\]\(/api/exports/[^)]+\)', '`$1`')
+    # Attachment footer noise
+    $t = [regex]::Replace($t, '(?m)^\s*\[ATTACHED THIS TURN:[^\]]*\]\s*$', '')
+    $t = [regex]::Replace($t, '(?m)^\s*\[\d+ attachment\(s\)\]\s*$', '')
+
+    if ($Role -match 'assistant|bot|ai') {
+        if ($fileNames.Count -gt 0) {
+            $names = ($fileNames | Select-Object -First 6) -join ', '
+            $t = "delivered: $names"
+            # keep a short non-file prose lead if any (before first fence)
+            return $t
+        }
+        # Long prior summaries without file fences still poison next doc asks — hard cap assistants in MEM
+        if ($t.Length -gt 900) {
+            $t = $t.Substring(0, 700).Trim() + '…[prior assistant compressed]'
+        }
+    } else {
+        # User: keep ask, drop huge pasted bodies if any
+        if ($t.Length -gt 1500) {
+            $t = $t.Substring(0, 1200).Trim() + '…'
+        }
+    }
+    return $t.Trim()
+}
+
 function Invoke-PromptParleChatMemoryBrief {
     <#
     .SYNOPSIS
@@ -2154,7 +2208,7 @@ function Invoke-PromptParleChatMemoryBrief {
         - Deep past: ultra-dense extract bullets
         - Mid: denser extracts
         - Recent: near-full body (dial-capped)
-      Goal: same continuous-session feel as Grok Build, fewer tokens.
+      Prior ```file``` deliverable bodies are collapsed so they cannot poison the next attachment.
     #>
     param(
         [object[]]$History,
@@ -2177,6 +2231,8 @@ function Invoke-PromptParleChatMemoryBrief {
             if ($trimT -match '(?is)^(thanks|thank you|ok|okay|sure|got it|k|cool|nice)[.!\s]*$' -and $trimT.Length -lt 28) {
                 continue
             }
+            $trimT = Reduce-PromptParleTurnTextForMemory -Text $trimT -Role $role
+            if (-not $trimT) { continue }
             $turns.Add([pscustomobject]@{ role = $role; text = $trimT })
         }
     } elseif ($HistoryText) {
@@ -2298,9 +2354,13 @@ function Get-PromptParleMemorySpine {
             & $add $m.Value
             if ($bits.Count -ge 18) { break }
         }
-        # Paths / files
+        # Paths / files — skip prior *deliverable* names (…Executive_Summary.md) so spine
+        # does not lock the next attachment ask onto the previous document's topic
         foreach ($m in [regex]::Matches($text, '(?i)(?:[A-Za-z]:\\|~/|\./|[\w.-]+/)+[\w.-]+\.[\w]+|[\w.-]+\.(?:psm1|psd1|html|ts|tsx|js|php|py|go|md|json|yml)')) {
-            & $add $m.Value
+            $fn = $m.Value
+            # Skip names that look like prior *outputs* (summaries/one-pagers), not product sources
+            if ($fn -match '(?i)(executive[_-]?summary|one[_-]?pager|[_-]summary\.(md|pdf|docx)|delivered:)') { continue }
+            & $add $fn
             if ($bits.Count -ge 22) { break }
         }
         # Decision / open-work sentences
@@ -3364,6 +3424,10 @@ function Invoke-PromptParleAgentLocalPrep {
                             # Homework dumps that never applied — keep a stub so MEM does not re-teach "paste this"
                             $ht = '[prior homework-style design dump omitted — use ```apply path=``` to land files]'
                         }
+                        # Always collapse prior deliverables so doc2 is not summarized as doc1
+                        $ht = Reduce-PromptParleTurnTextForMemory -Text $ht -Role 'assistant'
+                    } else {
+                        $ht = Reduce-PromptParleTurnTextForMemory -Text $ht -Role 'user'
                     }
                     $filtered.Add([pscustomobject]@{ role = $hr; text = $ht })
                 }
@@ -3375,7 +3439,18 @@ function Invoke-PromptParleAgentLocalPrep {
         } elseif ($histTextForMem -and $histTextForMem.Trim().Length -gt 20) {
             $mem = Invoke-PromptParleChatMemoryBrief -HistoryText $histTextForMem -MaxChars $memMax -Dial $Dial
         }
+        # This-turn attachment wins over [MEM] for document asks (place ATTACH priority note)
+        $hasThisTurnAttach = $false
+        try {
+            if ($ctx -match '(?m)^\[ATTACH\]' -or $ctx -match '===== FILE:' -or $pr -match '\[ATTACHED THIS TURN') {
+                $hasThisTurnAttach = $true
+            }
+        } catch { }
         if ($mem -and $mem.text) {
+            if ($hasThisTurnAttach) {
+                $mem.text = $mem.text + "`n" + 'Priority: THIS turn [ATTACH]/FILE is primary. Do not re-use prior document topics or prior executive summaries from Spine/Recent when a new file is attached.'
+                $notes.Add('mem-attach-priority')
+            }
             if ($ctx -notmatch '(?m)^\[MEM\]') {
                 # Place memory after CONN/PROJECT, before bulky attaches
                 if ($ctx -match '(?s)^((?:\[(?:CONN|PROJECT)\][^\n]*(?:\n(?!\[)[^\n]*)*\n\n?)+)(.*)$') {
@@ -9316,6 +9391,14 @@ function Start-PromptParleLocalServer {
                         } elseif ($turnForRt -eq 'question') {
                             $rtNote = 'QUESTION TURN. Answer from [PROJECT]/evidence first. No implement theater. If answer requires a safe read-only run, use ```run``` (git status/diff) instead of homework.'
                         }
+                        # Document turns: this-turn attachment beats prior MEM summaries
+                        try {
+                            $ctxHasAttach = $context -and ($context -match '(?m)^\[ATTACH\]' -or $context -match '===== FILE:')
+                            $prHasAttach = $prompt -match '\[ATTACHED THIS TURN'
+                            if ($ctxHasAttach -or $prHasAttach) {
+                                $rtNote = $rtNote + ' ATTACH PRIMARY: summarize/create deliverables from THIS turn FILE only. Do not reuse prior [MEM] document topic or prior executive summary when a new file is attached.'
+                            }
+                        } catch { }
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
                         }
