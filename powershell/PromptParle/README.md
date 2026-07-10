@@ -92,6 +92,26 @@ pp
 
 **`pp` starts a LOCAL chat UI** at `http://127.0.0.1:7788` and opens your browser.
 
+### Workspace, GitHub, SSH (local-only)
+
+Coding context stays on your PC. PromptParle cloud never receives SSH private keys, git credentials, or `gh` tokens.
+
+```text
+/workspace C:\Users\you\src\myapp     attach a folder (git-aware)
+/workspace tree                       file tree
+/workspace cat src\app.ts             load file into chat attachments
+/workspace pack *.ps1                 attach matching files (cap 12)
+/git status | diff | log | branch
+/github                               git + gh auth status
+/github clone owner/repo              clone into ~/src then attach
+/ssh user@host                        set target + key-auth test
+/ssh ls /var/www                      remote listing
+/ssh cat /etc/hosts                   pull remote file into chat
+/ssh run uptime                       remote command output → attachment
+```
+
+Requires local tools as needed: **Git**, **OpenSSH client**, optional **GitHub CLI (`gh`)**.
+
 - HTML UI runs **on your PC** (not the cloud site as the daily chat shell)
 - Leave the PowerShell window open while chatting (Ctrl+C stops the local server)
 - Provider keys stay in the portal; desktop key authorizes this PC

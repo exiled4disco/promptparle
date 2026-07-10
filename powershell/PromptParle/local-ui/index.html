@@ -387,6 +387,13 @@
         </div>
 
         <div class="side-section">
+          <h2>Workspace</h2>
+          <div class="ver-line" id="workspaceLine">No folder attached</div>
+          <div class="ver-line" id="sshLine" style="margin-top:.25rem">SSH: none</div>
+          <div class="ver-line" style="margin-top:.35rem">/workspace · /github clone · /ssh</div>
+        </div>
+
+        <div class="side-section">
           <h2>AI</h2>
           <label for="provider">Provider</label>
           <select id="provider"></select>
@@ -415,7 +422,7 @@
           </div>
         </div>
 
-        <p class="side-foot">Agent sets persona + optimization profile. Dial is how hard to compress. Menu (⋯) has Help, portal links, Update, Stop.</p>
+        <p class="side-foot">Agent = persona. Workspace/git/ssh stay on this PC (keys never uploaded). Menu (⋯) has Help, account glance, Update, Stop.</p>
       </div>
     </aside>
 
@@ -466,16 +473,18 @@
 
       <h3>Session</h3>
       <pre>/help                 this help
-/status               agent, provider, dial, profile
-/agents               list local agents
-/agent &lt;name&gt;         switch agent (security, docs, code…)
-/agent new name | system text…
-/dial 1-5             compression dial
-/provider openai|anthropic|gemini|grok
-/optimize             toggle optimize-only
-/usage                cloud token savings
-/clear                clear chat
-/ssh                  SSH (coming soon — keys stay on PC)</pre>
+/status               agent, workspace, ssh, dial
+/agents · /agent &lt;name&gt;
+/dial 1-5 · /provider · /optimize · /usage · /clear</pre>
+
+      <h3>Workspace · Git · GitHub · SSH</h3>
+      <pre>/workspace &lt;path&gt;     attach local project
+/workspace tree|cat|find|pack
+/git status|diff|log|branch
+/github               tooling + auth status
+/github clone owner/repo
+/ssh user@host        keys stay on THIS PC
+/ssh ls|cat|run …</pre>
 
       <h3>Agent shortcuts (examples)</h3>
       <pre>security:  /audit  /threats
@@ -534,6 +543,8 @@ code:      /review  /explain</pre>
     const agentSelect = document.getElementById('agentSelect');
     const agentHint = document.getElementById('agentHint');
     const agentMeta = document.getElementById('agentMeta');
+    const workspaceLine = document.getElementById('workspaceLine');
+    const sshLine = document.getElementById('sshLine');
     const helpBtn = document.getElementById('helpBtn');
     const menuBtn = document.getElementById('menuBtn');
     const appMenu = document.getElementById('appMenu');
@@ -1000,7 +1011,57 @@ code:      /review  /explain</pre>
       });
     }
 
-    addMsg('sys', 'One chat box. Type normally, or /help · /agents · /agent security · /audit. Attach files for savings. Only this pane scrolls.');
+    addMsg('sys', 'Chat, /commands, or attach files. Coding: /workspace path · /github clone owner/repo · /ssh user@host (keys stay on this PC). Only this pane scrolls.');
+
+    function shortPath(p) {
+      if (!p) return '';
+      const s = String(p);
+      if (s.length <= 42) return s;
+      return '…' + s.slice(-40);
+    }
+
+    function applyWorkspaceUi(s) {
+      if (!workspaceLine) return;
+      const path = s.workspace_path || s.workspacePath || '';
+      const kind = s.workspace_kind || s.workspaceKind || '';
+      const branch = s.workspace_branch || s.workspaceBranch || '';
+      if (!path) {
+        workspaceLine.textContent = 'No folder — /workspace path or /github clone';
+      } else {
+        const bits = [shortPath(path)];
+        if (kind && kind !== 'none') bits.push(kind);
+        if (branch) bits.push(branch);
+        workspaceLine.textContent = bits.join(' · ');
+        workspaceLine.title = path + (branch ? ' @ ' + branch : '');
+      }
+      if (sshLine) {
+        const t = s.ssh_target || s.sshTarget || '';
+        const port = s.ssh_port || s.sshPort || 22;
+        sshLine.textContent = t ? ('SSH ' + t + (port && port !== 22 ? ':' + port : '')) : 'SSH: none — /ssh user@host';
+      }
+    }
+
+    function attachFilesFromCommand(fileList) {
+      const list = fileList || [];
+      if (!list.length) return 0;
+      let n = 0;
+      list.forEach(function (f) {
+        if (!f) return;
+        const name = f.name || f.Name || 'file.txt';
+        const text = f.text != null ? f.text : (f.Text != null ? f.Text : '');
+        if (text == null || text === '') return;
+        if (!canAddMore()) return;
+        attachments.push({
+          id: 'a' + (idSeq++),
+          kind: 'text',
+          name: name,
+          text: String(text)
+        });
+        n++;
+      });
+      if (n) renderChips();
+      return n;
+    }
 
     function applySession(s) {
       if (!s) return;
@@ -1029,6 +1090,7 @@ code:      /review  /explain</pre>
       const name = s.agent_name || s.active_agent || 'default';
       agentHint.textContent = name + (cmds.length ? ' · /' + cmds.join(' /') : ' · /agents');
       updateAgentMeta(s);
+      applyWorkspaceUi(s);
     }
 
     async function loadAgents() {
@@ -1110,6 +1172,9 @@ code:      /review  /explain</pre>
         savingsStrip.classList.remove('show');
         savingsStrip.innerHTML = '';
       }
+      // /workspace cat|pack and /ssh cat|run return files → chat attachments
+      const fl = data.files || data.Files || [];
+      if (fl && fl.length) attachFilesFromCommand(fl);
       if (data.message) addMsg('sys', data.message);
       return data;
     }

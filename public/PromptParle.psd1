@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.9.3'
+    ModuleVersion     = '0.10.0'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -27,7 +27,15 @@
         'Save-PromptParleAgent',
         'Remove-PromptParleAgent',
         'Set-PromptParleActiveAgent',
-        'Invoke-PromptParleSlashCommand'
+        'Invoke-PromptParleSlashCommand',
+        'Get-PromptParleWorkspace',
+        'Set-PromptParleWorkspace',
+        'Clear-PromptParleWorkspace',
+        'Get-PromptParleGitHubStatusText',
+        'Set-PromptParleSshTarget',
+        'Clear-PromptParleSshTarget',
+        'Invoke-PromptParleSsh',
+        'Invoke-PromptParleGitClone'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
@@ -40,6 +48,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.10.0: Local workspace + git/GitHub clone + SSH (keys stay on PC); /workspace /git /github /ssh
 0.9.3: Fix Update button — do not unload module mid self-update (Get-PromptParleClientVersion error)
 0.9.2: Account glance modals via API (Providers/Usage/API keys) — portal only for edit
 0.9.1: Help modal + ⋯ menu (Providers/Usage/API keys/Update/Stop); single Agent control; Update always available
