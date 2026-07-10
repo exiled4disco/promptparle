@@ -77,23 +77,20 @@ Import-Module PromptParle -Force
 $loaded = Get-Module PromptParle
 Write-Host "Imported PromptParle $($loaded.Version)" -ForegroundColor Green
 Write-Host ''
-Write-Host 'Start chatting (browser — main experience):' -ForegroundColor Cyan
+Write-Host 'Start chatting (LOCAL browser on this PC):' -ForegroundColor Cyan
 Write-Host '  pp'
-Write-Host '  # opens https://promptparle.com/app/chat'
+Write-Host '  # opens http://127.0.0.1:7788  (leave PowerShell open)'
 Write-Host ''
-Write-Host 'Portal setup (once):' -ForegroundColor DarkGray
-Write-Host '  1) Sign in at https://promptparle.com'
-Write-Host '  2) Add a provider key under Providers'
-Write-Host '  3) Chat in the browser'
+Write-Host 'Setup (once):' -ForegroundColor DarkGray
+Write-Host '  1) https://promptparle.com → Providers → add OpenAI/etc key'
+Write-Host '  2) API Keys → create pp_live_…'
+Write-Host "  3) Set-PromptParleApiKey -ApiKey 'pp_live_...'"
+Write-Host '  4) pp'
 Write-Host ''
-Write-Host 'Optional CLI automation key:' -ForegroundColor DarkGray
-Write-Host "  Set-PromptParleApiKey -ApiKey 'pp_live_xxxxx'"
-Write-Host '  Start-PromptParle -Cli'
+Write-Host 'Notes:' -ForegroundColor DarkGray
+Write-Host '  • Chat UI is local (not served from AWS as your daily UI)'
+Write-Host '  • AI token costs bill to YOUR provider keys (BYOK)'
+Write-Host '  • Optional terminal: Start-PromptParle -Cli'
 Write-Host ''
 Write-Host 'Optional — auto-load in every PowerShell window:' -ForegroundColor DarkGray
 Write-Host "  Add-Content `$PROFILE `"Import-Module PromptParle`""
-
-# Offer to open chat now
-try {
-    Open-PromptParleBrowser -Path '/app/chat'
-} catch { }

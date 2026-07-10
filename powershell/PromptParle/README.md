@@ -84,22 +84,30 @@ Environment overrides:
 
 ```powershell
 Import-Module PromptParle
+Set-PromptParleApiKey -ApiKey 'pp_live_...'   # once
 pp
 ```
 
-**`pp` opens the browser chat** at https://promptparle.com/app/chat  
+**`pp` starts a LOCAL chat UI** at `http://127.0.0.1:7788` and opens your browser.
 
-1. Sign in (portal account)  
-2. Pick a configured AI provider  
-3. Type normally — savings show under each reply  
+- HTML UI runs **on your PC** (not the cloud site as the daily chat shell)
+- Leave the PowerShell window open while chatting (Ctrl+C stops the local server)
+- Provider keys stay in the portal; desktop key authorizes this PC
 
-No desktop API key required for browser chat (provider keys live in the portal).
+```text
+========================================
+  PromptParle  (LOCAL)
+  Browser UI on this PC only
+========================================
+  http://127.0.0.1:7788/
+```
 
-Terminal CLI (optional):
+Optional:
 
 ```powershell
-Set-PromptParleApiKey -ApiKey 'pp_live_...'   # once
-Start-PromptParle -Cli
+Start-PromptParle -Cli          # terminal chat
+Start-PromptParle -Cloud        # portal web chat (account admin)
+Start-PromptParle -Port 7790    # different local port
 ```
 
 Auto-load every PowerShell window:
@@ -108,16 +116,25 @@ Auto-load every PowerShell window:
 Add-Content $PROFILE "Import-Module PromptParle"
 ```
 
-Then just type `pp`.
+## Costs (important)
+
+| Cost | Who pays |
+|------|----------|
+| OpenAI / Claude / Gemini / Grok tokens | **You** (keys you added under Providers) |
+| Local chat UI | Free — runs on your PC |
+| PromptParle server (optimize + route + usage) | PromptParle infra (small API calls) |
+
+Portal **Usage** still records savings. We are not putting the full chat SPA load on AWS for every keystroke of HTML.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `Start-PromptParle` / `pp` / `promptparle` | **Open browser chat** (default) |
-| `Start-PromptParle -Cli` | Terminal chat session |
-| `Open-PromptParleBrowser` | Open chat URL only |
-| `Set-PromptParleApiKey` | Save `pp_live_…` key (CLI/automation) |
+| `Start-PromptParle` / `pp` | **Local browser chat** on 127.0.0.1 |
+| `Start-PromptParleLocalServer` | Same local server |
+| `Start-PromptParle -Cli` | Terminal chat |
+| `Start-PromptParle -Cloud` | Open portal chat (optional) |
+| `Set-PromptParleApiKey` | Save `pp_live_…` key |
 | `Get-PromptParleConfig` | Show config (key masked) |
 | `Get-PromptParleProvider` | List providers + which keys are set |
 | `Get-PromptParleUsage` | Token savings summary |

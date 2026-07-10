@@ -609,70 +609,237 @@ function Invoke-PromptParleSecurityReview {
     }
 }
 
+function Get-PromptParleModuleRoot {
+    if ($PSScriptRoot) { return $PSScriptRoot }
+    $mod = Get-Module PromptParle
+    if ($mod -and $mod.ModuleBase) { return $mod.ModuleBase }
+    return $null
+}
+
+function Open-PromptParleUrl {
+    param([Parameter(Mandatory)][string]$Url)
+    try {
+        if ($script:PromptParleIsWindows) {
+            Start-Process $Url
+        } elseif (Get-Command xdg-open -ErrorAction SilentlyContinue) {
+            Start-Process xdg-open $Url
+        } elseif (Get-Command open -ErrorAction SilentlyContinue) {
+            Start-Process open $Url
+        } else {
+            Write-Host "Open this URL manually: $Url" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Could not launch browser. Open: $Url" -ForegroundColor Yellow
+    }
+}
+
 function Open-PromptParleBrowser {
     <#
     .SYNOPSIS
-      Open the PromptParle browser chat in your default web browser.
+      Open PromptParle. Default = local chat UI on this PC.
     #>
     [CmdletBinding()]
     param(
+        # Open cloud portal chat instead of local UI
+        [switch]$Cloud,
         [string]$Path = '/app/chat'
     )
 
-    $config = Get-PromptParleConfigInternal
-    $base = if ($config.BaseUrl) { $config.BaseUrl.TrimEnd('/') } else { $script:DefaultBaseUrl }
-    if (-not $Path.StartsWith('/')) { $Path = "/$Path" }
-    $url = "$base$Path"
+    if ($Cloud) {
+        $config = Get-PromptParleConfigInternal
+        $base = if ($config.BaseUrl) { $config.BaseUrl.TrimEnd('/') } else { $script:DefaultBaseUrl }
+        if (-not $Path.StartsWith('/')) { $Path = "/$Path" }
+        $url = "$base$Path"
+        Write-Host "Opening cloud portal: $url" -ForegroundColor Yellow
+        Write-Host '(Prefer local: Open-PromptParleBrowser  or  pp)' -ForegroundColor DarkGray
+        Open-PromptParleUrl -Url $url
+        return
+    }
 
-    Write-Host ''
-    Write-Host '========================================' -ForegroundColor Cyan
-    Write-Host '  PromptParle' -ForegroundColor Cyan
-    Write-Host '  Opening browser chat…' -ForegroundColor DarkGray
-    Write-Host '========================================' -ForegroundColor Cyan
-    Write-Host ''
-    Write-Host $url -ForegroundColor Green
-    Write-Host ''
-    Write-Host 'Sign in if needed, pick a provider, and type normally.' -ForegroundColor DarkGray
-    Write-Host 'PowerShell CLI is still available:  Start-PromptParle -Cli' -ForegroundColor DarkGray
-    Write-Host ''
+    Start-PromptParleLocalServer
+}
+
+function Write-PromptParleHttpResponse {
+    param(
+        [Parameter(Mandatory)]$Context,
+        [int]$StatusCode = 200,
+        [string]$ContentType = 'text/plain; charset=utf-8',
+        [string]$Body = ''
+    )
+
+    $buffer = [System.Text.Encoding]::UTF8.GetBytes($Body)
+    $Context.Response.StatusCode = $StatusCode
+    $Context.Response.ContentType = $ContentType
+    $Context.Response.ContentLength64 = $buffer.Length
+    $Context.Response.Headers.Add('Cache-Control', 'no-store')
+    $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
+    $Context.Response.OutputStream.Close()
+}
+
+function Start-PromptParleLocalServer {
+    <#
+    .SYNOPSIS
+      Run a local chat UI on http://127.0.0.1 (this PC only).
+
+    .DESCRIPTION
+      Browser UI is local — nothing serves HTML from AWS.
+      Chat still uses your desktop API key to call PromptParle for
+      optimize + your stored provider keys. AI token spend is on YOUR
+      provider account (BYOK), not PromptParle's OpenAI bill.
+
+    .PARAMETER Port
+      Local port. Default 7788.
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$Port = 7788
+    )
+
+    $config = Get-PromptParleConfigInternal
+    if (-not $config.ApiKey) {
+        Write-Host ''
+        Write-Host 'Local chat needs a desktop API key (stays on your PC).' -ForegroundColor Yellow
+        Write-Host '1) https://promptparle.com/app/api-keys  → create pp_live_…' -ForegroundColor White
+        Write-Host "2) Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
+        Write-Host '3) pp' -ForegroundColor Cyan
+        Write-Host ''
+        return
+    }
+
+    $root = Get-PromptParleModuleRoot
+    $uiPath = Join-Path $root 'local-ui\index.html'
+    if (-not (Test-Path -LiteralPath $uiPath)) {
+        $uiPath = Join-Path $root 'local-ui/index.html'
+    }
+    if (-not (Test-Path -LiteralPath $uiPath)) {
+        throw "Local UI not found at $uiPath — reinstall the module (git pull + Install-PromptParle.ps1)."
+    }
+    $html = Get-Content -LiteralPath $uiPath -Raw -Encoding UTF8
+
+    $prefix = "http://127.0.0.1:$Port/"
+    $listener = New-Object System.Net.HttpListener
+    $listener.Prefixes.Add($prefix)
 
     try {
-        if ($script:PromptParleIsWindows) {
-            Start-Process $url
-        } else {
-            if (Get-Command xdg-open -ErrorAction SilentlyContinue) {
-                Start-Process xdg-open $url
-            } elseif (Get-Command open -ErrorAction SilentlyContinue) {
-                Start-Process open $url
-            } else {
-                Write-Host "Open this URL manually: $url" -ForegroundColor Yellow
+        $listener.Start()
+    } catch {
+        Write-Host "Could not bind $prefix — is port $Port in use?" -ForegroundColor Red
+        Write-Host $_ -ForegroundColor Red
+        Write-Host "Try: Start-PromptParle -Port 7790" -ForegroundColor Yellow
+        return
+    }
+
+    $url = $prefix.TrimEnd('/') + '/'
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host '  PromptParle  (LOCAL)' -ForegroundColor Cyan
+    Write-Host '  Browser UI on this PC only' -ForegroundColor DarkGray
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host "  $url" -ForegroundColor Green
+    Write-Host ''
+    Write-Host '  AI bills: your provider keys (OpenAI/etc) in the portal' -ForegroundColor DarkGray
+    Write-Host '  This window must stay open while you chat.' -ForegroundColor Yellow
+    Write-Host '  Stop: Ctrl+C' -ForegroundColor Yellow
+    Write-Host ''
+
+    Open-PromptParleUrl -Url $url
+
+    try {
+        while ($listener.IsListening) {
+            $ctx = $listener.GetContext()
+            $req = $ctx.Request
+            $path = $req.Url.AbsolutePath.TrimEnd('/')
+            if (-not $path) { $path = '/' }
+
+            try {
+                if ($req.HttpMethod -eq 'GET' -and ($path -eq '/' -or $path -eq '/index.html')) {
+                    Write-PromptParleHttpResponse -Context $ctx -ContentType 'text/html; charset=utf-8' -Body $html
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/providers') {
+                    try {
+                        $result = Invoke-PromptParleApi -Method GET -Path '/api/v1/providers'
+                        $json = ($result | ConvertTo-Json -Depth 8 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/chat') {
+                    $reader = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
+                    $rawBody = $reader.ReadToEnd()
+                    $reader.Close()
+                    try {
+                        $body = $rawBody | ConvertFrom-Json
+                        $prompt = [string]$body.prompt
+                        if (-not $prompt) { throw 'Missing prompt' }
+                        $provider = if ($body.provider) { [string]$body.provider } else { 'openai' }
+                        $profile = if ($body.profile) { [string]$body.profile } else { 'general' }
+                        $context = if ($body.context) { [string]$body.context } else { $null }
+                        $optOnly = $false
+                        if ($body.optimize_only -eq $true -or $body.optimizeOnly -eq $true) { $optOnly = $true }
+
+                        $params = @{
+                            Prompt   = $prompt
+                            Provider = $provider
+                            Profile  = $profile
+                            Quiet    = $true
+                            Raw      = $true
+                        }
+                        if ($context) { $params.Context = $context }
+                        if ($optOnly) { $params.OptimizeOnly = $true }
+
+                        $result = Invoke-PromptParle @params
+                        $json = ($result | ConvertTo-Json -Depth 10 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                Write-PromptParleHttpResponse -Context $ctx -StatusCode 404 -Body 'Not found'
+            } catch {
+                try {
+                    Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -Body "$_"
+                } catch { }
             }
         }
-    } catch {
-        Write-Host "Could not launch browser automatically. Open: $url" -ForegroundColor Yellow
+    } finally {
+        if ($listener.IsListening) { $listener.Stop() }
+        $listener.Close()
+        Write-Host 'Local PromptParle server stopped.' -ForegroundColor DarkGray
     }
 }
 
 function Start-PromptParle {
     <#
     .SYNOPSIS
-      Start PromptParle — browser chat by default.
+      Start PromptParle — local browser chat by default.
 
     .DESCRIPTION
-      Default: opens https://promptparle.com/app/chat in your browser.
-      That is the main product UI (providers, chat, savings, history).
+      Default: starts a LOCAL web UI on http://127.0.0.1:7788 and opens it.
+      The chat page runs on your machine (not hosted as your daily UI on AWS).
 
-      -Cli starts the terminal chat session instead.
+      -Cli     terminal chat
+      -Cloud   open portal web chat on promptparle.com instead
 
     .EXAMPLE
       pp
-      Start-PromptParle
+      Start-PromptParle -Port 7790
       Start-PromptParle -Cli
     #>
     [CmdletBinding()]
     param(
-        # Terminal interactive session instead of browser
         [switch]$Cli,
+        [switch]$Cloud,
+        [int]$Port = 7788,
 
         [ValidateSet('openai', 'anthropic', 'gemini', 'grok')]
         [string]$Provider,
@@ -690,8 +857,13 @@ function Start-PromptParle {
         [string]$Model
     )
 
+    if ($Cloud) {
+        Open-PromptParleBrowser -Cloud -Path '/app/chat'
+        return
+    }
+
     if (-not $Cli) {
-        Open-PromptParleBrowser -Path '/app/chat'
+        Start-PromptParleLocalServer -Port $Port
         return
     }
 
@@ -699,10 +871,10 @@ function Start-PromptParle {
     $config = Get-PromptParleConfigInternal
     if (-not $config.ApiKey) {
         Write-Host ''
-        Write-Host 'CLI mode needs a desktop API key.' -ForegroundColor Yellow
+        Write-Host 'Needs a desktop API key on this PC.' -ForegroundColor Yellow
         Write-Host '1) https://promptparle.com/app/api-keys' -ForegroundColor White
         Write-Host "2) Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
-        Write-Host 'Or use browser chat (no desktop key):  pp' -ForegroundColor Cyan
+        Write-Host '3) pp' -ForegroundColor Cyan
         Write-Host ''
         return
     }
@@ -758,7 +930,11 @@ function Start-PromptParle {
                 }
                 '/help' { Show-PromptParleSessionHelp; continue }
                 '/clear' { Clear-Host; continue }
-                '/browser' { Open-PromptParleBrowser -Path '/app/chat'; continue }
+                '/browser' {
+                    Write-Host 'Start a second window and run:  pp' -ForegroundColor Cyan
+                    Write-Host 'Or cloud portal:  Open-PromptParleBrowser -Cloud' -ForegroundColor DarkGray
+                    continue
+                }
                 '/status' {
                     Write-Host ''
                     Write-Host ("  Provider : {0}" -f $sessionProvider)
@@ -933,6 +1109,7 @@ Export-ModuleMember -Function @(
     'Invoke-PromptParle',
     'Invoke-PromptParleSecurityReview',
     'Start-PromptParle',
+    'Start-PromptParleLocalServer',
     'Open-PromptParleBrowser'
 ) -Alias @(
     'pp',

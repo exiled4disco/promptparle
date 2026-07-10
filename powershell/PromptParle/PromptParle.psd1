@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.3.0'
+    ModuleVersion     = '0.4.0'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -15,6 +15,7 @@
         'Invoke-PromptParle',
         'Invoke-PromptParleSecurityReview',
         'Start-PromptParle',
+        'Start-PromptParleLocalServer',
         'Open-PromptParleBrowser'
     )
     CmdletsToExport   = @()
@@ -28,7 +29,8 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
-0.3.0: pp opens browser chat (main UI); -Cli for terminal
+0.4.0: pp starts LOCAL chat UI on 127.0.0.1 (not cloud HTML)
+0.3.0: pp opened cloud browser chat; -Cli for terminal
 0.2.0: Start-PromptParle interactive chat (aliases: pp, promptparle)
 0.1.2: Install always overwrites module
 0.1.1: Fix PowerShell 5.1 StrictMode crash ($IsWindows undefined)

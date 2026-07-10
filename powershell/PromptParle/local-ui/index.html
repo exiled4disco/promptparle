@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PromptParle (local)</title>
+  <style>
+    :root {
+      --bg: #07090f;
+      --card: #111827;
+      --border: #1e2a3d;
+      --text: #e8eef8;
+      --muted: #8b9bb8;
+      --dim: #5c6b86;
+      --accent: #5b8cff;
+      --accent-soft: rgba(91, 140, 255, 0.14);
+      --success: #34d399;
+      --warn: #fbbf24;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background:
+        radial-gradient(900px 500px at 10% -10%, rgba(91,140,255,.16), transparent 55%),
+        var(--bg);
+      color: var(--text);
+    }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 1.25rem; display: flex; flex-direction: column; min-height: 100vh; gap: 1rem; }
+    header h1 { margin: 0; font-size: 1.35rem; }
+    header p { margin: .35rem 0 0; color: var(--muted); font-size: .92rem; }
+    .badge { display: inline-block; font-size: .75rem; padding: .2rem .55rem; border-radius: 999px; border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1); }
+    .toolbar {
+      display: grid; gap: .75rem;
+      grid-template-columns: 1fr 1fr;
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .9rem;
+    }
+    @media (max-width: 700px) { .toolbar { grid-template-columns: 1fr; } }
+    label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: .3rem; }
+    select, textarea, input[type=text] {
+      width: 100%; background: #0a0e16; color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: .65rem .75rem; font: inherit;
+    }
+    textarea { min-height: 72px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; }
+    .chat {
+      flex: 1; min-height: 360px; overflow-y: auto;
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem;
+      display: flex; flex-direction: column; gap: .85rem;
+    }
+    .msg { max-width: 85%; padding: .75rem .9rem; border-radius: 14px; line-height: 1.45; white-space: pre-wrap; font-size: .95rem; }
+    .msg.user { align-self: flex-end; background: var(--accent-soft); }
+    .msg.bot { align-self: flex-start; background: #0a0e16; border: 1px solid var(--border); }
+    .msg.sys { align-self: stretch; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .88rem; }
+    .msg.error { border-color: rgba(248,113,113,.45); color: #fecaca; }
+    .meta { margin-top: .55rem; padding-top: .45rem; border-top: 1px solid var(--border); font-size: .75rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .5rem .85rem; }
+    .meta .ok { color: var(--success); }
+    .meta .warn { color: var(--warn); }
+    .composer {
+      display: flex; flex-direction: column; gap: .55rem;
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .9rem;
+    }
+    .row { display: flex; gap: .65rem; align-items: flex-end; }
+    .row textarea { min-height: 88px; flex: 1; font-family: inherit; font-size: .95rem; }
+    button {
+      border: 0; border-radius: 999px; padding: .75rem 1.15rem; font-weight: 600; cursor: pointer;
+      background: linear-gradient(135deg, #5b8cff, #3d6ef5); color: white;
+    }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .checks { display: flex; flex-wrap: wrap; gap: .75rem 1.1rem; font-size: .85rem; color: var(--muted); }
+    .checks label { display: flex; align-items: center; gap: .4rem; margin: 0; color: var(--muted); }
+    footer { color: var(--dim); font-size: .78rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>PromptParle <span class="badge">local · 127.0.0.1</span></h1>
+      <p>Chat UI runs on your PC. AI calls use your portal provider keys via your desktop API key (not a public website form).</p>
+    </header>
+
+    <div class="toolbar">
+      <div>
+        <label for="provider">AI provider</label>
+        <select id="provider"></select>
+      </div>
+      <div>
+        <label for="profile">Optimization profile</label>
+        <select id="profile">
+          <option value="general">General</option>
+          <option value="developer">Developer</option>
+          <option value="security-review">Security review</option>
+          <option value="log-analysis">Log analysis</option>
+          <option value="documentation">Documentation</option>
+          <option value="executive-summary">Executive summary</option>
+        </select>
+      </div>
+      <div style="grid-column: 1 / -1">
+        <label for="context">Extra context (paste noisy logs/code here for real savings)</label>
+        <textarea id="context" placeholder="Optional. Short messages alone often show 0% reduction."></textarea>
+      </div>
+    </div>
+
+    <div id="chat" class="chat"></div>
+
+    <form class="composer" id="form">
+      <div class="checks">
+        <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend)</label>
+      </div>
+      <div class="row">
+        <textarea id="input" placeholder="Type normally… Enter to send, Shift+Enter for newline"></textarea>
+        <button type="submit" id="send">Send</button>
+      </div>
+    </form>
+
+    <footer>
+      Local UI · portal account/providers:
+      <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">providers</a> ·
+      <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">usage</a>
+      · stop server: close the PowerShell window or Ctrl+C
+    </footer>
+  </div>
+  <script>
+    const chat = document.getElementById('chat');
+    const providerEl = document.getElementById('provider');
+    const profileEl = document.getElementById('profile');
+    const contextEl = document.getElementById('context');
+    const inputEl = document.getElementById('input');
+    const form = document.getElementById('form');
+    const sendBtn = document.getElementById('send');
+    const optimizeOnlyEl = document.getElementById('optimizeOnly');
+
+    function addMsg(role, text, meta, isError) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + role + (isError ? ' error' : '');
+      div.textContent = text;
+      if (meta) {
+        const m = document.createElement('div');
+        m.className = 'meta';
+        const orig = meta.original_tokens ?? 0;
+        const opt = meta.optimized_tokens ?? 0;
+        const pct = meta.token_reduction_percent ?? 0;
+        const expanded = meta.expanded || opt > orig;
+        let save = expanded
+          ? '<span class="warn">expanded / no savings</span>'
+          : (pct > 0 ? '<span class="ok">−' + pct + '% saved</span>' : '<span>0% (compact)</span>');
+        m.innerHTML =
+          '<span>' + orig + ' → ' + opt + ' tokens</span>' + save +
+          (meta.provider ? '<span>' + meta.provider + '</span>' : '') +
+          (meta.model ? '<span>' + meta.model + '</span>' : '');
+        div.appendChild(m);
+      }
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    addMsg('sys', 'Local PromptParle ready. Pick a configured provider and type normally. Attach noisy context above to see token savings.');
+
+    async function loadProviders() {
+      const res = await fetch('/api/providers');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load providers');
+      providerEl.innerHTML = '';
+      (data.providers || []).forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name + (p.configured ? '' : ' (not configured)');
+        opt.disabled = !p.configured;
+        if (p.configured) providerEl.appendChild(opt);
+      });
+      // if none configured, still list them disabled via second pass
+      if (!providerEl.options.length) {
+        (data.providers || []).forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = p.name + ' (not configured)';
+          providerEl.appendChild(opt);
+        });
+        addMsg('sys', 'No provider keys configured. Add one at https://promptparle.com/app/providers then refresh.', null, true);
+      }
+    }
+
+    loadProviders().catch(e => addMsg('sys', String(e.message || e), null, true));
+
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const prompt = inputEl.value.trim();
+      if (!prompt) return;
+      addMsg('user', prompt);
+      inputEl.value = '';
+      sendBtn.disabled = true;
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: providerEl.value,
+            profile: profileEl.value,
+            prompt,
+            context: contextEl.value.trim() || undefined,
+            optimize_only: optimizeOnlyEl.checked
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          addMsg('bot', data.error || 'Request failed', data.metadata, true);
+        } else if (optimizeOnlyEl.checked) {
+          addMsg('bot', data.optimized_prompt || '(empty)', data.metadata);
+        } else {
+          addMsg('bot', data.response || '(empty)', data.metadata);
+        }
+      } catch (err) {
+        addMsg('bot', 'Local server error: ' + (err.message || err), null, true);
+      } finally {
+        sendBtn.disabled = false;
+        inputEl.focus();
+      }
+    });
+  </script>
+</body>
+</html>
