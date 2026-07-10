@@ -17,12 +17,13 @@
       --success: #34d399;
       --warn: #fbbf24;
       --danger: #f87171;
-      --side-w: 280px;
+      --side-w: 268px;
     }
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
-      min-height: 100vh;
+      height: 100%;
+      overflow: hidden; /* page never scrolls — only chat pane */
       font-family: system-ui, -apple-system, Segoe UI, sans-serif;
       background:
         radial-gradient(900px 500px at 10% -10%, rgba(91,140,255,.16), transparent 55%),
@@ -32,128 +33,195 @@
     .shell {
       display: grid;
       grid-template-columns: var(--side-w) 1fr;
-      min-height: 100vh;
-      max-width: 1280px;
+      height: 100vh;
+      height: 100dvh;
+      max-width: 1400px;
       margin: 0 auto;
+      overflow: hidden;
     }
     @media (max-width: 860px) {
-      .shell { grid-template-columns: 1fr; }
+      .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
       .sidebar {
-        position: sticky; top: 0; z-index: 5;
+        max-height: 42vh;
         border-right: 0 !important;
         border-bottom: 1px solid var(--border);
-        max-height: none;
       }
+      .sidebar.collapsed { max-height: 52px; }
       .sidebar.collapsed .side-body { display: none; }
+      .side-toggle { display: inline-block !important; }
     }
     .sidebar {
       border-right: 1px solid var(--border);
-      background: rgba(13, 17, 26, 0.92);
-      padding: 1rem 0.9rem 1.25rem;
+      background: rgba(13, 17, 26, 0.96);
+      padding: 0.75rem 0.75rem 0.9rem;
       display: flex;
       flex-direction: column;
-      gap: 0.85rem;
-      max-height: 100vh;
+      gap: 0.55rem;
+      min-height: 0;
       overflow-y: auto;
-      position: sticky;
-      top: 0;
     }
     .side-head {
       display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem;
+      flex: 0 0 auto;
     }
-    .side-head h1 { margin: 0; font-size: 1.05rem; line-height: 1.25; }
+    .side-head h1 { margin: 0; font-size: 1rem; line-height: 1.25; }
     .badge {
       display: inline-block; font-size: .68rem; padding: .15rem .45rem; border-radius: 999px;
       border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1);
-      margin-top: .25rem;
+      margin-top: .2rem;
     }
     .badge.warn {
       color: var(--warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.35);
     }
     .update-btn {
-      width: 100%; margin-top: .55rem;
+      width: 100%; margin-top: .4rem;
       background: linear-gradient(135deg, #34d399, #059669) !important;
       color: #042f1a !important; font-weight: 700;
+      border: 0; border-radius: 999px; padding: .5rem .75rem; cursor: pointer; font-size: .85rem;
     }
     .update-btn.secondary-look {
       background: #0a0e16 !important; color: var(--text) !important;
       border: 1px solid var(--border) !important; font-weight: 500;
     }
-    .update-btn:disabled { opacity: .55; }
-    .ver-line { font-size: .78rem; color: var(--muted); margin-top: .35rem; line-height: 1.35; }
+    .update-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .ver-line { font-size: .75rem; color: var(--muted); margin-top: .25rem; line-height: 1.35; }
     .side-toggle {
       display: none;
       background: #0a0e16; border: 1px solid var(--border); color: var(--text);
       border-radius: 8px; padding: .35rem .55rem; font-size: .8rem; cursor: pointer;
     }
-    @media (max-width: 860px) { .side-toggle { display: inline-block; } }
     .side-section {
       background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: .75rem .8rem;
+      border-radius: 10px;
+      padding: .6rem .7rem;
+      flex: 0 0 auto;
     }
     .side-section h2 {
-      margin: 0 0 .55rem; font-size: .72rem; font-weight: 700;
+      margin: 0 0 .4rem; font-size: .68rem; font-weight: 700;
       letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
     }
-    label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: .3rem; }
+    label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: .25rem; }
     select, textarea, input[type=text] {
       width: 100%; background: #0a0e16; color: var(--text);
-      border: 1px solid var(--border); border-radius: 8px; padding: .55rem .65rem; font: inherit;
+      border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; font: inherit;
     }
-    textarea { min-height: 64px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .78rem; }
-    .dial-wrap { margin-top: .15rem; }
+    textarea.side-ctx { min-height: 52px; max-height: 90px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; }
     .dial-labels {
-      display: flex; justify-content: space-between; font-size: .68rem; color: var(--dim); margin-bottom: .25rem;
+      display: flex; justify-content: space-between; font-size: .65rem; color: var(--dim); margin-bottom: .15rem;
     }
-    input[type=range] {
-      width: 100%; accent-color: var(--accent); cursor: pointer;
-    }
-    .dial-value {
-      margin-top: .4rem; font-size: .82rem; color: var(--text);
-      display: flex; flex-direction: column; gap: .1rem;
-    }
+    input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    .dial-value { margin-top: .3rem; font-size: .78rem; }
     .dial-value strong { color: var(--accent); font-weight: 700; }
-    .dial-value .hint { color: var(--dim); font-size: .74rem; }
-    .checks { display: flex; flex-direction: column; gap: .45rem; font-size: .82rem; color: var(--muted); }
+    .dial-value .hint { display: block; color: var(--dim); font-size: .7rem; margin-top: .1rem; }
+    .checks { display: flex; flex-direction: column; gap: .35rem; font-size: .8rem; color: var(--muted); }
     .checks label { display: flex; align-items: center; gap: .4rem; margin: 0; color: var(--muted); cursor: pointer; }
-    .tool-links { display: flex; flex-direction: column; gap: .35rem; font-size: .8rem; }
+    .tool-links { display: flex; flex-wrap: wrap; gap: .35rem .65rem; font-size: .75rem; }
     .tool-links a { color: var(--accent); text-decoration: none; }
-    .tool-links a:hover { text-decoration: underline; }
-    .side-foot { margin-top: auto; font-size: .72rem; color: var(--dim); }
+    .side-foot { font-size: .68rem; color: var(--dim); line-height: 1.35; }
+
+    /* MAIN: chat on top (fills), composer pinned bottom — only #chat scrolls */
     .main {
-      display: flex; flex-direction: column; min-height: 100vh; min-width: 0;
-      padding: 1rem 1.1rem 1.1rem; gap: .85rem;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+      padding: 0.65rem 0.85rem 0.75rem;
+      gap: 0.5rem;
     }
-    .main-head p { margin: .2rem 0 0; color: var(--muted); font-size: .9rem; }
+    .main-top {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .5rem;
+    }
+    .main-top .title {
+      font-size: .82rem;
+      color: var(--muted);
+    }
+    .savings-strip {
+      flex: 0 0 auto;
+      display: none;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: .45rem .75rem;
+      padding: .55rem .75rem;
+      border-radius: 10px;
+      border: 1px solid rgba(52,211,153,.35);
+      background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.1));
+      font-size: .82rem;
+    }
+    .savings-strip.show { display: flex; }
+    .savings-strip .big {
+      font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em;
+      background: linear-gradient(90deg, #34d399, #5b8cff);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .savings-strip .muted { color: var(--muted); font-size: .78rem; }
+    .savings-strip .chip {
+      font-size: .7rem; padding: .15rem .45rem; border-radius: 999px;
+      background: #0a0e16; border: 1px solid var(--border); color: var(--muted);
+      display: inline-flex; max-width: none;
+    }
+    .savings-strip .chip strong { color: var(--success); }
+
     .chat {
-      flex: 1; min-height: 280px; overflow-y: auto;
-      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem;
-      display: flex; flex-direction: column; gap: .85rem;
+      flex: 1 1 auto;
+      min-height: 0; /* critical for overflow in flex child */
+      overflow-x: hidden;
+      overflow-y: auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: .75rem;
+      scroll-behavior: smooth;
     }
-    .msg { max-width: 88%; padding: .75rem .9rem; border-radius: 14px; line-height: 1.45; white-space: pre-wrap; font-size: .95rem; }
+    .msg {
+      max-width: min(92%, 52rem);
+      padding: .7rem .85rem;
+      border-radius: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      font-size: .92rem;
+      word-break: break-word;
+    }
     .msg.user { align-self: flex-end; background: var(--accent-soft); }
     .msg.bot { align-self: flex-start; background: #0a0e16; border: 1px solid var(--border); }
-    .msg.sys { align-self: stretch; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .88rem; }
+    .msg.sys {
+      align-self: stretch;
+      background: transparent;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      font-size: .82rem;
+      max-width: 100%;
+    }
     .msg.error { border-color: rgba(248,113,113,.45); color: #fecaca; }
     .msg .thumbs { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
-    .msg .thumbs img { max-height: 72px; max-width: 120px; border-radius: 8px; border: 1px solid var(--border); object-fit: cover; }
-    .meta { margin-top: .55rem; padding-top: .45rem; border-top: 1px solid var(--border); font-size: .75rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .5rem .85rem; }
-    .meta .ok { color: var(--success); }
+    .msg .thumbs img { max-height: 64px; max-width: 100px; border-radius: 8px; border: 1px solid var(--border); object-fit: cover; }
+    .meta {
+      margin-top: .5rem; padding-top: .4rem; border-top: 1px solid var(--border);
+      font-size: .74rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .4rem .7rem;
+    }
+    .meta .ok { color: var(--success); font-weight: 600; }
     .meta .warn { color: var(--warn); }
     .wow {
-      margin-top: .65rem; padding: .75rem; border-radius: 12px;
+      margin-top: .55rem; padding: .65rem .75rem; border-radius: 10px;
       background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.1));
       border: 1px solid rgba(52,211,153,.35);
     }
     .wow .big {
-      font-size: 1.55rem; font-weight: 800; letter-spacing: -0.02em;
+      font-size: 1.4rem; font-weight: 800; letter-spacing: -0.02em;
       background: linear-gradient(90deg, #34d399, #5b8cff);
       -webkit-background-clip: text; background-clip: text; color: transparent;
     }
     .wow .bar {
-      margin-top: .5rem; height: 8px; border-radius: 999px; background: #0a0e16; overflow: hidden;
+      margin-top: .4rem; height: 7px; border-radius: 999px; background: #0a0e16; overflow: hidden;
       border: 1px solid var(--border);
     }
     .wow .bar > i {
@@ -161,53 +229,59 @@
       background: linear-gradient(90deg, #34d399, #5b8cff);
       transition: width 700ms cubic-bezier(.2,.8,.2,1);
     }
-    .wow .chips { margin-top: .55rem; display: flex; flex-wrap: wrap; gap: .35rem; }
+    .wow .chips { margin-top: .45rem; display: flex; flex-wrap: wrap; gap: .3rem; }
     .wow .chip2 {
-      font-size: .72rem; padding: .2rem .5rem; border-radius: 999px;
+      font-size: .7rem; padding: .15rem .45rem; border-radius: 999px;
       background: #0a0e16; border: 1px solid var(--border); color: var(--muted);
     }
     .wow .chip2 strong { color: var(--success); font-weight: 700; }
+
     .composer {
-      display: flex; flex-direction: column; gap: .55rem;
-      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .9rem;
+      flex: 0 0 auto;
+      display: flex; flex-direction: column; gap: .45rem;
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .7rem .8rem;
       transition: border-color .15s, box-shadow .15s;
     }
     .composer.dragover {
       border-color: var(--accent);
       box-shadow: 0 0 0 2px rgba(91,140,255,.25);
     }
-    .row { display: flex; gap: .65rem; align-items: flex-end; }
-    .row textarea { min-height: 88px; flex: 1; font-family: inherit; font-size: .95rem; }
-    button {
-      border: 0; border-radius: 999px; padding: .75rem 1.15rem; font-weight: 600; cursor: pointer;
-      background: linear-gradient(135deg, #5b8cff, #3d6ef5); color: white;
+    .row { display: flex; gap: .55rem; align-items: flex-end; }
+    .row textarea {
+      min-height: 64px; max-height: 120px; flex: 1; resize: vertical;
+      font-family: inherit; font-size: .92rem;
+      background: #0a0e16; color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: .55rem .65rem;
     }
-    button:disabled { opacity: .5; cursor: not-allowed; }
+    button.primary {
+      border: 0; border-radius: 999px; padding: .7rem 1.1rem; font-weight: 600; cursor: pointer;
+      background: linear-gradient(135deg, #5b8cff, #3d6ef5); color: white; font: inherit;
+    }
+    button.primary:disabled { opacity: .5; cursor: not-allowed; }
     button.secondary {
       background: #0a0e16; border: 1px solid var(--border); color: var(--text);
-      padding: .45rem .85rem; font-weight: 500; font-size: .85rem;
+      padding: .4rem .75rem; font-weight: 500; font-size: .82rem; border-radius: 999px; cursor: pointer; font: inherit;
     }
-    .attach-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
-    .chips { display: flex; flex-wrap: wrap; gap: .45rem; min-height: 0; }
+    .attach-bar { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+    .chips { display: flex; flex-wrap: wrap; gap: .4rem; min-height: 0; }
     .chip {
-      display: inline-flex; align-items: center; gap: .4rem;
+      display: inline-flex; align-items: center; gap: .35rem;
       background: #0a0e16; border: 1px solid var(--border); border-radius: 999px;
-      padding: .25rem .55rem .25rem .35rem; font-size: .78rem; color: var(--muted); max-width: 100%;
+      padding: .2rem .5rem .2rem .3rem; font-size: .75rem; color: var(--muted); max-width: 100%;
     }
-    .chip img { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; }
-    .chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+    .chip img { width: 24px; height: 24px; border-radius: 5px; object-fit: cover; }
+    .chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
     .chip button {
-      background: transparent; color: var(--dim); padding: 0 .2rem; font-size: 1rem; line-height: 1;
-      border-radius: 4px;
+      background: transparent; color: var(--dim); padding: 0 .15rem; font-size: 1rem; line-height: 1;
+      border: 0; border-radius: 4px; cursor: pointer;
     }
     .chip button:hover { color: var(--danger); }
-    .hint { font-size: .78rem; color: var(--dim); }
-    footer { color: var(--dim); font-size: .78rem; display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; justify-content:space-between; }
+    .hint { font-size: .72rem; color: var(--dim); }
     a { color: var(--accent); }
     input[type=file] { display: none; }
     .stop-btn {
       background:#3a1520 !important; border:1px solid rgba(248,113,113,.45) !important; color:#fecaca !important;
-      border-radius: 999px; padding: .45rem .85rem; font-size: .8rem; font-weight: 600; cursor: pointer;
+      border-radius: 999px; padding: .4rem .7rem; font-size: .78rem; font-weight: 600; cursor: pointer; width: 100%;
     }
   </style>
 </head>
@@ -227,7 +301,6 @@
           <h2>Client</h2>
           <div class="ver-line" id="versionLine">Checking version…</div>
           <button type="button" class="update-btn secondary-look" id="updateBtn" disabled>Update</button>
-          <p class="hint" style="margin:.45rem 0 0">Pulls the latest module from GitHub, then restarts local chat. API key stays on this PC.</p>
         </div>
 
         <div class="side-section">
@@ -247,68 +320,62 @@
             <option value="documentation">Documentation</option>
             <option value="executive-summary">Executive summary</option>
           </select>
-
-          <div class="dial-wrap" style="margin-top:.85rem">
-            <div class="dial-labels">
-              <span>Fidelity</span>
-              <span>Savings</span>
-            </div>
-            <label for="dial" style="margin:0">Compression dial</label>
+          <div style="margin-top:.65rem">
+            <div class="dial-labels"><span>Fidelity</span><span>Savings</span></div>
+            <label for="dial">Compression dial</label>
             <input type="range" id="dial" min="1" max="5" step="1" value="3" />
             <div class="dial-value">
-              <span><strong id="dialLabel">3 · Balanced</strong></span>
-              <span class="hint" id="dialHint">~45–60% fewer tokens · solid coverage</span>
+              <strong id="dialLabel">3 · Balanced</strong>
+              <span class="hint" id="dialHint">~45–60% fewer tokens</span>
             </div>
           </div>
-        </div>
-
-        <div class="side-section">
-          <h2>Session</h2>
-          <div class="checks">
+          <div class="checks" style="margin-top:.55rem">
             <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend)</label>
           </div>
-          <label for="context" style="margin-top:.65rem">Extra free-text context</label>
-          <textarea id="context" placeholder="Optional paste. Prefer Attach files below for docs/code."></textarea>
         </div>
 
         <div class="side-section">
-          <h2>Links</h2>
-          <div class="tool-links">
-            <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Portal · providers</a>
-            <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Portal · usage</a>
-            <a href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">Portal · API keys</a>
-          </div>
-          <button type="button" class="stop-btn" id="stopBtn" style="margin-top:.75rem;width:100%">Stop server</button>
+          <h2>Extra text</h2>
+          <textarea id="context" class="side-ctx" placeholder="Optional paste. Prefer Attach files under chat."></textarea>
         </div>
 
-        <p class="side-foot">Dial is orthogonal to profile. Profile = domain. Dial = how hard to compress.</p>
+        <div class="side-section">
+          <div class="tool-links">
+            <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
+            <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage</a>
+            <a href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">API keys</a>
+          </div>
+          <button type="button" class="stop-btn" id="stopBtn" style="margin-top:.55rem">Stop server</button>
+        </div>
+
+        <p class="side-foot">Dial = how hard to compress. Attach a doc/code file to see real token savings.</p>
       </div>
     </aside>
 
     <div class="main">
-      <div class="main-head">
-        <p>Chat on this PC. Attach docs/code/CSV at the bottom, paste screenshots (Ctrl+V). Context fleet + dial keep high fidelity with fewer tokens.</p>
+      <div class="main-top">
+        <div class="title">Chat · only this pane scrolls</div>
+        <div class="hint" id="attachHint">No files attached</div>
       </div>
 
-      <div id="chat" class="chat"></div>
+      <!-- Always-visible last savings (not buried under long replies) -->
+      <div class="savings-strip" id="savingsStrip" aria-live="polite"></div>
+
+      <div id="chat" class="chat" role="log" aria-relevant="additions"></div>
 
       <form class="composer" id="form">
         <div class="attach-bar">
           <button type="button" class="secondary" id="attachBtn">Attach files</button>
           <input type="file" id="fileInput" multiple
             accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
-          <span class="hint">Docs · code · CSV · paste screenshot · dial controls fidelity vs savings</span>
+          <span class="hint">Docs · code · CSV · paste screenshot · dial sets fidelity vs savings</span>
         </div>
         <div class="chips" id="chips"></div>
         <div class="row">
           <textarea id="input" placeholder="Ask about the attached material… Enter to send, Shift+Enter for newline"></textarea>
-          <button type="submit" id="send">Send</button>
+          <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
-
-      <footer>
-        <span>Local UI · attachments stay here · tools on the left</span>
-      </footer>
     </div>
   </div>
   <script>
@@ -331,6 +398,8 @@
     const versionBadge = document.getElementById('versionBadge');
     const versionLine = document.getElementById('versionLine');
     const updateBtn = document.getElementById('updateBtn');
+    const savingsStrip = document.getElementById('savingsStrip');
+    const attachHint = document.getElementById('attachHint');
 
     const DIAL_META = {
       1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
@@ -366,12 +435,93 @@
       'txt','md','markdown','rst','log','json','xml','yml','yaml','csv','tsv','tab','ps1','psm1','psd1',
       'cs','ts','tsx','js','jsx','mjs','cjs','py','go','rs','java','php','rb','sql','html','htm','css',
       'scss','less','sh','bash','zsh','conf','cfg','ini','toml','env','dockerfile','makefile','c','h',
-      'cpp','hpp','cc','swift','kt','kts','vue','svelte','r','graphql','gql','proto','java','kt'
+      'cpp','hpp','cc','swift','kt','kts','vue','svelte','r','graphql','gql','proto'
     ]);
     const MAX_FILES = 8;
     const MAX_IMAGES = 4;
     const MAX_TEXT_CHARS = 400000;
     const MAX_IMAGE_EDGE = 1600;
+
+    /** Read metadata fields from snake_case or PascalCase (PowerShell JSON). */
+    function metaGet(meta, key) {
+      if (!meta) return undefined;
+      if (meta[key] != null) return meta[key];
+      // PascalCase variants
+      const parts = key.split('_');
+      const pascal = parts.map(function (p) {
+        return p.charAt(0).toUpperCase() + p.slice(1);
+      }).join('_');
+      if (meta[pascal] != null) return meta[pascal];
+      // camelCase
+      const camel = parts[0] + parts.slice(1).map(function (p) {
+        return p.charAt(0).toUpperCase() + p.slice(1);
+      }).join('');
+      if (meta[camel] != null) return meta[camel];
+      // PowerShell sometimes: OriginalTokens
+      const ps = parts.map(function (p) {
+        return p.charAt(0).toUpperCase() + p.slice(1);
+      }).join('');
+      if (meta[ps] != null) return meta[ps];
+      return undefined;
+    }
+
+    function normalizeMeta(raw) {
+      if (!raw) return null;
+      // Sometimes whole response is nested
+      if (raw.metadata) return normalizeMeta(raw.metadata);
+      if (raw.Metadata) return normalizeMeta(raw.Metadata);
+      const orig = Number(metaGet(raw, 'original_tokens') ?? metaGet(raw, 'originalTokens') ?? 0);
+      const opt = Number(metaGet(raw, 'optimized_tokens') ?? metaGet(raw, 'optimizedTokens') ?? 0);
+      let pct = metaGet(raw, 'token_reduction_percent') ?? metaGet(raw, 'tokenReductionPercent');
+      if (pct == null && orig > 0) {
+        pct = Math.round(Math.max(0, (orig - opt) / orig * 100));
+      }
+      pct = Number(pct || 0);
+      return {
+        original_tokens: orig,
+        optimized_tokens: opt,
+        token_reduction_percent: pct,
+        expanded: Boolean(metaGet(raw, 'expanded') || (opt > orig && orig > 0)),
+        compression_level: metaGet(raw, 'compression_level') ?? metaGet(raw, 'compressionLevel'),
+        strategy: metaGet(raw, 'strategy'),
+        provider: metaGet(raw, 'provider'),
+        model: metaGet(raw, 'model'),
+        image_count: metaGet(raw, 'image_count') ?? metaGet(raw, 'imageCount') ?? 0,
+        notes: metaGet(raw, 'notes') || [],
+        signals: metaGet(raw, 'signals') || {},
+        secrets_masked: metaGet(raw, 'secrets_masked') ?? metaGet(raw, 'secretsMasked')
+      };
+    }
+
+    function updateSavingsStrip(meta) {
+      if (!meta || !(meta.original_tokens > 0 || meta.optimized_tokens > 0)) {
+        return;
+      }
+      const orig = meta.original_tokens;
+      const opt = meta.optimized_tokens;
+      const pct = meta.token_reduction_percent || 0;
+      const expanded = meta.expanded;
+      const saved = Math.max(0, orig - opt);
+      let big = expanded ? '↑' : (pct > 0 ? '−' + pct + '%' : '0%');
+      const chips = [];
+      if (meta.compression_level != null) chips.push('<span class="chip">dial <strong>' + meta.compression_level + '/5</strong></span>');
+      if (meta.strategy) chips.push('<span class="chip">strategy <strong>' + meta.strategy + '</strong></span>');
+      if (meta.provider) chips.push('<span class="chip">' + meta.provider + '</span>');
+      if (meta.model) chips.push('<span class="chip">' + meta.model + '</span>');
+      savingsStrip.innerHTML =
+        '<span class="big">' + big + '</span>' +
+        '<span class="muted">' + orig.toLocaleString() + ' → ' + opt.toLocaleString() +
+          ' tokens · saved ' + saved.toLocaleString() + '</span>' +
+        chips.join('');
+      savingsStrip.classList.add('show');
+    }
+
+    function scrollChatToBottom() {
+      // Keep view on latest message inside the chat pane only
+      requestAnimationFrame(function () {
+        chat.scrollTop = chat.scrollHeight;
+      });
+    }
 
     function addMsg(role, text, meta, isError, thumbs) {
       const div = document.createElement('div');
@@ -388,65 +538,73 @@
         });
         div.appendChild(row);
       }
-      if (meta) {
+      const nmeta = normalizeMeta(meta);
+      if (nmeta && (nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy)) {
         const m = document.createElement('div');
         m.className = 'meta';
-        const orig = meta.original_tokens ?? 0;
-        const opt = meta.optimized_tokens ?? 0;
-        const pct = meta.token_reduction_percent ?? 0;
-        const expanded = meta.expanded || opt > orig;
-        const dial = meta.compression_level ?? meta.compressionLevel;
+        const orig = nmeta.original_tokens;
+        const opt = nmeta.optimized_tokens;
+        const pct = nmeta.token_reduction_percent;
+        const expanded = nmeta.expanded;
+        const dial = nmeta.compression_level;
         let save = expanded
-          ? '<span class="warn">expanded (bug — should not happen)</span>'
+          ? '<span class="warn">expanded</span>'
           : (pct > 0
             ? '<span class="ok">−' + pct + '% saved</span>'
-            : '<span>0% compact</span>');
-        const imgN = meta.image_count || 0;
+            : '<span class="warn">0% saved (attach a larger doc, or raise dial)</span>');
         m.innerHTML =
-          '<span>' + orig + ' → ' + opt + ' tokens</span>' + save +
+          '<span><strong>' + orig.toLocaleString() + ' → ' + opt.toLocaleString() + '</strong> tokens</span>' + save +
           (dial != null ? '<span>dial ' + dial + '/5</span>' : '') +
-          (meta.strategy ? '<span>' + meta.strategy + '</span>' : '') +
-          (imgN ? '<span>' + imgN + ' image(s)</span>' : '') +
-          (meta.provider ? '<span>' + meta.provider + '</span>' : '') +
-          (meta.model ? '<span>' + meta.model + '</span>' : '');
+          (nmeta.strategy ? '<span>' + nmeta.strategy + '</span>' : '') +
+          (nmeta.image_count ? '<span>' + nmeta.image_count + ' image(s)</span>' : '') +
+          (nmeta.provider ? '<span>' + nmeta.provider + '</span>' : '') +
+          (nmeta.model ? '<span>' + nmeta.model + '</span>' : '');
         div.appendChild(m);
 
-        const strat = String(meta.strategy || '');
-        const fleetish = /signal-brief|code-brief|sheet-card|fleet|image-signal/.test(strat);
-        if (!expanded && (pct >= 8 || fleetish)) {
-          const wow = document.createElement('div');
-          wow.className = 'wow';
-          const saved = Math.max(0, orig - opt);
-          const sig = meta.signals || {};
-          const chips = [];
-          if (dial != null) chips.push('<span class="chip2">dial <strong>' + dial + '/5</strong></span>');
-          if (meta.strategy) chips.push('<span class="chip2">strategy <strong>' + meta.strategy + '</strong></span>');
-          if (sig.fleetParts != null) chips.push('<span class="chip2">fleet parts <strong>' + sig.fleetParts + '</strong></span>');
-          if (sig.obligations != null) chips.push('<span class="chip2">requirements <strong>' + sig.obligations + '</strong></span>');
-          if (sig.numbers != null) chips.push('<span class="chip2">numbers <strong>' + sig.numbers + '</strong></span>');
-          if (sig.unitsFull != null) chips.push('<span class="chip2">code full units <strong>' + sig.unitsFull + '</strong></span>');
-          if (sig.rows != null) chips.push('<span class="chip2">sheet rows <strong>' + sig.rows + '</strong></span>');
-          if (sig.images != null) chips.push('<span class="chip2">images <strong>' + sig.images + '</strong></span>');
-          if (sig.evidenceQuotes != null) chips.push('<span class="chip2">evidence <strong>' + sig.evidenceQuotes + '</strong></span>');
-          if (sig.skippedSections != null) chips.push('<span class="chip2">deferred sections <strong>' + sig.skippedSections + '</strong></span>');
-          if (meta.notes && meta.notes[0]) chips.push('<span class="chip2">' + String(meta.notes[0]).slice(0, 90) + '</span>');
-          wow.innerHTML =
-            '<div class="big">−' + pct + '%</div>' +
-            '<div style="font-size:.85rem;color:var(--muted);margin-top:.15rem">' +
-              orig.toLocaleString() + ' → ' + opt.toLocaleString() + ' tokens · saved ' + saved.toLocaleString() +
-            '</div>' +
-            '<div class="bar"><i style="width:0%"></i></div>' +
-            (chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '');
-          div.appendChild(wow);
-          requestAnimationFrame(function () {
-            const bar = wow.querySelector('.bar > i');
-            if (bar) bar.style.width = Math.min(100, pct) + '%';
-          });
-        }
+        // Always show wow card when we have token stats (including 0% so user sees it)
+        const wow = document.createElement('div');
+        wow.className = 'wow';
+        const saved = Math.max(0, orig - opt);
+        const sig = nmeta.signals || {};
+        const chips = [];
+        if (dial != null) chips.push('<span class="chip2">dial <strong>' + dial + '/5</strong></span>');
+        if (nmeta.strategy) chips.push('<span class="chip2">strategy <strong>' + nmeta.strategy + '</strong></span>');
+        if (sig.fleetParts != null) chips.push('<span class="chip2">fleet parts <strong>' + sig.fleetParts + '</strong></span>');
+        if (sig.obligations != null) chips.push('<span class="chip2">requirements <strong>' + sig.obligations + '</strong></span>');
+        if (sig.numbers != null) chips.push('<span class="chip2">numbers <strong>' + sig.numbers + '</strong></span>');
+        if (sig.unitsFull != null) chips.push('<span class="chip2">code full units <strong>' + sig.unitsFull + '</strong></span>');
+        if (sig.rows != null) chips.push('<span class="chip2">sheet rows <strong>' + sig.rows + '</strong></span>');
+        if (nmeta.notes && nmeta.notes[0]) chips.push('<span class="chip2">' + String(nmeta.notes[0]).slice(0, 90) + '</span>');
+        const bigLabel = expanded ? 'expanded' : (pct > 0 ? '−' + pct + '%' : '0%');
+        wow.innerHTML =
+          '<div class="big">' + bigLabel + '</div>' +
+          '<div style="font-size:.82rem;color:var(--muted);margin-top:.1rem">' +
+            orig.toLocaleString() + ' → ' + opt.toLocaleString() + ' tokens · saved ' + saved.toLocaleString() +
+          '</div>' +
+          '<div class="bar"><i style="width:0%"></i></div>' +
+          (chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '');
+        div.appendChild(wow);
+        requestAnimationFrame(function () {
+          const bar = wow.querySelector('.bar > i');
+          if (bar) bar.style.width = Math.min(100, Math.max(expanded ? 0 : pct, 0)) + '%';
+        });
+
+        updateSavingsStrip(nmeta);
       }
       chat.appendChild(div);
-      chat.scrollTop = chat.scrollHeight;
+      scrollChatToBottom();
       return div;
+    }
+
+    function refreshAttachHint() {
+      const n = attachments.length;
+      const chars = attachments.filter(function (a) { return a.kind === 'text'; })
+        .reduce(function (s, a) { return s + (a.text ? a.text.length : 0); }, 0);
+      if (!n) {
+        attachHint.textContent = 'No files attached';
+      } else {
+        attachHint.textContent = n + ' attachment(s)' + (chars ? ' · ' + chars.toLocaleString() + ' chars' : '');
+      }
     }
 
     function renderChips() {
@@ -472,19 +630,18 @@
           if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
           attachments = attachments.filter(function (x) { return x.id !== a.id; });
           renderChips();
+          refreshAttachHint();
         };
         chip.appendChild(x);
         chipsEl.appendChild(chip);
       });
+      refreshAttachHint();
     }
 
     function countImages() {
       return attachments.filter(function (a) { return a.kind === 'image'; }).length;
     }
-
-    function canAddMore() {
-      return attachments.length < MAX_FILES;
-    }
+    function canAddMore() { return attachments.length < MAX_FILES; }
 
     function isTextFile(file) {
       if (file.type && file.type.indexOf('text/') === 0) return true;
@@ -495,13 +652,10 @@
       const ext = base.includes('.') ? base.split('.').pop() : '';
       return TEXT_EXT.has(ext);
     }
-
     function isImageFile(file) {
       if (file.type && file.type.indexOf('image/') === 0) return true;
-      const n = (file.name || '').toLowerCase();
-      return /\.(png|jpe?g|webp|gif)$/.test(n);
+      return /\.(png|jpe?g|webp|gif)$/i.test(file.name || '');
     }
-
     function readAsText(file) {
       return new Promise(function (resolve, reject) {
         const r = new FileReader();
@@ -510,7 +664,6 @@
         r.readAsText(file);
       });
     }
-
     function compressImage(file) {
       return new Promise(function (resolve, reject) {
         const url = URL.createObjectURL(file);
@@ -523,22 +676,15 @@
             w = Math.max(1, Math.round(w * scale));
             h = Math.max(1, Math.round(h * scale));
             const canvas = document.createElement('canvas');
-            canvas.width = w;
-            canvas.height = h;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, w, h);
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
             const preferPng = (file.type === 'image/png' || file.type === 'image/gif') && scale === 1 && file.size < 900000;
             const mime = preferPng ? 'image/png' : 'image/jpeg';
             const dataUrl = canvas.toDataURL(mime, 0.85);
             URL.revokeObjectURL(url);
             const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
             if (!m) return reject(new Error('Image encode failed'));
-            resolve({
-              mediaType: m[1],
-              dataBase64: m[2],
-              previewUrl: dataUrl,
-              name: file.name || 'paste.png'
-            });
+            resolve({ mediaType: m[1], dataBase64: m[2], previewUrl: dataUrl, name: file.name || 'paste.png' });
           } catch (e) {
             URL.revokeObjectURL(url);
             reject(e);
@@ -557,7 +703,7 @@
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!canAddMore()) {
-          addMsg('sys', 'Attachment limit reached (' + MAX_FILES + '). Remove some first.', null, true);
+          addMsg('sys', 'Attachment limit reached (' + MAX_FILES + ').', null, true);
           break;
         }
         try {
@@ -568,12 +714,8 @@
             }
             const img = await compressImage(file);
             attachments.push({
-              id: 'a' + (idSeq++),
-              kind: 'image',
-              name: img.name,
-              mediaType: img.mediaType,
-              dataBase64: img.dataBase64,
-              previewUrl: img.previewUrl
+              id: 'a' + (idSeq++), kind: 'image', name: img.name,
+              mediaType: img.mediaType, dataBase64: img.dataBase64, previewUrl: img.previewUrl
             });
           } else if (isTextFile(file)) {
             let text = await readAsText(file);
@@ -581,13 +723,10 @@
               text = text.slice(0, MAX_TEXT_CHARS) + '\n\n…[truncated local attach limit]';
             }
             attachments.push({
-              id: 'a' + (idSeq++),
-              kind: 'text',
-              name: file.name || 'file.txt',
-              text: text
+              id: 'a' + (idSeq++), kind: 'text', name: file.name || 'file.txt', text: text
             });
           } else {
-            addMsg('sys', 'Skipped binary file: ' + file.name + ' (attach text/code or images only).', null, true);
+            addMsg('sys', 'Skipped binary: ' + file.name, null, true);
           }
         } catch (err) {
           addMsg('sys', String(err.message || err), null, true);
@@ -601,19 +740,14 @@
       if (fileInput.files && fileInput.files.length) addFiles(fileInput.files);
       fileInput.value = '';
     });
-
     ['dragenter', 'dragover'].forEach(function (ev) {
       form.addEventListener(ev, function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        form.classList.add('dragover');
+        e.preventDefault(); e.stopPropagation(); form.classList.add('dragover');
       });
     });
     ['dragleave', 'drop'].forEach(function (ev) {
       form.addEventListener(ev, function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        form.classList.remove('dragover');
+        e.preventDefault(); e.stopPropagation(); form.classList.remove('dragover');
       });
     });
     form.addEventListener('drop', function (e) {
@@ -621,22 +755,17 @@
         addFiles(e.dataTransfer.files);
       }
     });
-
     document.addEventListener('paste', function (e) {
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
       const files = [];
       for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        if (it.kind === 'file') {
-          const f = it.getAsFile();
+        if (items[i].kind === 'file') {
+          const f = items[i].getAsFile();
           if (f) files.push(f);
         }
       }
-      if (files.length) {
-        e.preventDefault();
-        addFiles(files);
-      }
+      if (files.length) { e.preventDefault(); addFiles(files); }
     });
 
     function buildContextFromAttachments() {
@@ -648,18 +777,13 @@
       });
       return parts.join('\n\n');
     }
-
     function buildImagesPayload() {
       return attachments.filter(function (a) { return a.kind === 'image'; }).map(function (a) {
-        return {
-          media_type: a.mediaType,
-          data_base64: a.dataBase64,
-          name: a.name
-        };
+        return { media_type: a.mediaType, data_base64: a.dataBase64, name: a.name };
       });
     }
 
-    addMsg('sys', 'Local PromptParle ready. Tools on the left (provider, profile, compression dial, update). Attach files at the bottom.');
+    addMsg('sys', 'Chat pane is fixed on screen — only replies scroll here. Attach a document to see token savings. Dial 3–4 for strong compression.');
 
     async function checkVersion() {
       try {
@@ -671,26 +795,20 @@
         versionBadge.textContent = 'v' + local;
         if (data.update_available && remote) {
           versionBadge.classList.add('warn');
-          versionLine.textContent = 'Update available: v' + local + ' → v' + remote;
+          versionLine.textContent = 'Update: v' + local + ' → v' + remote;
           updateBtn.disabled = false;
           updateBtn.textContent = 'Update to v' + remote;
           updateBtn.classList.remove('secondary-look');
-          addMsg('sys', 'Client update available (v' + local + ' → v' + remote + '). Use Update in the left tools rail.');
-        } else if (remote) {
+        } else {
           versionBadge.classList.remove('warn');
-          versionLine.textContent = 'Up to date (v' + local + '). Latest: v' + remote;
+          versionLine.textContent = remote ? ('Up to date · v' + local) : ('Local v' + local);
           updateBtn.disabled = false;
           updateBtn.textContent = 'Reinstall latest';
-          updateBtn.classList.add('secondary-look');
-        } else {
-          versionLine.textContent = 'Local v' + local + (data.check_error ? ' · could not reach GitHub' : '');
-          updateBtn.disabled = false;
-          updateBtn.textContent = 'Update from GitHub';
           updateBtn.classList.add('secondary-look');
         }
       } catch (e) {
         versionBadge.textContent = 'local';
-        versionLine.textContent = 'Version check failed: ' + (e.message || e);
+        versionLine.textContent = 'Version check failed';
         updateBtn.disabled = false;
         updateBtn.textContent = 'Update from GitHub';
       }
@@ -708,38 +826,25 @@
     }
 
     updateBtn.addEventListener('click', async function () {
-      if (!confirm('Download the latest PromptParle client and restart local chat? Your API key stays on this PC.')) return;
+      if (!confirm('Download latest PromptParle and restart local chat?')) return;
       updateBtn.disabled = true;
       updateBtn.textContent = 'Updating…';
-      addMsg('sys', 'Updating client from GitHub…');
+      addMsg('sys', 'Updating client…');
       try {
         const res = await fetch('/api/update', { method: 'POST' });
         let data = {};
         try { data = await res.json(); } catch (e) { data = {}; }
-        if (!res.ok) throw new Error(data.error || ('Update failed HTTP ' + res.status));
-        const ver = data.version || data.remote_version || 'latest';
-        addMsg('sys', (data.message || ('Updated to v' + ver)) + ' — restarting local server…');
-        updateBtn.textContent = 'Restarting…';
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        addMsg('sys', (data.message || 'Updated') + ' — restarting…');
         const url = data.url || (window.location.origin + '/');
         const up = await waitForServer(url.endsWith('/') ? url : url + '/', 40);
-        if (up) {
-          addMsg('sys', 'New server is up — reloading UI…');
-          setTimeout(function () { window.location.href = url; }, 500);
-        } else {
-          addMsg('sys', 'Update installed. If the page does not reload, close this tab and run: pp', null, true);
-          updateBtn.disabled = false;
-          updateBtn.textContent = 'Reload page';
-          updateBtn.onclick = function () { window.location.reload(); };
-        }
+        if (up) window.location.href = url;
+        else addMsg('sys', 'Updated. Run  pp  if the page does not reload.', null, true);
       } catch (e) {
-        // Server may have died mid-response while restarting — try reload loop
-        addMsg('sys', 'Update sent. Waiting for restart… (' + (e.message || e) + ')');
-        const url = window.location.origin + '/';
-        const up = await waitForServer(url, 40);
-        if (up) {
-          window.location.reload();
-        } else {
-          addMsg('sys', 'Could not confirm restart. Run  pp  in PowerShell to start the new client.', null, true);
+        const up = await waitForServer(window.location.origin + '/', 40);
+        if (up) window.location.reload();
+        else {
+          addMsg('sys', 'Update/restart issue: ' + (e.message || e) + ' — run pp', null, true);
           updateBtn.disabled = false;
           updateBtn.textContent = 'Retry update';
         }
@@ -767,10 +872,9 @@
           opt.textContent = p.name + ' (not configured)';
           providerEl.appendChild(opt);
         });
-        addMsg('sys', 'No provider keys configured. Add one at https://promptparle.com/app/providers then refresh.', null, true);
+        addMsg('sys', 'No provider keys. Add one at https://promptparle.com/app/providers', null, true);
       }
     }
-
     loadProviders().catch(function (e) { addMsg('sys', String(e.message || e), null, true); });
 
     inputEl.addEventListener('keydown', function (e) {
@@ -784,9 +888,9 @@
       if (!confirm('Stop local PromptParle server?')) return;
       try {
         await fetch('/api/stop', { method: 'POST' });
-        addMsg('sys', 'Server stop requested. PowerShell should return to a prompt. You can close this tab.');
+        addMsg('sys', 'Server stop requested.');
       } catch (e) {
-        addMsg('sys', 'Stop sent (or server already down). Close this tab. If PowerShell is stuck, close that window with the X.', null, true);
+        addMsg('sys', 'Stop sent (or already down).', null, true);
       }
     });
 
@@ -798,7 +902,7 @@
       const dial = parseInt(dialEl.value, 10) || 3;
 
       if (!prompt && !context && !images.length) {
-        addMsg('sys', 'Type a prompt, attach files, or paste a screenshot first.', null, true);
+        addMsg('sys', 'Type a prompt or attach files first.', null, true);
         inputEl.focus();
         return;
       }
@@ -806,14 +910,14 @@
         prompt = images.length && !context
           ? 'Describe this image and call out anything important or risky.'
           : 'Review the attached material and give the most useful findings first.';
-        addMsg('sys', 'No prompt typed — using: “' + prompt + '”');
+        addMsg('sys', 'Using default prompt: “' + prompt + '”');
       }
       if (!providerEl.value) {
-        addMsg('sys', 'No AI provider selected. Configure one at https://promptparle.com/app/providers then refresh.', null, true);
+        addMsg('sys', 'No AI provider selected.', null, true);
         return;
       }
-      if (optimizeOnlyEl.checked && images.length && !context) {
-        addMsg('sys', 'Optimize only works on text. Uncheck Optimize only to send images to the model, or attach code/logs too.', null, true);
+      if (!context && !images.length) {
+        addMsg('sys', 'Tip: attach a document to see compression savings. Short prompts alone are often already compact.');
       }
 
       const thumbUrls = images.map(function (img) {
@@ -830,10 +934,10 @@
       wait.className = 'msg sys';
       wait.id = 'waiting';
       wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing text (dial ' + dial + '/5)…'
-        : 'Sending through PromptParle (dial ' + dial + '/5)' + (images.length ? ' with ' + images.length + ' image(s)' : '') + '…';
+        ? 'Optimizing (dial ' + dial + '/5)…'
+        : 'Sending (dial ' + dial + '/5)' + (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') + '…';
       chat.appendChild(wait);
-      chat.scrollTop = chat.scrollHeight;
+      scrollChatToBottom();
 
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const timer = controller ? setTimeout(function () { controller.abort(); }, 180000) : null;
@@ -864,17 +968,27 @@
           throw new Error('Bad JSON from local server: ' + raw.slice(0, 200));
         }
 
+        // Pull metadata from common shapes
+        let meta = data.metadata || data.Metadata || null;
+        if (!meta && data.original_tokens != null) meta = data;
+
         if (!res.ok) {
-          addMsg('bot', data.error || ('Request failed (HTTP ' + res.status + ')'), data.metadata, true);
+          addMsg('bot', data.error || data.Error || ('Request failed HTTP ' + res.status), meta, true);
         } else if (optimizeOnlyEl.checked) {
-          addMsg('bot', data.optimized_prompt || data.OptimizedPrompt || '(empty optimized prompt)', data.metadata || data.Metadata);
+          const text = data.optimized_prompt || data.OptimizedPrompt || data.optimizedPrompt || '(empty optimized prompt)';
+          addMsg('bot', text, meta);
         } else {
-          addMsg('bot', data.response || data.Response || '(empty response)', data.metadata || data.Metadata);
+          const text = data.response || data.Response || '(empty response)';
+          addMsg('bot', text, meta);
+          if (!meta || !(normalizeMeta(meta).original_tokens > 0)) {
+            addMsg('sys', 'Note: token savings metadata missing from response — check PowerShell window for PromptParle stats.', null, true);
+          } else if (normalizeMeta(meta).token_reduction_percent === 0 && context && context.length > 2000) {
+            addMsg('sys', '0% reduction on a large attach — try dial 4–5, or profile “executive-summary”.', null, true);
+          }
         }
       } catch (err) {
-        const name = err && err.name;
-        if (name === 'AbortError') {
-          addMsg('bot', 'Timed out. Large files/images take longer — try fewer attachments or Optimize only on text first.', null, true);
+        if (err && err.name === 'AbortError') {
+          addMsg('bot', 'Timed out. Try fewer attachments or Optimize only first.', null, true);
         } else {
           addMsg('bot', 'Local server error: ' + (err.message || err), null, true);
         }
@@ -885,6 +999,7 @@
         sendBtn.disabled = false;
         sendBtn.textContent = 'Send';
         inputEl.focus();
+        scrollChatToBottom();
       }
     });
   </script>

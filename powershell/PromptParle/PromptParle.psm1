@@ -1553,9 +1553,63 @@ function Start-PromptParleLocalServer {
                         if ($images.Count -gt 0) { $params.Images = $images }
 
                         $result = Invoke-PromptParle @params
-                        $json = ($result | ConvertTo-Json -Depth 10 -Compress)
+                        # Normalize metadata keys for the browser UI (always snake_case numbers)
+                        $metaIn = Get-PromptParleProp $result 'metadata'
+                        if ($null -eq $metaIn) { $metaIn = Get-PromptParleProp $result 'Metadata' }
+                        $metaOut = $null
+                        if ($null -ne $metaIn) {
+                            $origT = Get-PromptParleProp $metaIn 'original_tokens'
+                            if ($null -eq $origT) { $origT = Get-PromptParleProp $metaIn 'originalTokens' }
+                            $optT = Get-PromptParleProp $metaIn 'optimized_tokens'
+                            if ($null -eq $optT) { $optT = Get-PromptParleProp $metaIn 'optimizedTokens' }
+                            $pctT = Get-PromptParleProp $metaIn 'token_reduction_percent'
+                            if ($null -eq $pctT) { $pctT = Get-PromptParleProp $metaIn 'tokenReductionPercent' }
+                            $dialT = Get-PromptParleProp $metaIn 'compression_level'
+                            if ($null -eq $dialT) { $dialT = Get-PromptParleProp $metaIn 'compressionLevel' }
+                            $metaOut = [ordered]@{
+                                original_tokens         = if ($null -ne $origT) { [int]$origT } else { 0 }
+                                optimized_tokens        = if ($null -ne $optT) { [int]$optT } else { 0 }
+                                token_reduction_percent = if ($null -ne $pctT) { [int]$pctT } else { 0 }
+                                tokens_saved            = 0
+                                expanded                = $false
+                                provider                = [string](Get-PromptParleProp $metaIn 'provider' '')
+                                model                   = [string](Get-PromptParleProp $metaIn 'model' '')
+                                optimization_profile    = [string](Get-PromptParleProp $metaIn 'optimization_profile' (Get-PromptParleProp $metaIn 'optimizationProfile' ''))
+                                compression_level       = if ($null -ne $dialT) { [int]$dialT } else { $dial }
+                                strategy                = [string](Get-PromptParleProp $metaIn 'strategy' '')
+                                secrets_masked          = [bool](Get-PromptParleProp $metaIn 'secrets_masked' $false)
+                                notes                   = @(Get-PromptParleProp $metaIn 'notes' @())
+                                signals                 = Get-PromptParleProp $metaIn 'signals' @{}
+                                image_count             = 0
+                            }
+                            $imgC = Get-PromptParleProp $metaIn 'image_count'
+                            if ($null -eq $imgC) { $imgC = Get-PromptParleProp $metaIn 'imageCount' }
+                            if ($null -ne $imgC) { $metaOut.image_count = [int]$imgC }
+                            $expF = Get-PromptParleProp $metaIn 'expanded'
+                            if ($null -ne $expF) { $metaOut.expanded = [bool]$expF }
+                            elseif ($metaOut.optimized_tokens -gt $metaOut.original_tokens) { $metaOut.expanded = $true }
+                            $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
+                            if ($metaOut.token_reduction_percent -eq 0 -and $metaOut.original_tokens -gt 0 -and -not $metaOut.expanded) {
+                                $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
+                            }
+                        }
+                        $payload = [ordered]@{
+                            response         = Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' $null)
+                            optimized_prompt = Get-PromptParleProp $result 'optimized_prompt' (Get-PromptParleProp $result 'OptimizedPrompt' $null)
+                            metadata         = $metaOut
+                        }
+                        # Keep error field if present
+                        $errField = Get-PromptParleProp $result 'error'
+                        if ($errField) { $payload.error = [string]$errField }
+                        $json = ($payload | ConvertTo-Json -Depth 10 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
-                        Write-Host '  chat: ok' -ForegroundColor DarkGreen
+                        if ($metaOut) {
+                            Write-Host ("  chat: ok  {0} → {1} tokens (−{2}%) dial={3} strat={4}" -f `
+                                $metaOut.original_tokens, $metaOut.optimized_tokens, $metaOut.token_reduction_percent, `
+                                $metaOut.compression_level, $metaOut.strategy) -ForegroundColor DarkGreen
+                        } else {
+                            Write-Host '  chat: ok (no metadata)' -ForegroundColor DarkGreen
+                        }
                     } catch {
                         Write-Host ("  chat: error - {0}" -f $_) -ForegroundColor Red
                         $err = @{ error = "$_" } | ConvertTo-Json -Compress
