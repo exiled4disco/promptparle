@@ -485,9 +485,9 @@ function Initialize-PromptParleDefaultAgents {
             -System 'You are a helpful assistant. Respect [CONN] Project connections (local PC folder, Git, SSH). Prefer attached local evidence; use [WEB] briefs when present.' `
             -Tools @('files', 'workspace', 'secret_scan', 'connections', 'web_search')),
         (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Hostile security review' -Profile 'security-review' -Dial 3 `
-            -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. Prefer evidence from the attached material and [CONN] workspace/SSH paths. Do not invent findings.' `
+            -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. When [CONN] shows SSH cwd, that remote tree is live session evidence — [SSH] blocks are real file contents auto-fetched from that cwd. Prefer [SSH]/[CONN]/attached material. Never claim a path under the SSH cwd is missing without a failed [SSH] fetch. Do not invent findings.' `
             -Commands @{ audit = 'Find the highest risk items and recommend actions with severity.'; threats = 'Map attack surface and threat scenarios from the material.' } `
-            -Tools @('files', 'workspace', 'git', 'secret_scan', 'code_brief', 'git_diff', 'file_index', 'connections', 'web_search')),
+            -Tools @('files', 'workspace', 'git', 'ssh', 'secret_scan', 'code_brief', 'git_diff', 'file_index', 'connections', 'web_search', 'relevant_slice')),
         (New-PromptParleAgentObject -Id 'docs' -Name 'Doc analyst' -Description 'Document coverage + obligations' -Profile 'documentation' -Dial 3 `
             -System 'You are a careful document analyst. Preserve structure and obligations. Lead with the most useful findings, then cover gaps. Use [WEB] only to fill doc gaps, cite sources.' `
             -Commands @{ summary = 'Summarize with section coverage and hard requirements.'; risks = 'Extract risks, must/shall obligations, and deadlines.' } `
@@ -523,11 +523,21 @@ function Initialize-PromptParleDefaultAgents {
                 if ($existing -and $existing.tools) {
                     $need = @($a.tools)
                     $have = @($existing.tools)
-                    if ($have.Count -le 1 -and ($have.Count -eq 0 -or $have -contains 'files')) {
+                    $upgradeLegacy = ($have.Count -le 1 -and ($have.Count -eq 0 -or $have -contains 'files'))
+                    # Built-in security agent: ensure ssh tool + live-cwd doctrine in system prompt
+                    $upgradeSecuritySsh = (
+                        $a.id -eq 'security' -and (
+                            ($have -notcontains 'ssh') -or
+                            ([string]$existing.system -notmatch 'auto-fetched')
+                        )
+                    )
+                    if ($upgradeLegacy -or $upgradeSecuritySsh) {
                         $merged = @($have)
                         foreach ($t in $need) {
                             if ($merged -notcontains $t) { $merged += $t }
                         }
+                        $sysOut = [string]$existing.system
+                        if ($upgradeSecuritySsh -and $a.system) { $sysOut = [string]$a.system }
                         $cmdObj = [ordered]@{}
                         if ($existing.commands) {
                             foreach ($k in $existing.commands.Keys) {
@@ -538,7 +548,7 @@ function Initialize-PromptParleDefaultAgents {
                             id          = $existing.id
                             name        = $existing.name
                             description = $existing.description
-                            system      = $existing.system
+                            system      = $sysOut
                             profile     = $existing.profile
                             dial        = [int]$existing.dial
                             commands    = $cmdObj
@@ -1107,7 +1117,11 @@ function Get-PromptParleProjectConnectionsBrief {
     $gitOk = Test-PromptParleCommandAvailable -Name 'git'
     $lines.Add($(if ($gitOk) { 'Git: available on this PC' } else { 'Git: not found on PATH' }))
 
-    $lines.Add('Use attached workspace/SSH evidence; do not invent paths. Web facts → web_search.')
+    if ($sshT -and $cwd) {
+        $lines.Add('SSH cwd is LIVE — relative names resolve there; files named in the user message are auto-fetched into [SSH] when found.')
+    } else {
+        $lines.Add('Use attached workspace/SSH evidence; do not invent paths. Web facts → web_search.')
+    }
     $text = ($lines -join "`n")
     if ($text.Length -gt $MaxChars) {
         $text = $text.Substring(0, $MaxChars) + "`n…[conn]"
@@ -2309,7 +2323,27 @@ function Invoke-PromptParleLocalTool {
         'ssh' {
             $st = Get-PromptParleSessionState
             $tgt = [string](Get-PromptParleProp $st 'ssh_target' '')
-            $msg = if ($tgt) { "SSH target: $tgt" } else { 'No SSH target. /ssh user@host' }
+            if (-not $tgt) {
+                return [pscustomobject]@{ ok = $false; tool = $id; local = $true; text = 'No SSH target. /ssh user@host [cwd]'; notes = @() }
+            }
+            $cwd = [string](Get-PromptParleProp $st 'ssh_cwd' '')
+            $argS = if ($Arg) { [string]$Arg } else { '' }
+            if ($argS -and ($argS -match '^(?i)(cat|read|get)\s+(.+)$' -or $argS -match '\.[A-Za-z0-9]{1,12}$' -or $argS -match '[/\\]')) {
+                $path = $argS
+                if ($argS -match '^(?i)(cat|read|get)\s+(.+)$') { $path = $Matches[2].Trim() }
+                $ev = Get-PromptParleSshPromptEvidence -Prompt ("read $path") -MaxFiles 1 -MaxChars 16000
+                if ($ev.text) {
+                    return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $ev.text; notes = @($ev.notes); files = $ev.files }
+                }
+                return [pscustomobject]@{
+                    ok = $false; tool = $id; local = $true
+                    text = "SSH file not found under session cwd ($cwd): $path"
+                    notes = @($ev.notes)
+                }
+            }
+            $msg = "SSH target: $tgt"
+            if ($cwd) { $msg += "`nSSH cwd (live): $cwd`nRelative paths resolve here; name a file to auto-fetch." }
+            else { $msg += "`nNo SSH cwd set — /ssh cwd /path/to/project" }
             return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $msg; notes = @() }
         }
         'files' {
@@ -2354,6 +2388,177 @@ function Invoke-PromptParleLocalTool {
         default {
             throw "Unknown local tool: $ToolId"
         }
+    }
+}
+
+function Get-PromptParleSshPathCandidatesFromPrompt {
+    <#
+    .SYNOPSIS
+      Extract file/path tokens from user text for SSH auto-fetch against ssh_cwd.
+    #>
+    [CmdletBinding()]
+    param([string]$Prompt = '')
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    $add = {
+        param([string]$Raw)
+        if (-not $Raw) { return }
+        $t = $Raw.Trim().Trim('"').Trim("'").Trim('`').TrimEnd('.,);:]')
+        if (-not $t) { return }
+        if ($t.Length -gt 260) { return }
+        if ($t -match '[;|&`$<>]') { return }
+        if ($t -match '(?i)^https?://') { return }
+        if ($t -match '^\d+\.\d+') { return }
+        $isPath = ($t -match '[/\\]') -or ($t -match '^\./') -or ($t -match '^~/') -or ($t -match '\.[A-Za-z0-9]{1,12}$')
+        if (-not $isPath) { return }
+        if ($t -match '(?i)^(e\.g|i\.e|etc|com|org|net)$') { return }
+        $key = $t.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { return }
+        $seen[$key] = $true
+        [void]$out.Add($t)
+    }
+
+    if (-not $Prompt) { return @() }
+
+    foreach ($m in [regex]::Matches($Prompt, '["''`]([^"''`\n]{1,240})["''`]')) {
+        & $add $m.Groups[1].Value
+    }
+    foreach ($m in [regex]::Matches($Prompt, '(?i)\b(?:read|open|cat|fetch|load|review|attach|check|look\s+at|show|get)\s+["''`]?([^\s"''`,;:]+)')) {
+        & $add $m.Groups[1].Value
+    }
+    foreach ($m in [regex]::Matches($Prompt, '(?i)(?<![A-Za-z0-9_])((?:~|/|\./|\.\./)[A-Za-z0-9_./+\-]+|[A-Za-z0-9_.+\-]+\.(?:md|txt|ps1|psm1|psd1|php|js|ts|tsx|jsx|py|json|ya?ml|toml|sh|bash|zsh|go|rs|cs|java|css|html?|xml|sql|log|cfg|conf|ini|env|csv|tsv|c|h|cpp|hpp|rb|pl|swift|kt|gradle|csproj|sln|tf|hcl|proto|rsx|vue|svelte|r|m|mm|asm|s|diff|patch|lock|sum|mod))(?![A-Za-z0-9_])')) {
+        & $add $m.Groups[1].Value
+    }
+    if ($Prompt -match '(?i)handoff|PROMPTPARLE_HANDOFF|session\s+hand') {
+        & $add 'PROMPTPARLE_HANDOFF.md'
+        & $add 'HANDOFF.md'
+    }
+    return @($out.ToArray())
+}
+
+function Get-PromptParleSshPromptEvidence {
+    <#
+    .SYNOPSIS
+      When SSH is connected with a cwd, auto-fetch files named in the user prompt
+      from that remote working directory into [SSH] evidence blocks.
+    .DESCRIPTION
+      Doctrine: SSH cwd is a live project root for the session. The model must not
+      claim "file does not exist" when the path is under that cwd without a failed fetch.
+      Relative names resolve via the existing session ssh_cwd (cd prefix on remote).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [string]$Profile = '',
+        [int]$MaxFiles = 4,
+        [int]$MaxChars = 12000
+    )
+    $empty = [pscustomobject]@{ text = ''; notes = @(); files = 0; paths = @() }
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { return $empty }
+    $target = [string](Get-PromptParleProp $ws 'ssh_target' '')
+    if (-not $target) { return $empty }
+
+    $cwd = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
+    $cands = @(Get-PromptParleSshPathCandidatesFromPrompt -Prompt $Prompt)
+    if ($cands.Count -eq 0 -and $Profile -match '(?i)security') {
+        if ($Prompt -match '(?i)handoff|PROMPTPARLE|\.md\b') {
+            $cands = @('PROMPTPARLE_HANDOFF.md', 'HANDOFF.md')
+        }
+    }
+    if ($cands.Count -eq 0) { return $empty }
+
+    $blocks = New-Object System.Collections.Generic.List[string]
+    $notes = New-Object System.Collections.Generic.List[string]
+    $got = New-Object System.Collections.Generic.List[string]
+    $used = 0
+    $n = 0
+    $hostLabel = $target
+    if ($cwd) { $hostLabel = "$target · $cwd" }
+
+    foreach ($raw in $cands) {
+        if ($n -ge $MaxFiles) { break }
+        if ($used -ge $MaxChars) { break }
+        $q = $raw -replace "'", "'\''"
+        $remoteCmd = @"
+set +e
+p='$q'
+if [ -f "`$p" ]; then
+  echo __PP_SSH_OK__
+  echo "`$p"
+  wc -c < "`$p" | tr -d ' \n'
+  echo
+  cat -- "`$p"
+elif [ -n "`${PWD:-}" ] && [ -f "`$PWD/`$p" ]; then
+  echo __PP_SSH_OK__
+  echo "`$PWD/`$p"
+  wc -c < "`$PWD/`$p" | tr -d ' \n'
+  echo
+  cat -- "`$PWD/`$p"
+else
+  echo __PP_SSH_MISS__
+  echo "`$p"
+fi
+"@
+        $r = $null
+        try {
+            $r = Invoke-PromptParleSsh -RemoteCommand $remoteCmd -TimeoutSec 30
+        } catch {
+            $notes.Add("ssh-fetch-err:$raw")
+            continue
+        }
+        $body = [string]$r.text
+        if ($body -notmatch '__PP_SSH_OK__') {
+            $notes.Add("ssh-miss:$raw")
+            continue
+        }
+        $lines = @($body -split "`n")
+        $idx = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '__PP_SSH_OK__') { $idx = $i; break }
+        }
+        if ($idx -lt 0) { continue }
+        $resolved = if ($idx + 1 -lt $lines.Count) { $lines[$idx + 1].Trim() } else { $raw }
+        $contentLines = @()
+        if ($idx + 3 -lt $lines.Count) {
+            $contentLines = $lines[($idx + 3)..($lines.Count - 1)]
+        } elseif ($idx + 2 -lt $lines.Count) {
+            $contentLines = $lines[($idx + 2)..($lines.Count - 1)]
+        }
+        $content = ($contentLines -join "`n")
+        if (-not $content) { continue }
+
+        $room = $MaxChars - $used - 80
+        if ($room -lt 200) { break }
+        if ($content.Length -gt $room) {
+            $content = $content.Substring(0, $room) + "`n…[ssh truncated]"
+        }
+        $leaf = Split-Path -Leaf $resolved
+        if (-not $leaf) { $leaf = $raw }
+        $block = "===== FILE (SSH): $leaf =====`n# host: $hostLabel`n# path: $resolved`n$content"
+        [void]$blocks.Add($block)
+        [void]$got.Add($resolved)
+        $used += $block.Length
+        $n++
+        $notes.Add("ssh-ok:$leaf")
+    }
+
+    if ($blocks.Count -eq 0) {
+        return [pscustomobject]@{
+            text  = ''
+            notes = @($notes.ToArray())
+            files = 0
+            paths = @()
+        }
+    }
+
+    $header = '[SSH] Auto-fetched from session SSH cwd (live evidence — do not invent paths)'
+    $textOut = $header + "`n`n" + ($blocks -join "`n`n")
+    return [pscustomobject]@{
+        text  = $textOut
+        notes = @($notes.ToArray())
+        files = $blocks.Count
+        paths = @($got.ToArray())
     }
 }
 
@@ -2481,6 +2686,35 @@ function Invoke-PromptParleAgentLocalPrep {
             }
         }
         if ($headKeep) { $ctx = $headKeep + "`n`n" + $restCtx } else { $ctx = $restCtx }
+    }
+
+    # 2.5) SSH cwd auto-evidence — named files in prompt fetch from live remote cwd
+    # Doctrine: if [CONN] shows SSH cwd, relative/absolute names must be tried before "not found"
+    try {
+        $sshMax = [Math]::Min(14000, [int]($budget * 0.48))
+        if ($Dial -le 2) { $sshMax = [Math]::Min(20000, [int]($budget * 0.55)) }
+        if ($Dial -ge 4) { $sshMax = [Math]::Min(10000, $sshMax) }
+        $sshFiles = if ($Dial -le 2) { 6 } else { 4 }
+        $sshEv = Get-PromptParleSshPromptEvidence -Prompt $pr -Profile $prof -MaxFiles $sshFiles -MaxChars $sshMax
+        if ($sshEv -and $sshEv.text) {
+            if ($ctx) { $ctx = $ctx + "`n`n" + $sshEv.text } else { $ctx = [string]$sshEv.text }
+            $notes.Add(("ssh-fetch {0}" -f $sshEv.files))
+            foreach ($sn in @($sshEv.notes)) {
+                if ($sn -and $sn -match '^ssh-ok:') { $notes.Add([string]$sn) }
+            }
+            $tools.Add('ssh')
+        } elseif ($sshEv -and $sshEv.notes) {
+            $miss = @($sshEv.notes | Where-Object { $_ -match '^ssh-miss:' } | Select-Object -First 4)
+            if ($miss.Count -gt 0) {
+                $missNames = @($miss | ForEach-Object { $_ -replace '^ssh-miss:', '' })
+                $missBlock = "[SSH] Fetch attempted (not found on remote under session cwd):`n- " + ($missNames -join "`n- ")
+                if ($ctx) { $ctx = $ctx + "`n`n" + $missBlock } else { $ctx = $missBlock }
+                $notes.Add('ssh-miss')
+                $tools.Add('ssh')
+            }
+        }
+    } catch {
+        $notes.Add('ssh-fetch-skip')
     }
 
     # 3) Optional web search brief (intent-only; char-capped; cached)
