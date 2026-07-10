@@ -25,9 +25,11 @@ type Meta = {
   provider?: string;
   model?: string;
   optimization_profile?: string;
+  compression_level?: number;
   secrets_masked?: boolean;
   notes?: string[];
   optimize_only?: boolean;
+  strategy?: string;
 };
 
 type ChatMessage = {
@@ -48,6 +50,37 @@ const PROFILES = [
   { id: "executive-summary", label: "Executive summary" },
 ];
 
+const DIAL_META: Record<
+  number,
+  { label: string; short: string; hint: string }
+> = {
+  1: {
+    label: "Max fidelity",
+    short: "1 · Max fidelity",
+    hint: "~0–15% fewer tokens · near-full text",
+  },
+  2: {
+    label: "High fidelity",
+    short: "2 · High fidelity",
+    hint: "~25–40% fewer · coverage + deep keep",
+  },
+  3: {
+    label: "Balanced",
+    short: "3 · Balanced",
+    hint: "~45–60% fewer · solid coverage",
+  },
+  4: {
+    label: "High savings",
+    short: "4 · High savings",
+    hint: "~70–85% fewer · map + obligations",
+  },
+  5: {
+    label: "Max savings",
+    short: "5 · Max savings",
+    hint: "~85%+ fewer · executive crush",
+  },
+};
+
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -56,22 +89,40 @@ export function ChatClient() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [provider, setProvider] = useState("openai");
   const [profile, setProfile] = useState("general");
+  const [dial, setDial] = useState(3);
   const [context, setContext] = useState("");
-  const [showContext, setShowContext] = useState(false);
   const [optimizeOnly, setOptimizeOnly] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(true);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "welcome",
       role: "system",
       content:
-        "Chat through PromptParle in your browser. Pick a configured AI, type normally, and we’ll optimize context before it hits the model. Savings show under each reply — full history is on the Usage page.",
+        "Chat through PromptParle. Use the left tools rail for provider, profile, and the compression dial (1 fidelity → 5 savings). Paste context below the tools or attach in the composer.",
     },
   ]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pp_dial");
+      if (saved && /^[1-5]$/.test(saved)) setDial(Number(saved));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("pp_dial", String(dial));
+    } catch {
+      /* ignore */
+    }
+  }, [dial]);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,6 +155,7 @@ export function ChatClient() {
   const selectedConfigured = providers.some(
     (p) => p.id === provider && p.configured
   );
+  const dialInfo = DIAL_META[dial] || DIAL_META[3];
 
   async function send(e?: FormEvent) {
     e?.preventDefault();
@@ -137,6 +189,7 @@ export function ChatClient() {
           prompt,
           context: context.trim() || undefined,
           profile,
+          compressionLevel: dial,
           optimizeOnly,
         }),
       });
@@ -198,13 +251,22 @@ export function ChatClient() {
         <div>
           <h1 className="page-title">Chat</h1>
           <p className="page-sub">
-            Browser chat through PromptParle — pick a provider, type normally.
-            Attach noisy logs/context below to see real token savings.
+            Tools on the left · message + context at the bottom. Dial trades
+            fidelity for token savings.
           </p>
         </div>
-        <Link href="/app/usage" className="btn btn-secondary text-sm">
-          View usage / before-after
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-secondary text-sm lg:hidden"
+            onClick={() => setToolsOpen((v) => !v)}
+          >
+            {toolsOpen ? "Hide tools" : "Show tools"}
+          </button>
+          <Link href="/app/usage" className="btn btn-secondary text-sm">
+            View usage / before-after
+          </Link>
+        </div>
       </div>
 
       {loadError && <div className="alert alert-error">{loadError}</div>}
@@ -219,113 +281,183 @@ export function ChatClient() {
         </div>
       )}
 
-      <div className="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="field">
-          <label className="label" htmlFor="provider">
-            AI provider
-          </label>
-          <select
-            id="provider"
-            className="select"
-            value={provider}
-            onChange={(e) => setProvider(e.target.value)}
-          >
-            {providers.map((p) => (
-              <option key={p.id} value={p.id} disabled={!p.configured && !optimizeOnly}>
-                {p.name}
-                {p.configured ? "" : " (not configured)"}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field">
-          <label className="label" htmlFor="profile">
-            Optimization profile
-          </label>
-          <select
-            id="profile"
-            className="select"
-            value={profile}
-            onChange={(e) => setProfile(e.target.value)}
-          >
-            {PROFILES.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field sm:col-span-2 lg:col-span-2">
-          <label className="label flex items-center justify-between">
-            <span>Extra context (optional)</span>
-            <button
-              type="button"
-              className="btn btn-ghost text-xs"
-              onClick={() => setShowContext((v) => !v)}
-            >
-              {showContext ? "Hide" : "Show"}
-            </button>
-          </label>
-          {showContext && (
-            <textarea
-              className="input min-h-[100px] font-mono text-xs"
-              placeholder="Paste logs, code, firewall rules… this is where savings come from"
-              value={context}
-              onChange={(e) => setContext(e.target.value)}
-            />
-          )}
-          {!showContext && (
-            <p className="text-xs text-[var(--text-dim)]">
-              {context.trim()
-                ? `${context.trim().length.toLocaleString()} characters attached`
-                : "No context attached — short chats often show 0% reduction"}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="card flex min-h-[420px] flex-1 flex-col overflow-hidden">
-        <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
-          {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
-          ))}
-          {loading && (
-            <div className="text-sm text-[var(--text-dim)]">Thinking…</div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-
-        <form
-          onSubmit={send}
-          className="border-t border-[var(--border)] bg-black/20 p-4"
+      <div className="grid flex-1 gap-4 lg:grid-cols-[260px_1fr]">
+        {/* Left tools rail */}
+        <aside
+          className={`card flex flex-col gap-4 p-4 ${
+            toolsOpen ? "" : "hidden lg:flex"
+          }`}
         >
-          <label className="mb-2 flex items-center gap-2 text-sm text-[var(--text-muted)]">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-[var(--text-dim)]">
+              Tools
+            </div>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Profile = domain. Dial = how hard to compress.
+            </p>
+          </div>
+
+          <div className="field">
+            <label className="label" htmlFor="provider">
+              AI provider
+            </label>
+            <select
+              id="provider"
+              className="select"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+            >
+              {providers.map((p) => (
+                <option
+                  key={p.id}
+                  value={p.id}
+                  disabled={!p.configured && !optimizeOnly}
+                >
+                  {p.name}
+                  {p.configured ? "" : " (not configured)"}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label className="label" htmlFor="profile">
+              Optimization profile
+            </label>
+            <select
+              id="profile"
+              className="select"
+              value={profile}
+              onChange={(e) => setProfile(e.target.value)}
+            >
+              {PROFILES.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <div className="label flex items-center justify-between">
+              <span>Compression dial</span>
+              <span className="text-[var(--text-dim)]">1–5</span>
+            </div>
+            <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-[var(--text-dim)]">
+              <span>Fidelity</span>
+              <span>Savings</span>
+            </div>
+            <input
+              id="dial"
+              type="range"
+              min={1}
+              max={5}
+              step={1}
+              value={dial}
+              onChange={(e) => setDial(Number(e.target.value))}
+              className="w-full accent-[var(--accent)]"
+            />
+            <div className="mt-2 rounded-lg border border-[var(--border)] bg-black/20 px-3 py-2">
+              <div className="text-sm font-semibold text-[var(--accent-strong)]">
+                {dialInfo.short}
+              </div>
+              <div className="mt-0.5 text-xs text-[var(--text-dim)]">
+                {dialInfo.hint}
+              </div>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
             <input
               type="checkbox"
               checked={optimizeOnly}
               onChange={(e) => setOptimizeOnly(e.target.checked)}
             />
-            Optimize only (no AI spend — show compressed prompt)
+            Optimize only (no AI spend)
           </label>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+
+          <div className="field">
+            <label className="label" htmlFor="context">
+              Document / context attachment
+            </label>
             <textarea
-              ref={textareaRef}
-              className="input min-h-[88px] flex-1 resize-y"
-              placeholder="Message PromptParle… (Enter to send, Shift+Enter for newline)"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onKeyDown}
-              disabled={loading}
+              id="context"
+              className="input min-h-[140px] font-mono text-xs"
+              placeholder="Paste logs, docs, code, CSV… this is where savings come from"
+              value={context}
+              onChange={(e) => setContext(e.target.value)}
             />
-            <button
-              type="submit"
-              className="btn btn-primary shrink-0"
-              disabled={loading || !input.trim()}
-            >
-              {loading ? "Sending…" : "Send"}
-            </button>
+            <p className="mt-1 text-xs text-[var(--text-dim)]">
+              {context.trim()
+                ? `${context.trim().length.toLocaleString()} characters attached`
+                : "No context yet — short chats often show 0% reduction"}
+            </p>
           </div>
-        </form>
+
+          <div className="mt-auto space-y-1 border-t border-[var(--border)] pt-3 text-xs text-[var(--text-dim)]">
+            <Link href="/app/providers" className="block text-[var(--accent-strong)] hover:underline">
+              Providers
+            </Link>
+            <Link href="/app/api-keys" className="block text-[var(--accent-strong)] hover:underline">
+              API keys
+            </Link>
+            <Link href="/app/settings" className="block text-[var(--accent-strong)] hover:underline">
+              Settings
+            </Link>
+          </div>
+        </aside>
+
+        {/* Chat column */}
+        <div className="card flex min-h-[420px] flex-1 flex-col overflow-hidden">
+          <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+            {messages.map((m) => (
+              <MessageBubble key={m.id} message={m} />
+            ))}
+            {loading && (
+              <div className="text-sm text-[var(--text-dim)]">
+                Thinking… (dial {dial}/5)
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          <form
+            onSubmit={send}
+            className="border-t border-[var(--border)] bg-black/20 p-4"
+          >
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-dim)]">
+              <span className="rounded-full border border-[var(--border)] px-2 py-0.5">
+                {dialInfo.short}
+              </span>
+              <span className="rounded-full border border-[var(--border)] px-2 py-0.5">
+                {profile}
+              </span>
+              {context.trim() ? (
+                <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[var(--success)]">
+                  context attached
+                </span>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <textarea
+                ref={textareaRef}
+                className="input min-h-[88px] flex-1 resize-y"
+                placeholder="Message PromptParle… (Enter to send, Shift+Enter for newline)"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                disabled={loading}
+              />
+              <button
+                type="submit"
+                className="btn btn-primary shrink-0"
+                disabled={loading || !input.trim()}
+              >
+                {loading ? "Sending…" : "Send"}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   );
@@ -359,7 +491,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         }`}
       >
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--text-dim)]">
-          {isUser ? "You" : message.meta?.optimize_only ? "Optimized prompt" : "PromptParle"}
+          {isUser
+            ? "You"
+            : message.meta?.optimize_only
+              ? "Optimized prompt"
+              : "PromptParle"}
         </div>
         <div className="whitespace-pre-wrap text-sm leading-relaxed">
           {message.content}
@@ -389,6 +525,7 @@ function SavingsLine({ meta }: { meta: Meta }) {
   const opt = meta.optimized_tokens ?? 0;
   const pct = meta.token_reduction_percent ?? 0;
   const expanded = meta.expanded || opt > orig;
+  const dial = meta.compression_level;
 
   return (
     <div className="flex flex-wrap gap-x-3 gap-y-1">
@@ -402,6 +539,8 @@ function SavingsLine({ meta }: { meta: Meta }) {
       ) : (
         <span>0% (already compact)</span>
       )}
+      {dial != null && <span>dial {dial}/5</span>}
+      {meta.strategy && <span>{meta.strategy}</span>}
       {meta.provider && <span>{meta.provider}</span>}
       {meta.model && <span className="mono">{meta.model}</span>}
       {meta.secrets_masked && (

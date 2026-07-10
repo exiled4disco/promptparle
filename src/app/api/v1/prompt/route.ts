@@ -34,6 +34,9 @@ const schema = z.object({
   context: z.string().max(2_000_000).optional(),
   optimization_profile: z.string().optional(),
   optimizationProfile: z.string().optional(),
+  /** 1 max fidelity … 5 max savings */
+  compression_level: z.number().int().min(1).max(5).optional(),
+  compressionLevel: z.number().int().min(1).max(5).optional(),
   return_metadata: z.boolean().optional(),
   returnMetadata: z.boolean().optional(),
   max_tokens: z.number().int().positive().optional(),
@@ -99,6 +102,8 @@ export async function POST(req: NextRequest) {
       data.optimization_profile ||
       data.optimizationProfile ||
       "general";
+    const compressionLevel =
+      data.compression_level ?? data.compressionLevel ?? 3;
     const returnMetadata =
       data.return_metadata ?? data.returnMetadata ?? true;
     const optimizeOnly = data.optimize_only ?? data.optimizeOnly ?? false;
@@ -125,6 +130,8 @@ export async function POST(req: NextRequest) {
       context: data.context,
       profile,
       maxTokens,
+      compressionLevel,
+      images,
     });
     originalTokens = optimized.originalTokens;
     optimizedTokens = optimized.optimizedTokens;
@@ -169,6 +176,7 @@ export async function POST(req: NextRequest) {
               provider: providerId,
               model,
               optimization_profile: profile,
+              compression_level: compressionLevel,
               secrets_masked: optimized.secretsMasked,
               secret_findings: optimized.secretFindings,
               notes,
@@ -239,6 +247,7 @@ export async function POST(req: NextRequest) {
                 provider: providerId,
                 model,
                 optimization_profile: profile,
+                compression_level: compressionLevel,
                 secrets_masked: optimized.secretsMasked,
               }
             : undefined,
@@ -278,6 +287,7 @@ export async function POST(req: NextRequest) {
             provider: providerId,
             model: usedModel,
             optimization_profile: profile,
+            compression_level: compressionLevel,
             secrets_masked: optimized.secretsMasked,
             secret_findings: optimized.secretFindings,
             notes,

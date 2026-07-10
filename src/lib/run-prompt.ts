@@ -11,6 +11,7 @@ import type { AdapterImage } from "./adapters/types";
 import { normalizeAdapterImages } from "./adapters/types";
 import { recordPromptRequest } from "./prompt-request";
 import type { ProviderId } from "./constants";
+import { normalizeCompressionLevel } from "./compression-level";
 
 export type RunPromptInput = {
   userId: string;
@@ -22,6 +23,8 @@ export type RunPromptInput = {
   prompt: string;
   context?: string;
   profile?: string;
+  /** 1 max fidelity … 5 max savings */
+  compressionLevel?: number;
   optimizeOnly?: boolean;
   maxTokens?: number;
   /** Vision images (not optimized; forwarded to the model on full AI calls) */
@@ -41,6 +44,7 @@ export type RunPromptSuccess = {
     provider: string;
     model: string;
     optimization_profile: string;
+    compression_level: number;
     secrets_masked: boolean;
     secret_findings: string[];
     notes: string[];
@@ -70,6 +74,7 @@ export async function runOptimizedPrompt(
 ): Promise<RunPromptResult> {
   const provider = input.provider.toLowerCase();
   const profile = input.profile || "general";
+  const compressionLevel = normalizeCompressionLevel(input.compressionLevel);
   const optimizeOnly = Boolean(input.optimizeOnly);
 
   if (!isValidProvider(provider)) {
@@ -93,6 +98,7 @@ export async function runOptimizedPrompt(
     profile,
     maxTokens: input.maxTokens,
     images,
+    compressionLevel,
   });
 
   const notes = [...optimized.notes];
@@ -117,6 +123,7 @@ export async function runOptimizedPrompt(
     provider: providerId,
     model,
     optimization_profile: profile,
+    compression_level: compressionLevel,
     secrets_masked: optimized.secretsMasked,
     secret_findings: optimized.secretFindings,
     notes,

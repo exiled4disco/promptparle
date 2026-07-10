@@ -13,6 +13,12 @@
  *  7) Emit a structured SIGNAL BRIEF (smaller + smarter than raw prose)
  */
 
+import {
+  aggressivenessFor,
+  normalizeCompressionLevel,
+  type CompressionAggressiveness,
+} from "./compression-level";
+
 const STOP = new Set(
   `a an the and or but if in on at to for of as is are was were be been being
    this that these those it its with from by into about over after before
@@ -45,6 +51,8 @@ export type DocumentCompressOptions = {
   prompt: string;
   profile: string;
   targetKeepRatio?: number;
+  /** 1 max fidelity … 5 max savings */
+  compressionLevel?: number;
 };
 
 export type DocumentCompressResult = {
@@ -307,73 +315,14 @@ function isVagueAsk(prompt: string): boolean {
 
 /**
  * hybrid = near-full task quality at high compression
- *   - every major section gets a lead sentence (coverage guarantee)
- *   - top sections keep full densified body (deep keep)
  * brief = executive density (map + obligations + thin evidence)
+ * light = chrome strip + light densify (dial 1)
  */
-function profileAggressiveness(profile: string): {
-  mode: "hybrid" | "brief";
-  maxObligations: number;
-  maxEvidence: number;
-  maxNumbers: number;
-  evidenceSentences: number;
-  deepKeepSections: number;
-  leadAllSections: boolean;
-  keepCode: boolean;
-  /** soft char budget as fraction of cleaned context */
-  targetRatio: number;
-} {
-  switch (profile) {
-    case "executive-summary":
-      return {
-        mode: "brief",
-        maxObligations: 12,
-        maxEvidence: 5,
-        maxNumbers: 12,
-        evidenceSentences: 1,
-        deepKeepSections: 1,
-        leadAllSections: false,
-        keepCode: false,
-        targetRatio: 0.22,
-      };
-    case "documentation":
-      return {
-        mode: "hybrid",
-        maxObligations: 22,
-        maxEvidence: 10,
-        maxNumbers: 18,
-        evidenceSentences: 3,
-        deepKeepSections: 4,
-        leadAllSections: true,
-        keepCode: true,
-        targetRatio: 0.38,
-      };
-    case "security-review":
-      return {
-        mode: "hybrid",
-        maxObligations: 24,
-        maxEvidence: 10,
-        maxNumbers: 18,
-        evidenceSentences: 2,
-        deepKeepSections: 3,
-        leadAllSections: true,
-        keepCode: true,
-        targetRatio: 0.35,
-      };
-    default:
-      // general / developer — hybrid so "review this doc" still covers all chapters
-      return {
-        mode: "hybrid",
-        maxObligations: 18,
-        maxEvidence: 8,
-        maxNumbers: 16,
-        evidenceSentences: 2,
-        deepKeepSections: 3,
-        leadAllSections: true,
-        keepCode: true,
-        targetRatio: 0.34,
-      };
-  }
+function resolveDocAggressiveness(
+  profile: string,
+  compressionLevel?: number
+): CompressionAggressiveness {
+  return aggressivenessFor(compressionLevel, profile);
 }
 
 /** When the ask is vague, seed query terms from headings so every chapter can score. */
@@ -594,7 +543,11 @@ export function compressDocument(
     };
   }
 
-  const aggro = profileAggressiveness(profile);
+  const dial = normalizeCompressionLevel(opts.compressionLevel);
+  const aggro = resolveDocAggressiveness(profile, dial);
+  if (opts.targetKeepRatio != null && opts.targetKeepRatio > 0) {
+    aggro.targetRatio = opts.targetKeepRatio;
+  }
   let text = context.replace(/\r\n/g, "\n");
   const chrome = stripChrome(text);
   text = chrome.text;
@@ -692,7 +645,8 @@ export function compressDocument(
   for (const s of rankedSections) {
     if (evidence.length >= aggro.maxEvidence) break;
     const idx = sections.indexOf(s);
-    if (deepIdx.has(idx) && aggro.mode === "hybrid") continue; // body already full
+    if (deepIdx.has(idx) && (aggro.mode === "hybrid" || aggro.mode === "light"))
+      continue; // body already full
     const title = s.heading?.text || "Passage";
     const paras = sectionBodyText(s);
     if (!paras.trim()) continue;
@@ -727,9 +681,17 @@ export function compressDocument(
 
   const ask = (opts.prompt || "").trim().replace(/\s+/g, " ").slice(0, 200);
   const strategyLabel =
-    aggro.mode === "hybrid"
-      ? "signal-brief-hybrid (coverage leads · deep-keep · obligations)"
-      : "signal-brief (map · obligations · thin evidence)";
+    aggro.mode === "light"
+      ? "signal-brief-light (near-full · chrome strip · soft densify)"
+      : aggro.mode === "hybrid"
+        ? "signal-brief-hybrid (coverage leads · deep-keep · obligations)"
+        : "signal-brief (map · obligations · thin evidence)";
+  const fidelityLabel =
+    aggro.mode === "light"
+      ? "max fidelity (dial 1)"
+      : aggro.mode === "hybrid"
+        ? "task-equivalent target (not verbatim)"
+        : "executive density";
 
   const parts: string[] = [];
   parts.push("# SIGNAL BRIEF");
@@ -737,8 +699,9 @@ export function compressDocument(
     [
       `Ask: ${ask || "(general review)"}`,
       `Profile: ${profile}`,
+      `Dial: ${dial}/5`,
       `Strategy: ${strategyLabel}`,
-      `Fidelity: ${aggro.mode === "hybrid" ? "task-equivalent target (not verbatim)" : "executive density"}`,
+      `Fidelity: ${fidelityLabel}`,
     ].join("\n")
   );
 
@@ -845,7 +808,10 @@ export function compressDocument(
   // Soft budget: if hybrid overshoots target ratio, trim deep-keep tails first
   const targetRatio = opts.targetKeepRatio ?? aggro.targetRatio;
   const budget = Math.max(800, Math.floor(text.length * targetRatio));
-  if (brief.length > budget * 1.35 && aggro.mode === "hybrid") {
+  if (
+    brief.length > budget * 1.35 &&
+    (aggro.mode === "hybrid" || aggro.mode === "light")
+  ) {
     // rebuild deep sections with tighter cap
     const tight: string[] = [];
     for (const part of parts) {
@@ -879,9 +845,13 @@ export function compressDocument(
 
   const savedPct = Math.round((1 - brief.length / context.length) * 100);
   const strategy =
-    aggro.mode === "hybrid" ? "signal-brief-hybrid" : "signal-brief";
+    aggro.mode === "light"
+      ? "signal-brief-light"
+      : aggro.mode === "hybrid"
+        ? "signal-brief-hybrid"
+        : "signal-brief";
   notes.push(
-    `SIGNAL BRIEF (${aggro.mode}) −${savedPct}% chars · ${obligations.length} requirements · ${numbers.length} numbers · deep-keep ${deepIdx.size} · leads-on`
+    `SIGNAL BRIEF (${aggro.mode} · dial ${dial}) −${savedPct}% chars · ${obligations.length} requirements · ${numbers.length} numbers · deep-keep ${deepIdx.size}`
   );
 
   return {

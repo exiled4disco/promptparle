@@ -4,6 +4,10 @@ import { maskSecrets } from "./secrets";
 import { runContextFleet } from "./context-fleet";
 import { buildImageSignal } from "./image-signal";
 import type { AdapterImage } from "./adapters/types";
+import {
+  normalizeCompressionLevel,
+  type CompressionLevel,
+} from "./compression-level";
 
 export type OptimizeInput = {
   prompt: string;
@@ -13,6 +17,8 @@ export type OptimizeInput = {
   maxTokens?: number;
   /** Vision images — binary still forwarded separately; we add a focus brief */
   images?: AdapterImage[];
+  /** 1 max fidelity … 5 max savings (default 3 balanced) */
+  compressionLevel?: CompressionLevel | number;
 };
 
 export type OptimizeResult = {
@@ -30,6 +36,7 @@ export type OptimizeResult = {
   strategy?: string;
   /** optional structured impress stats for UI */
   signals?: Record<string, number | string | boolean>;
+  compressionLevel?: CompressionLevel;
 };
 
 /**
@@ -84,7 +91,11 @@ function finalizeStats(
   profile: string,
   secretFindings: string[],
   notes: string[],
-  extra?: { strategy?: string; signals?: OptimizeResult["signals"] }
+  extra?: {
+    strategy?: string;
+    signals?: OptimizeResult["signals"];
+    compressionLevel?: CompressionLevel;
+  }
 ): OptimizeResult {
   const optimizedTokens = estimateTokens(optimizedPrompt);
   const expanded = optimizedTokens > originalTokens;
@@ -113,6 +124,7 @@ function finalizeStats(
     notes: finalNotes,
     strategy: extra?.strategy,
     signals: extra?.signals,
+    compressionLevel: extra?.compressionLevel,
   };
 }
 
@@ -126,6 +138,7 @@ function finalizeStats(
  */
 export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   const profile = input.profile || "general";
+  const compressionLevel = normalizeCompressionLevel(input.compressionLevel);
   const notes: string[] = [];
 
   const rawCombined = [input.prompt, input.context]
@@ -157,12 +170,16 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   let signals: OptimizeResult["signals"] | undefined;
 
   if (context) {
-    const fleet = runContextFleet(context, { prompt, profile });
+    const fleet = runContextFleet(context, {
+      prompt,
+      profile,
+      compressionLevel,
+    });
     if (fleet.applied) {
       context = fleet.text;
       notes.push(...fleet.notes);
       strategy = fleet.strategy || "fleet";
-      signals = { ...fleet.signals };
+      signals = { ...fleet.signals, dial: compressionLevel };
     } else if (fleet.notes.length) {
       notes.push(...fleet.notes);
     }
@@ -205,7 +222,7 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     profile,
     secretFindings,
     notes,
-    { strategy, signals }
+    { strategy, signals, compressionLevel }
   );
 
   // 7) NEVER expand vs the user's original input
@@ -239,7 +256,11 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
       profile,
       secretFindings,
       ptNotes,
-      { strategy: strategy === "lean" ? "passthrough" : strategy, signals }
+      {
+        strategy: strategy === "lean" ? "passthrough" : strategy,
+        signals,
+        compressionLevel,
+      }
     );
     if (pt.optimizedTokens <= result.optimizedTokens) {
       result = pt;
@@ -248,10 +269,14 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
 
   if (result.expanded && result.optimizedTokens > originalTokens + imageSlack) {
     const safe = truncateToTokenBudget(rawCombined.trim(), maxTokens);
-    result = finalizeStats(safe, originalTokens, profile, secretFindings, [
-      ...notes,
-      "Pass-through original (optimizer refused to expand)",
-    ]);
+    result = finalizeStats(
+      safe,
+      originalTokens,
+      profile,
+      secretFindings,
+      [...notes, "Pass-through original (optimizer refused to expand)"],
+      { strategy: "passthrough", compressionLevel }
+    );
     if (
       result.optimizedTokens > originalTokens &&
       result.optimizedTokens - originalTokens <= 2

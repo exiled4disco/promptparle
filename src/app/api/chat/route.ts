@@ -20,6 +20,9 @@ const schema = z.object({
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
   profile: z.string().optional(),
+  /** 1 max fidelity … 5 max savings */
+  compressionLevel: z.number().int().min(1).max(5).optional(),
+  compression_level: z.number().int().min(1).max(5).optional(),
   optimizeOnly: z.boolean().optional(),
   images: z.array(imageSchema).max(8).optional(),
 });
@@ -60,6 +63,8 @@ export async function POST(req: NextRequest) {
       prompt: parsed.data.prompt,
       context: parsed.data.context,
       profile: parsed.data.profile,
+      compressionLevel:
+        parsed.data.compressionLevel ?? parsed.data.compression_level,
       optimizeOnly: parsed.data.optimizeOnly,
       images,
     });

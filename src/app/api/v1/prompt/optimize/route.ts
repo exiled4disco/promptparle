@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireApiKey, V1AuthError } from "@/lib/v1-auth";
 import { optimizePrompt } from "@/lib/optimizer";
+import { normalizeCompressionLevel } from "@/lib/compression-level";
 
 const schema = z.object({
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
   optimization_profile: z.string().optional(),
   optimizationProfile: z.string().optional(),
+  compression_level: z.number().int().min(1).max(5).optional(),
+  compressionLevel: z.number().int().min(1).max(5).optional(),
   max_tokens: z.number().int().positive().optional(),
   maxTokens: z.number().int().positive().optional(),
 });
@@ -26,6 +29,9 @@ export async function POST(req: NextRequest) {
       parsed.data.optimization_profile ||
       parsed.data.optimizationProfile ||
       "general";
+    const compressionLevel = normalizeCompressionLevel(
+      parsed.data.compression_level ?? parsed.data.compressionLevel
+    );
     const maxTokens = parsed.data.max_tokens ?? parsed.data.maxTokens;
 
     const result = optimizePrompt({
@@ -33,6 +39,7 @@ export async function POST(req: NextRequest) {
       context: parsed.data.context,
       profile,
       maxTokens,
+      compressionLevel,
     });
 
     return NextResponse.json({
@@ -47,9 +54,12 @@ export async function POST(req: NextRequest) {
           result.originalTokens - result.optimizedTokens
         ),
         optimization_profile: result.profile,
+        compression_level: compressionLevel,
         secrets_masked: result.secretsMasked,
         secret_findings: result.secretFindings,
         notes: result.notes,
+        strategy: result.strategy,
+        signals: result.signals,
       },
     });
   } catch (err) {

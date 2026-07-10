@@ -17,6 +17,7 @@
       --success: #34d399;
       --warn: #fbbf24;
       --danger: #f87171;
+      --side-w: 280px;
     }
     * { box-sizing: border-box; }
     body {
@@ -28,28 +29,96 @@
         var(--bg);
       color: var(--text);
     }
-    .wrap { max-width: 920px; margin: 0 auto; padding: 1.25rem; display: flex; flex-direction: column; min-height: 100vh; gap: 1rem; }
-    header h1 { margin: 0; font-size: 1.35rem; }
-    header p { margin: .35rem 0 0; color: var(--muted); font-size: .92rem; }
-    .badge { display: inline-block; font-size: .75rem; padding: .2rem .55rem; border-radius: 999px; border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1); }
-    .toolbar {
-      display: grid; gap: .75rem;
-      grid-template-columns: 1fr 1fr;
-      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .9rem;
+    .shell {
+      display: grid;
+      grid-template-columns: var(--side-w) 1fr;
+      min-height: 100vh;
+      max-width: 1280px;
+      margin: 0 auto;
     }
-    @media (max-width: 700px) { .toolbar { grid-template-columns: 1fr; } }
-    label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: .3rem; }
+    @media (max-width: 860px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar {
+        position: sticky; top: 0; z-index: 5;
+        border-right: 0 !important;
+        border-bottom: 1px solid var(--border);
+        max-height: none;
+      }
+      .sidebar.collapsed .side-body { display: none; }
+    }
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: rgba(13, 17, 26, 0.92);
+      padding: 1rem 0.9rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      max-height: 100vh;
+      overflow-y: auto;
+      position: sticky;
+      top: 0;
+    }
+    .side-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem;
+    }
+    .side-head h1 { margin: 0; font-size: 1.05rem; line-height: 1.25; }
+    .badge {
+      display: inline-block; font-size: .68rem; padding: .15rem .45rem; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--success); background: rgba(52,211,153,.1);
+      margin-top: .25rem;
+    }
+    .side-toggle {
+      display: none;
+      background: #0a0e16; border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: .35rem .55rem; font-size: .8rem; cursor: pointer;
+    }
+    @media (max-width: 860px) { .side-toggle { display: inline-block; } }
+    .side-section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: .75rem .8rem;
+    }
+    .side-section h2 {
+      margin: 0 0 .55rem; font-size: .72rem; font-weight: 700;
+      letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
+    }
+    label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: .3rem; }
     select, textarea, input[type=text] {
       width: 100%; background: #0a0e16; color: var(--text);
-      border: 1px solid var(--border); border-radius: 8px; padding: .65rem .75rem; font: inherit;
+      border: 1px solid var(--border); border-radius: 8px; padding: .55rem .65rem; font: inherit;
     }
-    textarea { min-height: 72px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; }
+    textarea { min-height: 64px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .78rem; }
+    .dial-wrap { margin-top: .15rem; }
+    .dial-labels {
+      display: flex; justify-content: space-between; font-size: .68rem; color: var(--dim); margin-bottom: .25rem;
+    }
+    input[type=range] {
+      width: 100%; accent-color: var(--accent); cursor: pointer;
+    }
+    .dial-value {
+      margin-top: .4rem; font-size: .82rem; color: var(--text);
+      display: flex; flex-direction: column; gap: .1rem;
+    }
+    .dial-value strong { color: var(--accent); font-weight: 700; }
+    .dial-value .hint { color: var(--dim); font-size: .74rem; }
+    .checks { display: flex; flex-direction: column; gap: .45rem; font-size: .82rem; color: var(--muted); }
+    .checks label { display: flex; align-items: center; gap: .4rem; margin: 0; color: var(--muted); cursor: pointer; }
+    .tool-links { display: flex; flex-direction: column; gap: .35rem; font-size: .8rem; }
+    .tool-links a { color: var(--accent); text-decoration: none; }
+    .tool-links a:hover { text-decoration: underline; }
+    .side-foot { margin-top: auto; font-size: .72rem; color: var(--dim); }
+    .main {
+      display: flex; flex-direction: column; min-height: 100vh; min-width: 0;
+      padding: 1rem 1.1rem 1.1rem; gap: .85rem;
+    }
+    .main-head p { margin: .2rem 0 0; color: var(--muted); font-size: .9rem; }
     .chat {
-      flex: 1; min-height: 320px; overflow-y: auto;
+      flex: 1; min-height: 280px; overflow-y: auto;
       background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem;
       display: flex; flex-direction: column; gap: .85rem;
     }
-    .msg { max-width: 85%; padding: .75rem .9rem; border-radius: 14px; line-height: 1.45; white-space: pre-wrap; font-size: .95rem; }
+    .msg { max-width: 88%; padding: .75rem .9rem; border-radius: 14px; line-height: 1.45; white-space: pre-wrap; font-size: .95rem; }
     .msg.user { align-self: flex-end; background: var(--accent-soft); }
     .msg.bot { align-self: flex-start; background: #0a0e16; border: 1px solid var(--border); }
     .msg.sys { align-self: stretch; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .88rem; }
@@ -104,8 +173,6 @@
       background: #0a0e16; border: 1px solid var(--border); color: var(--text);
       padding: .45rem .85rem; font-weight: 500; font-size: .85rem;
     }
-    .checks { display: flex; flex-wrap: wrap; gap: .75rem 1.1rem; font-size: .85rem; color: var(--muted); align-items: center; }
-    .checks label { display: flex; align-items: center; gap: .4rem; margin: 0; color: var(--muted); }
     .attach-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
     .chips { display: flex; flex-wrap: wrap; gap: .45rem; min-height: 0; }
     .chip {
@@ -121,74 +188,115 @@
     }
     .chip button:hover { color: var(--danger); }
     .hint { font-size: .78rem; color: var(--dim); }
-    footer { color: var(--dim); font-size: .78rem; }
+    footer { color: var(--dim); font-size: .78rem; display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; justify-content:space-between; }
     a { color: var(--accent); }
     input[type=file] { display: none; }
+    .stop-btn {
+      background:#3a1520 !important; border:1px solid rgba(248,113,113,.45) !important; color:#fecaca !important;
+      border-radius: 999px; padding: .45rem .85rem; font-size: .8rem; font-weight: 600; cursor: pointer;
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <h1>PromptParle <span class="badge">local · 127.0.0.1</span></h1>
-      <p>Chat on this PC. Attach code/logs, paste screenshots (Ctrl+V). AI uses your portal keys via desktop API key.</p>
-    </header>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head">
+        <div>
+          <h1>PromptParle</h1>
+          <span class="badge">local · tools</span>
+        </div>
+        <button type="button" class="side-toggle" id="sideToggle" aria-label="Toggle tools">Tools</button>
+      </div>
 
-    <div class="toolbar">
-      <div>
-        <label for="provider">AI provider</label>
-        <select id="provider"></select>
+      <div class="side-body" id="sideBody">
+        <div class="side-section">
+          <h2>AI</h2>
+          <label for="provider">Provider</label>
+          <select id="provider"></select>
+        </div>
+
+        <div class="side-section">
+          <h2>Optimization</h2>
+          <label for="profile">Profile</label>
+          <select id="profile">
+            <option value="general">General</option>
+            <option value="developer">Developer</option>
+            <option value="security-review">Security review</option>
+            <option value="log-analysis">Log analysis</option>
+            <option value="documentation">Documentation</option>
+            <option value="executive-summary">Executive summary</option>
+          </select>
+
+          <div class="dial-wrap" style="margin-top:.85rem">
+            <div class="dial-labels">
+              <span>Fidelity</span>
+              <span>Savings</span>
+            </div>
+            <label for="dial" style="margin:0">Compression dial</label>
+            <input type="range" id="dial" min="1" max="5" step="1" value="3" />
+            <div class="dial-value">
+              <span><strong id="dialLabel">3 · Balanced</strong></span>
+              <span class="hint" id="dialHint">~45–60% fewer tokens · solid coverage</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="side-section">
+          <h2>Session</h2>
+          <div class="checks">
+            <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend)</label>
+          </div>
+          <label for="context" style="margin-top:.65rem">Extra free-text context</label>
+          <textarea id="context" placeholder="Optional paste. Prefer Attach files below for docs/code."></textarea>
+        </div>
+
+        <div class="side-section">
+          <h2>Links</h2>
+          <div class="tool-links">
+            <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Portal · providers</a>
+            <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Portal · usage</a>
+            <a href="https://promptparle.com/app/api-keys" target="_blank" rel="noreferrer">Portal · API keys</a>
+          </div>
+          <button type="button" class="stop-btn" id="stopBtn" style="margin-top:.75rem;width:100%">Stop server</button>
+        </div>
+
+        <p class="side-foot">Dial is orthogonal to profile. Profile = domain. Dial = how hard to compress.</p>
       </div>
-      <div>
-        <label for="profile">Optimization profile</label>
-        <select id="profile">
-          <option value="general">General</option>
-          <option value="developer">Developer</option>
-          <option value="security-review">Security review</option>
-          <option value="log-analysis">Log analysis</option>
-          <option value="documentation">Documentation</option>
-          <option value="executive-summary">Executive summary</option>
-        </select>
+    </aside>
+
+    <div class="main">
+      <div class="main-head">
+        <p>Chat on this PC. Attach docs/code/CSV at the bottom, paste screenshots (Ctrl+V). Context fleet + dial keep high fidelity with fewer tokens.</p>
       </div>
-      <div style="grid-column: 1 / -1">
-        <label for="context">Extra context (optional free-text; files attach below)</label>
-        <textarea id="context" placeholder="Optional paste. Prefer Attach files for code. Short messages alone often show 0% reduction."></textarea>
-      </div>
+
+      <div id="chat" class="chat"></div>
+
+      <form class="composer" id="form">
+        <div class="attach-bar">
+          <button type="button" class="secondary" id="attachBtn">Attach files</button>
+          <input type="file" id="fileInput" multiple
+            accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
+          <span class="hint">Docs · code · CSV · paste screenshot · dial controls fidelity vs savings</span>
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="row">
+          <textarea id="input" placeholder="Ask about the attached material… Enter to send, Shift+Enter for newline"></textarea>
+          <button type="submit" id="send">Send</button>
+        </div>
+      </form>
+
+      <footer>
+        <span>Local UI · attachments stay here · tools on the left</span>
+      </footer>
     </div>
-
-    <div id="chat" class="chat"></div>
-
-    <form class="composer" id="form">
-      <div class="attach-bar">
-        <button type="button" class="secondary" id="attachBtn">Attach files</button>
-        <input type="file" id="fileInput" multiple
-          accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
-        <span class="hint">Docs · code · CSV · paste screenshot · fleet keeps high fidelity, fewer tokens</span>
-      </div>
-      <div class="chips" id="chips"></div>
-      <div class="checks">
-        <label><input type="checkbox" id="optimizeOnly" /> Optimize only (no AI spend; images skipped until full send)</label>
-      </div>
-      <div class="row">
-        <textarea id="input" placeholder="Ask about the attached code/screenshot… Enter to send, Shift+Enter for newline"></textarea>
-        <button type="submit" id="send">Send</button>
-      </div>
-    </form>
-
-    <footer style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;justify-content:space-between">
-      <span>
-        Local UI ·
-        <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">providers</a> ·
-        <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">usage</a>
-      </span>
-      <button type="button" id="stopBtn" style="background:#3a1520;border:1px solid rgba(248,113,113,.45);color:#fecaca">
-        Stop server
-      </button>
-    </footer>
   </div>
   <script>
     const chat = document.getElementById('chat');
     const providerEl = document.getElementById('provider');
     const profileEl = document.getElementById('profile');
+    const dialEl = document.getElementById('dial');
+    const dialLabel = document.getElementById('dialLabel');
+    const dialHint = document.getElementById('dialHint');
     const contextEl = document.getElementById('context');
     const inputEl = document.getElementById('input');
     const form = document.getElementById('form');
@@ -197,6 +305,34 @@
     const fileInput = document.getElementById('fileInput');
     const chipsEl = document.getElementById('chips');
     const attachBtn = document.getElementById('attachBtn');
+    const sidebar = document.getElementById('sidebar');
+    const sideToggle = document.getElementById('sideToggle');
+
+    const DIAL_META = {
+      1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
+      2: { label: '2 · High fidelity', hint: '~25–40% fewer · coverage + deep keep' },
+      3: { label: '3 · Balanced', hint: '~45–60% fewer · solid coverage' },
+      4: { label: '4 · High savings', hint: '~70–85% fewer · map + obligations' },
+      5: { label: '5 · Max savings', hint: '~85%+ fewer · executive crush' }
+    };
+
+    function updateDialUi() {
+      const v = parseInt(dialEl.value, 10) || 3;
+      const m = DIAL_META[v] || DIAL_META[3];
+      dialLabel.textContent = m.label;
+      dialHint.textContent = m.hint;
+      try { localStorage.setItem('pp_dial', String(v)); } catch (e) {}
+    }
+    try {
+      const saved = localStorage.getItem('pp_dial');
+      if (saved && /^[1-5]$/.test(saved)) dialEl.value = saved;
+    } catch (e) {}
+    dialEl.addEventListener('input', updateDialUi);
+    updateDialUi();
+
+    sideToggle.addEventListener('click', function () {
+      sidebar.classList.toggle('collapsed');
+    });
 
     /** @type {{id:string,kind:'text'|'image',name:string,text?:string,mediaType?:string,dataBase64?:string,previewUrl?:string}[]} */
     let attachments = [];
@@ -235,6 +371,7 @@
         const opt = meta.optimized_tokens ?? 0;
         const pct = meta.token_reduction_percent ?? 0;
         const expanded = meta.expanded || opt > orig;
+        const dial = meta.compression_level ?? meta.compressionLevel;
         let save = expanded
           ? '<span class="warn">expanded (bug — should not happen)</span>'
           : (pct > 0
@@ -243,13 +380,13 @@
         const imgN = meta.image_count || 0;
         m.innerHTML =
           '<span>' + orig + ' → ' + opt + ' tokens</span>' + save +
+          (dial != null ? '<span>dial ' + dial + '/5</span>' : '') +
           (meta.strategy ? '<span>' + meta.strategy + '</span>' : '') +
           (imgN ? '<span>' + imgN + ' image(s)</span>' : '') +
           (meta.provider ? '<span>' + meta.provider + '</span>' : '') +
           (meta.model ? '<span>' + meta.model + '</span>' : '');
         div.appendChild(m);
 
-        // Impressive savings card for fleet / signal-brief / code / sheet
         const strat = String(meta.strategy || '');
         const fleetish = /signal-brief|code-brief|sheet-card|fleet|image-signal/.test(strat);
         if (!expanded && (pct >= 8 || fleetish)) {
@@ -258,6 +395,7 @@
           const saved = Math.max(0, orig - opt);
           const sig = meta.signals || {};
           const chips = [];
+          if (dial != null) chips.push('<span class="chip2">dial <strong>' + dial + '/5</strong></span>');
           if (meta.strategy) chips.push('<span class="chip2">strategy <strong>' + meta.strategy + '</strong></span>');
           if (sig.fleetParts != null) chips.push('<span class="chip2">fleet parts <strong>' + sig.fleetParts + '</strong></span>');
           if (sig.obligations != null) chips.push('<span class="chip2">requirements <strong>' + sig.obligations + '</strong></span>');
@@ -440,7 +578,6 @@
       fileInput.value = '';
     });
 
-    // Drag & drop on composer
     ['dragenter', 'dragover'].forEach(function (ev) {
       form.addEventListener(ev, function (e) {
         e.preventDefault();
@@ -461,7 +598,6 @@
       }
     });
 
-    // Paste images (and optional plain text into input)
     document.addEventListener('paste', function (e) {
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
@@ -499,7 +635,7 @@
       });
     }
 
-    addMsg('sys', 'Local PromptParle ready. Attach docs/code/CSV or paste a screenshot — context fleet compresses each type for high fidelity at low tokens.');
+    addMsg('sys', 'Local PromptParle ready. Tools on the left (provider, profile, compression dial). Attach files at the bottom.');
 
     async function loadProviders() {
       const res = await fetch('/api/providers');
@@ -548,6 +684,7 @@
       let prompt = inputEl.value.trim();
       const context = buildContextFromAttachments();
       const images = buildImagesPayload();
+      const dial = parseInt(dialEl.value, 10) || 3;
 
       if (!prompt && !context && !images.length) {
         addMsg('sys', 'Type a prompt, attach files, or paste a screenshot first.', null, true);
@@ -582,8 +719,8 @@
       wait.className = 'msg sys';
       wait.id = 'waiting';
       wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing text (images held for full AI send)…'
-        : 'Sending through PromptParle' + (images.length ? ' with ' + images.length + ' image(s)' : '') + '…';
+        ? 'Optimizing text (dial ' + dial + '/5)…'
+        : 'Sending through PromptParle (dial ' + dial + '/5)' + (images.length ? ' with ' + images.length + ' image(s)' : '') + '…';
       chat.appendChild(wait);
       chat.scrollTop = chat.scrollHeight;
 
@@ -594,6 +731,7 @@
         const payload = {
           provider: providerEl.value,
           profile: profileEl.value,
+          compression_level: dial,
           prompt: prompt,
           context: context || undefined,
           optimize_only: !!optimizeOnlyEl.checked

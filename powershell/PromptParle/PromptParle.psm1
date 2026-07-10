@@ -285,6 +285,11 @@ function Write-PromptParleMetadata {
     if ($prov)            { Write-Host ("  Provider        : {0}" -f $prov) }
     if ($model)           { Write-Host ("  Model           : {0}" -f $model) }
     if ($prof)            { Write-Host ("  Profile         : {0}" -f $prof) }
+    $dial = Get-PromptParleProp $Metadata 'compression_level'
+    if ($null -eq $dial) { $dial = Get-PromptParleProp $Metadata 'compressionLevel' }
+    if ($null -ne $dial -and "$dial" -ne '') {
+        Write-Host ("  Dial            : {0}/5" -f $dial)
+    }
     if (Get-PromptParleProp $Metadata 'secrets_masked') {
         Write-Host '  Secrets masked  : yes' -ForegroundColor Yellow
     }
@@ -364,6 +369,7 @@ function Show-PromptParleSessionHelp {
     Write-Host '  /help              Show this help'
     Write-Host '  /provider          Switch AI provider'
     Write-Host '  /profile           Change optimization profile'
+    Write-Host '  /dial [1-5]        Compression dial (1 fidelity … 5 savings)'
     Write-Host '  /model <name>      Set model (blank = provider default)'
     Write-Host '  /context           Paste multi-line context (end with a line: EOF)'
     Write-Host '  /file <path>       Load a file as context'
@@ -526,6 +532,9 @@ function Invoke-PromptParle {
       Optimization profile: general, developer, security-review, log-analysis,
       documentation, executive-summary.
 
+    .PARAMETER CompressionLevel
+      Dial 1-5: 1 max fidelity, 3 balanced (default), 5 max savings.
+
     .PARAMETER Context
       Extra material (code, logs, configs) as ONE string.
       Must be [string] - not object[] - because PowerShell unrolls a string
@@ -572,6 +581,11 @@ function Invoke-PromptParle {
             'executive-summary'
         )]
         [string]$Profile = 'general',
+
+        [Parameter()]
+        [Alias('Dial', 'Fidelity')]
+        [ValidateRange(1, 5)]
+        [int]$CompressionLevel = 3,
 
         # Named blob - always a single string (local UI path)
         [Parameter()]
@@ -638,6 +652,7 @@ function Invoke-PromptParle {
             provider              = $Provider
             prompt                = $Prompt
             optimization_profile  = $Profile
+            compression_level     = [int]$CompressionLevel
             return_metadata       = $true
         }
         if ($Model) { $body.model = $Model }
@@ -1177,6 +1192,14 @@ function Start-PromptParleLocalServer {
                         if (-not $provider) { $provider = 'openai' }
                         $profile = [string](Get-PromptParleProp $body 'profile' 'general')
                         if (-not $profile) { $profile = 'general' }
+                        $dialRaw = Get-PromptParleProp $body 'compression_level' $null
+                        if ($null -eq $dialRaw) { $dialRaw = Get-PromptParleProp $body 'compressionLevel' $null }
+                        $dial = 3
+                        if ($null -ne $dialRaw) {
+                            try { $dial = [int]$dialRaw } catch { $dial = 3 }
+                        }
+                        if ($dial -lt 1) { $dial = 1 }
+                        if ($dial -gt 5) { $dial = 5 }
                         $context = Get-PromptParleProp $body 'context' $null
                         if ($null -ne $context) { $context = [string]$context }
                         $optOnly = $false
@@ -1187,15 +1210,16 @@ function Start-PromptParleLocalServer {
                         $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} profile={1} optimize_only={2} prompt={3}c context={4}c images={5}" -f `
-                            $provider, $profile, $optOnly, $prompt.Length, $ctxLen, $images.Count) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} profile={1} dial={2} optimize_only={3} prompt={4}c context={5}c images={6}" -f `
+                            $provider, $profile, $dial, $optOnly, $prompt.Length, $ctxLen, $images.Count) -ForegroundColor DarkGray
 
                         $params = @{
-                            Prompt   = $prompt
-                            Provider = $provider
-                            Profile  = $profile
-                            Quiet    = $true
-                            Raw      = $true
+                            Prompt            = $prompt
+                            Provider          = $provider
+                            Profile           = $profile
+                            CompressionLevel  = $dial
+                            Quiet             = $true
+                            Raw               = $true
                         }
                         # Pass as single string - never as char-unrolled array
                         if ($context) { $params.Context = [string]$context }
@@ -1323,6 +1347,7 @@ function Start-PromptParle {
     $sessionProvider = [string]$selected.Id
     $sessionModel = $Model
     $sessionProfile = $Profile
+    $sessionDial = 3
     $sessionContext = $null
     $optimizeOnlyNext = $false
 
@@ -1364,6 +1389,7 @@ function Start-PromptParle {
                     Write-Host ("  Provider : {0}" -f $sessionProvider)
                     Write-Host ("  Model    : {0}" -f $(if ($sessionModel) { $sessionModel } else { '(default)' }))
                     Write-Host ("  Profile  : {0}" -f $sessionProfile)
+                    Write-Host ("  Dial     : {0}/5 (1 fidelity … 5 savings)" -f $sessionDial)
                     Write-Host ("  Context  : {0}" -f $(if ($sessionContext) { "$($sessionContext.Length) chars" } else { '(none)' }))
                     Write-Host ''
                     continue
@@ -1423,6 +1449,35 @@ function Start-PromptParle {
                             continue
                         }
                         Write-Host ("Profile set to {0}." -f $sessionProfile) -ForegroundColor Green
+                    }
+                    continue
+                }
+                { $_ -in @('/dial', '/compression', '/fidelity') } {
+                    $labels = @{
+                        1 = 'Max fidelity'
+                        2 = 'High fidelity'
+                        3 = 'Balanced'
+                        4 = 'High savings'
+                        5 = 'Max savings'
+                    }
+                    $n = 0
+                    if ($arg -and [int]::TryParse($arg, [ref]$n) -and $n -ge 1 -and $n -le 5) {
+                        $sessionDial = $n
+                        Write-Host ("Dial set to {0}/5 — {1}." -f $sessionDial, $labels[$sessionDial]) -ForegroundColor Green
+                        continue
+                    }
+                    Write-Host ''
+                    Write-Host 'Compression dial (1 fidelity … 5 savings):' -ForegroundColor Cyan
+                    foreach ($k in 1..5) {
+                        $mark = if ($k -eq $sessionDial) { '*' } else { ' ' }
+                        Write-Host ("  [{0}]{1} {2}" -f $k, $mark, $labels[$k])
+                    }
+                    $dchoice = Read-PromptParleLine -PromptText 'dial 1-5> ' -Color Yellow
+                    if ($dchoice -and [int]::TryParse($dchoice.Trim(), [ref]$n) -and $n -ge 1 -and $n -le 5) {
+                        $sessionDial = $n
+                        Write-Host ("Dial set to {0}/5 — {1}." -f $sessionDial, $labels[$sessionDial]) -ForegroundColor Green
+                    } else {
+                        Write-Host ("Still {0}/5." -f $sessionDial) -ForegroundColor DarkGray
                     }
                     continue
                 }
@@ -1498,10 +1553,11 @@ function Start-PromptParle {
         Write-Host 'thinking...' -ForegroundColor DarkGray
         try {
             $params = @{
-                Prompt   = $trimmed
-                Provider = $sessionProvider
-                Profile  = $sessionProfile
-                Quiet    = $false
+                Prompt           = $trimmed
+                Provider         = $sessionProvider
+                Profile          = $sessionProfile
+                CompressionLevel = $sessionDial
+                Quiet            = $false
             }
             if ($sessionModel) { $params.Model = $sessionModel }
             if ($sessionContext) { $params.Context = $sessionContext }

@@ -15,10 +15,16 @@ import {
   type ContextPart,
 } from "./content-detect";
 import { stripInlineDataUrls } from "./image-signal";
+import {
+  aggressivenessFor,
+  normalizeCompressionLevel,
+  type CompressionLevel,
+} from "./compression-level";
 
 export type FleetOptions = {
   prompt: string;
   profile: string;
+  compressionLevel?: CompressionLevel | number;
 };
 
 export type FleetResult = {
@@ -78,6 +84,8 @@ function compressPart(
 } {
   const prompt = opts.prompt;
   const profile = opts.profile;
+  const dial = normalizeCompressionLevel(opts.compressionLevel);
+  const aggro = aggressivenessFor(dial, profile);
   let kind = part.kind;
 
   // Refine mixed
@@ -89,13 +97,17 @@ function compressPart(
   }
 
   if (kind === "sheet" || looksLikeSheet(part.text, part.name)) {
-    const r = compressSheet(part.text, { prompt, name: part.name });
+    const r = compressSheet(part.text, {
+      prompt,
+      name: part.name,
+      maxSampleRows: aggro.sheetSampleRows,
+    });
     if (r.applied) {
       return {
         text: r.text,
         notes: r.notes,
         strategy: r.strategy,
-        stats: { ...r.stats, kind: "sheet" },
+        stats: { ...r.stats, kind: "sheet", dial },
         applied: true,
       };
     }
@@ -107,14 +119,14 @@ function compressPart(
       profile,
       language: part.language,
       name: part.name,
-      targetRatio: profile === "developer" ? 0.48 : 0.4,
+      targetRatio: aggro.codeTargetRatio,
     });
     if (r.applied) {
       return {
         text: r.text,
         notes: r.notes,
         strategy: r.strategy,
-        stats: { ...r.stats, kind: "code" },
+        stats: { ...r.stats, kind: "code", dial },
         applied: true,
       };
     }
@@ -124,13 +136,17 @@ function compressPart(
     kind === "document" ||
     (looksLikeDocument(part.text) && profile !== "log-analysis")
   ) {
-    const r = compressDocument(part.text, { prompt, profile });
+    const r = compressDocument(part.text, {
+      prompt,
+      profile,
+      compressionLevel: dial,
+    });
     if (r.applied) {
       return {
         text: r.text,
         notes: r.notes,
         strategy: r.strategy,
-        stats: { ...r.stats, kind: "document" },
+        stats: { ...r.stats, kind: "document", dial },
         applied: true,
       };
     }
@@ -139,7 +155,9 @@ function compressPart(
   if (kind === "log" || profile === "log-analysis") {
     const r = compressLog(
       part.text,
-      profile === "log-analysis" || profile === "security-review"
+      aggro.aggressiveLogDedupe ||
+        profile === "log-analysis" ||
+        profile === "security-review"
     );
     if (r.note) {
       return {
@@ -244,6 +262,7 @@ export function runContextFleet(
         : "fleet";
 
   if (anyApplied && multi) {
+    const dial = normalizeCompressionLevel(opts.compressionLevel);
     const map = parts
       .map((p, i) => {
         const label = p.name || `part-${i + 1}`;
@@ -255,6 +274,7 @@ export function runContextFleet(
       [
         `Parts: ${parts.length}`,
         `Strategies: ${usedStrategies.join(" + ") || "lean"}`,
+        `Dial: ${dial}/5`,
         `Fidelity: per-modality specialists · high signal · low tokens`,
         `Ask: ${(opts.prompt || "").trim().replace(/\s+/g, " ").slice(0, 160) || "(general)"}`,
       ].join("\n"),
@@ -275,6 +295,7 @@ export function runContextFleet(
       const doc = compressDocument(working, {
         prompt: opts.prompt,
         profile: opts.profile,
+        compressionLevel: normalizeCompressionLevel(opts.compressionLevel),
       });
       if (doc.applied) {
         notes.push(...doc.notes);
