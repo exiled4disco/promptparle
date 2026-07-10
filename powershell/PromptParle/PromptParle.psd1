@@ -1,6 +1,6 @@
 ﻿@{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.4.1'
+    ModuleVersion     = '0.4.2'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -16,6 +16,7 @@
         'Invoke-PromptParleSecurityReview',
         'Start-PromptParle',
         'Start-PromptParleLocalServer',
+        'Stop-PromptParleLocalServer',
         'Open-PromptParleBrowser'
     )
     CmdletsToExport   = @()
@@ -29,6 +30,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.4.2: Fix stuck local server - Ctrl+C, Stop button, Stop-PromptParleLocalServer
 0.4.1: ASCII/BOM fix for Windows PS 5.1 parse errors
 0.4.0: pp starts LOCAL chat UI on 127.0.0.1 (not cloud HTML)
 0.3.0: pp opened cloud browser chat; -Cli for terminal

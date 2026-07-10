@@ -115,11 +115,15 @@
       </div>
     </form>
 
-    <footer>
-      Local UI · portal account/providers:
-      <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">providers</a> ·
-      <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">usage</a>
-      · stop server: close the PowerShell window or Ctrl+C
+    <footer style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;justify-content:space-between">
+      <span>
+        Local UI ·
+        <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">providers</a> ·
+        <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">usage</a>
+      </span>
+      <button type="button" id="stopBtn" style="background:#3a1520;border:1px solid rgba(248,113,113,.45);color:#fecaca">
+        Stop server
+      </button>
     </footer>
   </div>
   <script>
@@ -188,6 +192,16 @@
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         form.requestSubmit();
+      }
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', async () => {
+      if (!confirm('Stop local PromptParle server?')) return;
+      try {
+        await fetch('/api/stop', { method: 'POST' });
+        addMsg('sys', 'Server stop requested. PowerShell should return to a prompt. You can close this tab.');
+      } catch (e) {
+        addMsg('sys', 'Stop sent (or server already down). Close this tab. If PowerShell is stuck, close that window with the X.', null, true);
       }
     });
 

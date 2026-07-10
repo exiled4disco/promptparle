@@ -676,6 +676,32 @@ function Write-PromptParleHttpResponse {
     $Context.Response.OutputStream.Close()
 }
 
+function Stop-PromptParleLocalServer {
+    <#
+    .SYNOPSIS
+      Stop a local PromptParle chat server (same machine).
+    .PARAMETER Port
+      Port the server is on. Default 7788.
+    #>
+    [CmdletBinding()]
+    param([int]$Port = 7788)
+
+    $stopUrl = "http://127.0.0.1:$Port/api/stop"
+    try {
+        if ($PSVersionTable.PSVersion.Major -le 5) {
+            Invoke-WebRequest -Uri $stopUrl -Method POST -UseBasicParsing -TimeoutSec 3 | Out-Null
+        } else {
+            Invoke-WebRequest -Uri $stopUrl -Method POST -TimeoutSec 3 | Out-Null
+        }
+        Write-Host "Sent stop to $stopUrl" -ForegroundColor Green
+    } catch {
+        Write-Host "Could not reach local server on port $Port (already stopped?)." -ForegroundColor Yellow
+        Write-Host 'If PowerShell is still stuck: close that window, or in another window run:' -ForegroundColor DarkGray
+        Write-Host '  Get-Process powershell,pwsh -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -match "PromptParle|powershell" }' -ForegroundColor DarkGray
+        Write-Host '  # or close the stuck window with the X button' -ForegroundColor DarkGray
+    }
+}
+
 function Start-PromptParleLocalServer {
     <#
     .SYNOPSIS
@@ -686,6 +712,12 @@ function Start-PromptParleLocalServer {
       Chat still uses your desktop API key to call PromptParle for
       optimize + your stored provider keys. AI token spend is on YOUR
       provider account (BYOK), not the PromptParle OpenAI bill.
+
+      Stop options:
+        - Ctrl+C in this window
+        - Click "Stop server" in the browser
+        - Another window: Stop-PromptParleLocalServer
+        - Close this PowerShell window with the X
 
     .PARAMETER Port
       Local port. Default 7788.
@@ -699,7 +731,7 @@ function Start-PromptParleLocalServer {
     if (-not $config.ApiKey) {
         Write-Host ''
         Write-Host 'Local chat needs a desktop API key (stays on your PC).' -ForegroundColor Yellow
-        Write-Host '1) https://promptparle.com/app/api-keys  -> create pp_live_...' -ForegroundColor White
+        Write-Host '1) https://promptparle.com/app/api-keys  -> create pp_live_ key' -ForegroundColor White
         Write-Host '2) Set-PromptParleApiKey -ApiKey pp_live_YOUR_KEY' -ForegroundColor White
         Write-Host '3) pp' -ForegroundColor Cyan
         Write-Host ''
@@ -725,9 +757,25 @@ function Start-PromptParleLocalServer {
     } catch {
         Write-Host "Could not bind $prefix - is port $Port in use?" -ForegroundColor Red
         Write-Host $_ -ForegroundColor Red
-        Write-Host "Try: Start-PromptParle -Port 7790" -ForegroundColor Yellow
+        Write-Host 'Stop the old server first:' -ForegroundColor Yellow
+        Write-Host "  Stop-PromptParleLocalServer -Port $Port" -ForegroundColor Cyan
+        Write-Host '  # or close the other PowerShell window with the X' -ForegroundColor DarkGray
+        Write-Host "  # or try: Start-PromptParle -Port 7790" -ForegroundColor DarkGray
         return
     }
+
+    $script:PromptParleShouldStop = $false
+    $cancelHandler = [System.ConsoleCancelEventHandler]{
+        param($sender, $eventArgs)
+        $eventArgs.Cancel = $true
+        $script:PromptParleShouldStop = $true
+        Write-Host ''
+        Write-Host 'Ctrl+C - stopping local PromptParle...' -ForegroundColor Yellow
+        try {
+            if ($listener.IsListening) { $listener.Stop() }
+        } catch { }
+    }
+    [Console]::add_CancelKeyPress($cancelHandler)
 
     $url = $prefix.TrimEnd('/') + '/'
     Write-Host ''
@@ -738,21 +786,55 @@ function Start-PromptParleLocalServer {
     Write-Host ''
     Write-Host "  $url" -ForegroundColor Green
     Write-Host ''
-    Write-Host '  AI bills: your provider keys (OpenAI/etc) in the portal' -ForegroundColor DarkGray
-    Write-Host '  This window must stay open while you chat.' -ForegroundColor Yellow
-    Write-Host '  Stop: Ctrl+C' -ForegroundColor Yellow
+    Write-Host '  Stop any of these ways:' -ForegroundColor Yellow
+    Write-Host '    - Ctrl+C in this window' -ForegroundColor White
+    Write-Host '    - Browser button: Stop server' -ForegroundColor White
+    Write-Host '    - Close this window with the X' -ForegroundColor White
+    Write-Host "    - Other window: Stop-PromptParleLocalServer -Port $Port" -ForegroundColor White
     Write-Host ''
 
     Open-PromptParleUrl -Url $url
 
     try {
-        while ($listener.IsListening) {
-            $ctx = $listener.GetContext()
+        while ($listener.IsListening -and -not $script:PromptParleShouldStop) {
+            # Polling GetContext so Ctrl+C / Stop can interrupt (blocking GetContext ignores Ctrl+C)
+            $async = $null
+            try {
+                $async = $listener.BeginGetContext($null, $null)
+            } catch {
+                break
+            }
+
+            while (-not $async.IsCompleted) {
+                if ($script:PromptParleShouldStop -or -not $listener.IsListening) {
+                    try { $listener.Stop() } catch { }
+                    break
+                }
+                Start-Sleep -Milliseconds 250
+            }
+
+            if ($script:PromptParleShouldStop -or -not $listener.IsListening) { break }
+            if (-not $async.IsCompleted) { break }
+
+            try {
+                $ctx = $listener.EndGetContext($async)
+            } catch {
+                break
+            }
+
             $req = $ctx.Request
             $path = $req.Url.AbsolutePath.TrimEnd('/')
             if (-not $path) { $path = '/' }
 
             try {
+                # Stop server from browser or Stop-PromptParleLocalServer
+                if (($req.HttpMethod -eq 'POST' -or $req.HttpMethod -eq 'GET') -and $path -eq '/api/stop') {
+                    Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body '{"ok":true,"stopped":true}'
+                    $script:PromptParleShouldStop = $true
+                    try { $listener.Stop() } catch { }
+                    break
+                }
+
                 if ($req.HttpMethod -eq 'GET' -and ($path -eq '/' -or $path -eq '/index.html')) {
                     Write-PromptParleHttpResponse -Context $ctx -ContentType 'text/html; charset=utf-8' -Body $html
                     continue
@@ -812,9 +894,13 @@ function Start-PromptParleLocalServer {
             }
         }
     } finally {
-        if ($listener.IsListening) { $listener.Stop() }
-        $listener.Close()
-        Write-Host 'Local PromptParle server stopped.' -ForegroundColor DarkGray
+        try { [Console]::remove_CancelKeyPress($cancelHandler) } catch { }
+        try {
+            if ($listener.IsListening) { $listener.Stop() }
+        } catch { }
+        try { $listener.Close() } catch { }
+        $script:PromptParleShouldStop = $false
+        Write-Host 'Local PromptParle server stopped. You can close this window or run pp again.' -ForegroundColor Green
     }
 }
 
@@ -1110,6 +1196,7 @@ Export-ModuleMember -Function @(
     'Invoke-PromptParleSecurityReview',
     'Start-PromptParle',
     'Start-PromptParleLocalServer',
+    'Stop-PromptParleLocalServer',
     'Open-PromptParleBrowser'
 ) -Alias @(
     'pp',
