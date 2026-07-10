@@ -16,15 +16,12 @@
 .PARAMETER ClonePath
   Where to clone. Default: $HOME\src\promptparle (Windows) or $HOME/src/promptparle
 
-.PARAMETER Force
-  Overwrite an existing module install.
-
 .EXAMPLE
   # One-liner after download, or from a local copy of this script:
   irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex
 
 .EXAMPLE
-  .\Install-FromGitHub.ps1 -Force
+  .\Install-FromGitHub.ps1
 #>
 [CmdletBinding()]
 param(
@@ -32,9 +29,7 @@ param(
 
     [string]$Branch = 'main',
 
-    [string]$ClonePath,
-
-    [switch]$Force
+    [string]$ClonePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,8 +87,9 @@ if (-not (Test-Path -LiteralPath $installScript)) {
     throw "Install script not found under $ClonePath\powershell"
 }
 
-Write-Host "Running module installer..." -ForegroundColor Yellow
-& $installScript -Force:$Force
+Write-Host "Running module installer (overwrite)..." -ForegroundColor Yellow
+# Always reinstall from the updated clone so version bumps apply
+& $installScript
 
 Write-Host ''
 Write-Host 'Done. Next steps:' -ForegroundColor Green
@@ -103,4 +99,4 @@ Write-Host "  3. Get-PromptParleProvider"
 Write-Host "  4. Invoke-PromptParle -Provider openai -Prompt 'Hello' -Context 'test'"
 Write-Host ''
 Write-Host "Clone location: $ClonePath"
-Write-Host 'To update later: re-run this script, or git pull in the clone and Install-PromptParle.ps1 -Force'
+Write-Host 'To update later: re-run this script (git pull + reinstall).'

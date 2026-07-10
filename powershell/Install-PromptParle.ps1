@@ -3,13 +3,22 @@
 .SYNOPSIS
   Install the PromptParle module into the current user's PowerShell module path.
 
+.DESCRIPTION
+  Always copies the module from this repo into the user Modules folder so
+  updates from git pull are applied. Use -NoForce only if you want to skip
+  when already installed (not recommended).
+
 .EXAMPLE
   ./Install-PromptParle.ps1
   Import-Module PromptParle
 #>
 [CmdletBinding()]
 param(
-    [switch]$Force
+    # Kept for backward compatibility; install always overwrites by default.
+    [switch]$Force,
+
+    # Skip overwrite if the module folder already exists.
+    [switch]$NoForce
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +28,15 @@ if (-not (Test-Path -LiteralPath (Join-Path $source 'PromptParle.psd1'))) {
     throw "Module source not found at $source"
 }
 
+# Read source version for messaging
+$sourceVersion = 'unknown'
+try {
+    $manifest = Import-PowerShellDataFile -Path (Join-Path $source 'PromptParle.psd1')
+    if ($manifest.ModuleVersion) { $sourceVersion = [string]$manifest.ModuleVersion }
+} catch {
+    # PS 5.1 may lack Import-PowerShellDataFile on older builds; ignore
+}
+
 if ($PSVersionTable.PSEdition -eq 'Core') {
     $userModules = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell/Modules'
 } else {
@@ -26,21 +44,26 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
 }
 
 # Non-Windows pwsh (PS 5.1 has no $IsLinux/$IsMacOS)
-if (-not (Test-Path ([Environment]::GetFolderPath('MyDocuments')))) {
+$docs = [Environment]::GetFolderPath('MyDocuments')
+if (-not $docs -or -not (Test-Path -LiteralPath $docs)) {
     $userModules = Join-Path $HOME '.local/share/powershell/Modules'
 }
 
 $dest = Join-Path $userModules 'PromptParle'
+$shouldInstall = $true
 
-if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-    Write-Host "Module already exists at $dest (use -Force to overwrite)" -ForegroundColor Yellow
-} else {
+if ((Test-Path -LiteralPath $dest) -and $NoForce -and -not $Force) {
+    Write-Host "Module already exists at $dest (omit -NoForce to overwrite)" -ForegroundColor Yellow
+    $shouldInstall = $false
+}
+
+if ($shouldInstall) {
     if (Test-Path -LiteralPath $dest) {
         Remove-Item -LiteralPath $dest -Recurse -Force
     }
     New-Item -ItemType Directory -Path $userModules -Force | Out-Null
     Copy-Item -Path $source -Destination $dest -Recurse -Force
-    Write-Host "Installed PromptParle to $dest" -ForegroundColor Green
+    Write-Host "Installed PromptParle $sourceVersion to $dest" -ForegroundColor Green
 }
 
 # Unblock on Windows if needed
@@ -48,8 +71,11 @@ Get-ChildItem -LiteralPath $dest -Recurse -File | ForEach-Object {
     try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch { }
 }
 
+# Drop any previously loaded (broken) copy from this session
+Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
 Import-Module PromptParle -Force
-Write-Host "Imported PromptParle $((Get-Module PromptParle).Version)" -ForegroundColor Green
+$loaded = Get-Module PromptParle
+Write-Host "Imported PromptParle $($loaded.Version)" -ForegroundColor Green
 Write-Host ''
 Write-Host 'Next:' -ForegroundColor Cyan
 Write-Host "  Set-PromptParleApiKey -ApiKey 'pp_live_xxxxx'"
