@@ -35,6 +35,11 @@ $script:DefaultBaseUrl = 'https://promptparle.com'
 # Brief caches (local-only; avoid re-running git/SSH/web on every chat turn)
 $script:PromptParleConnBriefCache = @{ key = ''; text = ''; at = [datetime]::MinValue }
 $script:PromptParleWebSearchCache = @{}
+# StrictMode-safe: always initialize before any read
+$script:PromptParleShouldStop = $false
+$script:PromptParleStopAnnounced = $false
+$script:PromptParleListener = $null
+$script:PromptParleExitProcessAfterStop = $false
 
 #region Private helpers
 
@@ -6733,10 +6738,9 @@ function Start-PromptParleLocalServer {
 
     $script:PromptParleShouldStop = $false
     $script:PromptParleStopAnnounced = $false
-    # When true, process exits after stop (successful Update handoff closes this window)
-    if ($null -eq $script:PromptParleExitProcessAfterStop) {
-        $script:PromptParleExitProcessAfterStop = $false
-    }
+    # When true, process exits after stop (successful Update handoff closes this window).
+    # Always assign under StrictMode — never read an unset $script: var.
+    $script:PromptParleExitProcessAfterStop = $false
     # Shared ref so cancel handler and main loop can both print progress
     $script:PromptParleListener = $listener
 
@@ -7735,8 +7739,11 @@ function Start-PromptParleLocalServer {
         $script:PromptParleStopAnnounced = $false
         $script:PromptParleListener = $null
         $exitAfter = $false
-        try { $exitAfter = [bool]$script:PromptParleExitProcessAfterStop } catch { $exitAfter = $false }
-        $script:PromptParleExitProcessAfterStop = $false
+        try {
+            $gv = Get-Variable -Name PromptParleExitProcessAfterStop -Scope Script -ErrorAction SilentlyContinue
+            if ($null -ne $gv) { $exitAfter = [bool]$gv.Value }
+        } catch { $exitAfter = $false }
+        try { $script:PromptParleExitProcessAfterStop = $false } catch { }
         if ($exitAfter) {
             Write-Host 'Local PromptParle server stopped — update handoff complete.' -ForegroundColor Green
             Write-Host 'Closing this window (new server is in the other PowerShell window)...' -ForegroundColor Cyan
