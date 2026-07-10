@@ -124,11 +124,13 @@ export default async function LandingPage() {
         {/* Capabilities */}
         <section id="capabilities" className="border-t border-[var(--border)] py-16">
           <div className="container">
-            <h2 className="page-title text-center">Capabilities</h2>
-            <p className="page-sub mx-auto max-w-2xl text-center">
-              Built for real workflows: noisy logs, code reviews, security
-              packs, docs, and multi-provider routing — with savings you can see.
-            </p>
+            <header className="mx-auto max-w-2xl text-center">
+              <h2 className="page-title">Capabilities</h2>
+              <p className="page-sub">
+                Built for real workflows: noisy logs, code reviews, security
+                packs, docs, and multi-provider routing — with savings you can see.
+              </p>
+            </header>
             <div className="mx-auto mt-10 grid max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {CAPABILITIES.map((item) => (
                 <div key={item.title} className="card p-5 text-left">
