@@ -865,37 +865,37 @@ function Get-PromptParleToolCatalog {
         [pscustomobject]@{
             id = 'secret_scan'; name = 'Secret scan'
             category = 'security'; local = $true
-            description = 'Mask API keys, tokens, and passwords in context before send.'
+            description = 'Mask keys/tokens before send.'
             auto = $true
         },
         [pscustomobject]@{
             id = 'code_brief'; name = 'Code brief'
             category = 'optimize'; local = $true
-            description = 'Strip comment noise and blank runs from code attachments (local).'
+            description = 'Local shrink: comments, blanks, dups, long lines. Dial = budget.'
             auto = $true
         },
         [pscustomobject]@{
             id = 'file_index'; name = 'File index'
             category = 'optimize'; local = $true
-            description = 'Language / size map of the workspace instead of dumping every file.'
+            description = 'Tiny ext/count map — not a file dump.'
             auto = $true
         },
         [pscustomobject]@{
             id = 'deps'; name = 'Deps map'
             category = 'optimize'; local = $true
-            description = 'Summarize package.json, requirements, go.mod, etc. locally.'
+            description = 'Brief package names/versions only.'
             auto = $true
         },
         [pscustomobject]@{
             id = 'git_diff'; name = 'Git diff pack'
             category = 'optimize'; local = $true
-            description = 'Prefer staged/unstaged diff as context (cheaper than whole files).'
+            description = 'Short diff/stat beats whole files.'
             auto = $true
         },
         [pscustomobject]@{
             id = 'tree_pack'; name = 'Tree pack'
             category = 'optimize'; local = $true
-            description = 'Attach a shallow workspace tree for structure without full sources.'
+            description = 'Shallow tree (prefer index when auto).'
             auto = $true
         }
     )
@@ -935,11 +935,12 @@ function Invoke-PromptParleSecretScanLocal {
 function Invoke-PromptParleCodeBriefLocal {
     <#
     .SYNOPSIS
-      Local code thinning: drop comment blocks / blank runs; keep structure. $0 tokens.
+      Proprietary local shrink: drop noise, keep signal. Brief by design. $0 AI tokens.
     #>
     param(
         [string]$Text,
-        [int]$MaxChars = 120000
+        [int]$MaxChars = 48000,
+        [int]$Dial = 3
     )
     if (-not $Text) {
         return [pscustomobject]@{ text = ''; notes = @(); chars_in = 0; chars_out = 0 }
@@ -949,46 +950,75 @@ function Invoke-PromptParleCodeBriefLocal {
     $outLines = New-Object System.Collections.Generic.List[string]
     $inBlock = $false
     $blankRun = 0
-    $commentsDropped = 0
+    $dropped = 0
+    $seen = @{}
+    $dupDropped = 0
+    # Higher dial = drop more low-signal lines
+    $dropDebug = $Dial -ge 4
+    $dropVerboseLog = $Dial -ge 3
     foreach ($line in $lines) {
-        $trim = $line.Trim()
+        $trim = $line.TrimEnd()
+        $t = $trim.Trim()
         if ($inBlock) {
-            if ($trim -match '\*/') { $inBlock = $false }
-            $commentsDropped++
-            continue
+            if ($t -match '\*/') { $inBlock = $false }
+            $dropped++; continue
         }
-        if ($trim -match '^/\*' -and $trim -notmatch '\*/') {
-            if ($trim -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
-                $inBlock = $true
-                $commentsDropped++
-                continue
+        if ($t -match '^/\*' -and $t -notmatch '\*/') {
+            if ($t -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
+                $inBlock = $true; $dropped++; continue
             }
         }
-        if ($trim -match '^/\*.*\*/$' -and $trim -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
-            $commentsDropped++
-            continue
+        if ($t -match '^/\*.*\*/$' -and $t -notmatch '@license|copyright|SPDX|TODO|FIXME|SECURITY') {
+            $dropped++; continue
         }
-        # line comments (keep TODO/FIXME/SECURITY)
-        if ($trim -match '^\s*//' -or $trim -match '^\s*#(?!!)' -or $trim -match '^\s*;\s' -or $trim -match "^\s*--\s") {
-            if ($trim -notmatch 'TODO|FIXME|HACK|SECURITY|XXX|BUG') {
-                $commentsDropped++
-                continue
+        if ($t -match '^//' -or $t -match '^#(?!!)' -or $t -match '^;' -or $t -match '^--\s') {
+            if ($t -notmatch 'TODO|FIXME|HACK|SECURITY|XXX|BUG') { $dropped++; continue }
+        }
+        # Inline trailing comments (light) — keep code left of // when obvious
+        if ($t -match '^(.+?)\s+//(?!/).*$' -and $t -notmatch 'https?://' -and $t -notmatch 'TODO|FIXME') {
+            $left = $Matches[1].TrimEnd()
+            if ($left.Length -gt 0 -and $left -notmatch '["''].*//') {
+                $trim = $left
+                $t = $trim.Trim()
             }
         }
-        if ($trim -eq '') {
+        if ($t -eq '') {
             $blankRun++
-            if ($blankRun -gt 1) { continue }
+            if ($blankRun -gt 1) { $dropped++; continue }
             $outLines.Add('')
             continue
         }
         $blankRun = 0
-        $outLines.Add($line)
+        # Collapse pure noise / debug spam
+        if ($dropDebug -and $t -match '(?i)^\s*(console\.(log|debug|info)|Write-Host|print\(|logger\.(debug|info))\b') {
+            $dropped++; continue
+        }
+        if ($dropVerboseLog -and $t -match '(?i)^\s*(DEBUG|TRACE)\b' -and $t.Length -lt 200) {
+            $dropped++; continue
+        }
+        # Dedup exact consecutive-ish lines (logs)
+        $key = $t
+        if ($key.Length -gt 24 -and $seen.ContainsKey($key)) {
+            $dupDropped++
+            if ($dupDropped -gt 2 -or $Dial -ge 3) { $dropped++; continue }
+        } else {
+            if ($seen.Count -lt 4000) { $seen[$key] = 1 }
+        }
+        # Cap ultra-long lines (base64 / minified)
+        if ($trim.Length -gt 400) {
+            $trim = $trim.Substring(0, 400) + '…'
+            $dropped++
+        }
+        $outLines.Add($trim)
     }
     $out = ($outLines -join "`n")
+    # Collapse 3+ blank runs that survived
+    $out = [regex]::Replace($out, "(`n){3,}", "`n`n")
     if ($out.Length -gt $MaxChars) {
-        $out = $out.Substring(0, $MaxChars) + "`n… [code_brief truncated locally]"
+        $out = $out.Substring(0, $MaxChars) + "`n…[brief]"
     }
-    $notes = @("code_brief: $charsIn → $($out.Length) chars (dropped ~$commentsDropped comment/blank lines)")
+    $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
+    $notes = @("brief −${pct}% ($charsIn→$($out.Length))")
     return [pscustomobject]@{
         text      = $out
         notes     = $notes
@@ -997,8 +1027,21 @@ function Invoke-PromptParleCodeBriefLocal {
     }
 }
 
+function Get-PromptParleLocalContextBudget {
+    <# Dial → hard local context budget (chars) before gateway. Brief by design. #>
+    param([int]$Dial = 3)
+    switch ($Dial) {
+        1 { return 72000 }
+        2 { return 48000 }
+        3 { return 32000 }
+        4 { return 20000 }
+        5 { return 12000 }
+        default { return 32000 }
+    }
+}
+
 function Get-PromptParleWorkspaceFileIndex {
-    param([int]$MaxFiles = 400)
+    param([int]$MaxFiles = 220, [int]$MaxChars = 2200)
     $ws = Get-PromptParleWorkspace
     if (-not $ws.exists) { throw 'No workspace attached. /workspace <path> first.' }
     $root = [string]$ws.path
@@ -1026,40 +1069,40 @@ function Get-PromptParleWorkspaceFileIndex {
             $ext = if ($_.Extension) { $_.Extension.ToLowerInvariant() } else { '(none)' }
             if (-not $extCount.ContainsKey($ext)) { $extCount[$ext] = 0 }
             $extCount[$ext]++
-            if ($samples.Count -lt 40) {
+            if ($samples.Count -lt 12) {
                 $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
-                $samples.Add(("{0}  ({1:N0} B)" -f $rel, $_.Length))
+                $samples.Add($rel)
             }
         }
+    $extParts = @()
+    foreach ($k in ($extCount.Keys | Sort-Object { -$extCount[$_] } | Select-Object -First 10)) {
+        $extParts += ("{0}:{1}" -f $k, $extCount[$k])
+    }
     $lines = @(
-        "FILE INDEX (local) — $root",
-        "Files scanned: $total · ~$([Math]::Round($bytes/1KB, 1)) KB",
-        'By extension:'
+        "IDX $total files ~$([Math]::Round($bytes/1KB, 0))KB",
+        ($extParts -join ' '),
+        ($samples -join ' · ')
     )
-    foreach ($k in ($extCount.Keys | Sort-Object { -$extCount[$_] })) {
-        $lines += ("  {0,-12} {1}" -f $k, $extCount[$k])
-    }
-    if ($samples.Count) {
-        $lines += 'Sample paths:'
-        foreach ($s in $samples) { $lines += "  $s" }
-    }
-    return ($lines -join "`n")
+    $text = ($lines -join "`n")
+    if ($text.Length -gt $MaxChars) { $text = $text.Substring(0, $MaxChars) + '…' }
+    return $text
 }
 
 function Get-PromptParleWorkspaceDepsMap {
+    param([int]$MaxChars = 3500)
     $ws = Get-PromptParleWorkspace
     if (-not $ws.exists) { throw 'No workspace attached. /workspace <path> first.' }
     $root = [string]$ws.path
+    # Prefer lock-free manifests only (brief)
     $names = @(
-        'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock',
-        'requirements.txt', 'pyproject.toml', 'Pipfile', 'go.mod', 'Cargo.toml',
-        'composer.json', 'Gemfile', 'pom.xml', 'build.gradle', 'build.gradle.kts',
-        '*.csproj', '*.fsproj', 'Directory.Packages.props'
+        'package.json', 'requirements.txt', 'pyproject.toml', 'go.mod', 'Cargo.toml',
+        'composer.json', 'Gemfile', 'pom.xml', 'build.gradle', '*.csproj'
     )
     $chunks = New-Object System.Collections.Generic.List[string]
-    $chunks.Add("DEPS MAP (local) — $root")
+    $chunks.Add("DEPS")
     $found = 0
     foreach ($pat in $names) {
+        if ($found -ge 3) { break }
         Get-ChildItem -LiteralPath $root -Recurse -File -Filter $pat -ErrorAction SilentlyContinue |
             Where-Object {
                 $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
@@ -1071,50 +1114,63 @@ function Get-PromptParleWorkspaceDepsMap {
                 }
                 -not $skip
             } |
-            Select-Object -First 8 |
+            Select-Object -First 1 |
             ForEach-Object {
                 $found++
                 $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
                 $raw = ''
                 try {
                     $raw = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop
-                } catch { $raw = '(unreadable)' }
-                if ($raw.Length -gt 6000) {
-                    $raw = $raw.Substring(0, 6000) + "`n… [truncated]"
+                } catch { $raw = '' }
+                # Prefer name/version lines only when possible
+                $brief = $raw
+                if ($rel -match 'package\.json' -and $raw) {
+                    $deps = [regex]::Matches($raw, '"([^"]+)":\s*"([^"]+)"') | Select-Object -First 40
+                    $pairs = @()
+                    foreach ($m in $deps) {
+                        $k = $m.Groups[1].Value
+                        if ($k -match '^(name|version|dependencies|devDependencies)$') { continue }
+                        if ($k -match '^(scripts|main|type|license|private)$') { continue }
+                        $pairs += ("{0}@{1}" -f $k, $m.Groups[2].Value)
+                    }
+                    if ($pairs.Count) { $brief = ($pairs -join ', ') }
+                } elseif ($raw.Length -gt 1200) {
+                    $brief = $raw.Substring(0, 1200) + '…'
                 }
-                $chunks.Add("===== $rel =====`n$raw")
+                $chunks.Add("${rel}: $brief")
             }
     }
-    if ($found -eq 0) {
-        $chunks.Add('(no common dependency manifests found)')
-    }
-    return ($chunks -join "`n`n")
+    if ($found -eq 0) { $chunks.Add('(none)') }
+    $text = ($chunks -join "`n")
+    if ($text.Length -gt $MaxChars) { $text = $text.Substring(0, $MaxChars) + '…' }
+    return $text
 }
 
 function Get-PromptParleGitDiffPack {
-    param([int]$MaxChars = 80000)
+    param([int]$MaxChars = 24000)
     $ws = Get-PromptParleWorkspace
     if (-not $ws.exists) { throw 'No workspace attached.' }
     if (-not $ws.is_git) { throw 'Workspace is not a git repo.' }
     if (-not (Test-PromptParleCommandAvailable 'git')) { throw 'git not found on PATH' }
     $root = [string]$ws.path
     $parts = New-Object System.Collections.Generic.List[string]
-    $parts.Add("GIT DIFF PACK (local) — $root")
+    $parts.Add('DIFF')
     try {
         $status = & git -C $root status -sb 2>&1 | Out-String
-        $parts.Add("## status`n$status".TrimEnd())
+        if ($status.Trim()) { $parts.Add($status.Trim()) }
     } catch { }
     try {
-        $staged = & git -C $root diff --cached 2>&1 | Out-String
-        if ($staged.Trim()) { $parts.Add("## staged`n$staged".TrimEnd()) }
+        # Prefer stat + short patch
+        $stat = & git -C $root diff --stat HEAD 2>&1 | Out-String
+        if ($stat.Trim()) { $parts.Add($stat.Trim()) }
     } catch { }
     try {
-        $unstaged = & git -C $root diff 2>&1 | Out-String
-        if ($unstaged.Trim()) { $parts.Add("## unstaged`n$unstaged".TrimEnd()) }
+        $patch = & git -C $root diff --unified=2 HEAD 2>&1 | Out-String
+        if ($patch.Trim()) { $parts.Add($patch.Trim()) }
     } catch { }
-    $text = ($parts -join "`n`n")
+    $text = ($parts -join "`n")
     if ($text.Length -gt $MaxChars) {
-        $text = $text.Substring(0, $MaxChars) + "`n… [git_diff truncated locally]"
+        $text = $text.Substring(0, $MaxChars) + "`n…[diff]"
     }
     return $text
 }
@@ -1200,9 +1256,9 @@ function Invoke-PromptParleLocalTool {
 function Invoke-PromptParleAgentLocalPrep {
     <#
     .SYNOPSIS
-      Session local-first prep before AI spend. When Tools is ON (default), useful
-      tools run automatically — user does not have to force each tool.
-      Dial controls how aggressively code is thinned locally.
+      Brief-first local shrink before AI tokens (proprietary).
+      Doctrine: (1) mask (2) thin (3) hard budget (4) at most one small structure pack if empty.
+      Never pile tree+index+deps+diff — that grows tokens.
     #>
     [CmdletBinding()]
     param(
@@ -1216,18 +1272,15 @@ function Invoke-PromptParleAgentLocalPrep {
     if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
     $agent = Get-PromptParleAgent -Name $AgentId
     $notes = New-Object System.Collections.Generic.List[string]
-    $extra = New-Object System.Collections.Generic.List[string]
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
+    $charsIn = $ctx.Length + $pr.Length
 
     if (-not $ToolsEnabled) {
-        $notes.Add('tools: off (session) — raw context, dial only via gateway')
+        $notes.Add('tools off')
         return [pscustomobject]@{
-            prompt  = $pr
-            context = $ctx
-            notes   = @($notes.ToArray())
-            tools   = @()
-            agent   = if ($agent) { $agent.id } else { $AgentId }
+            prompt = $pr; context = $ctx; notes = @($notes.ToArray())
+            tools = @(); agent = if ($agent) { $agent.id } else { $AgentId }
             tools_enabled = $false
         }
     }
@@ -1237,119 +1290,89 @@ function Invoke-PromptParleAgentLocalPrep {
     $prof = $Profile
     if (-not $prof -and $agent) { $prof = [string]$agent.profile }
     if (-not $prof) { $prof = 'general' }
+    $budget = Get-PromptParleLocalContextBudget -Dial $Dial
+    $tools = @('secret_scan', 'code_brief')
 
-    # Session Tools ON → full auto set (agent tools are optional extras, not required)
-    $tools = @('secret_scan', 'code_brief', 'file_index', 'deps', 'git_diff', 'tree_pack', 'workspace', 'git', 'files')
-    if ($agent -and $agent.tools) {
-        foreach ($t in @($agent.tools)) {
-            if ($t -and ($tools -notcontains [string]$t)) { $tools += [string]$t }
-        }
-    }
-
-    # 1) Always mask secrets when Tools on
+    # 1) Mask secrets (always)
     $r1 = Invoke-PromptParleSecretScanLocal -Text $pr
     $r2 = Invoke-PromptParleSecretScanLocal -Text $ctx
     $pr = $r1.text
     $ctx = $r2.text
-    $m = $r1.masked + $r2.masked
-    if ($m -gt 0) { $notes.Add("secret_scan: masked ~$m candidates (local)") }
+    if (($r1.masked + $r2.masked) -gt 0) { $notes.Add("mask $($r1.masked + $r2.masked)") }
 
-    # 2) Code brief when context looks like code or is large — dial tightens max chars
-    $codeLike = $ctx -and (
-        $ctx -match '(function |class |def |import |package |using |#include|=>|\bconst\b|\blet\b|\bvar\b|\{)' -or
-        $ctx -match '===== FILE:' -or
-        $ctx.Length -gt 2500
-    )
-    if ($codeLike -and $ctx.Length -gt 300) {
-        $maxChars = switch ($Dial) {
-            1 { 160000 }
-            2 { 120000 }
-            3 { 90000 }
-            4 { 60000 }
-            5 { 40000 }
-            default { 90000 }
-        }
-        $br = Invoke-PromptParleCodeBriefLocal -Text $ctx -MaxChars $maxChars
+    # 2) Brief shrink — any non-trivial context
+    if ($ctx.Length -gt 200) {
+        $br = Invoke-PromptParleCodeBriefLocal -Text $ctx -MaxChars $budget -Dial $Dial
         $ctx = $br.text
-        foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n + " · dial $Dial") } }
+        foreach ($n in @($br.notes)) { if ($n) { $notes.Add([string]$n) } }
     }
 
-    # 3) Workspace-aware packs when useful (not forced by user)
+    # 3) At most ONE brief structure pack when context is empty/thin (not when already fat)
     $ws = $null
     try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
-    $blob = ("{0}`n{1}" -f $pr, $prof).ToLowerInvariant()
-    $thinCtx = $ctx.Length -lt 1800
-    $noAttach = $ctx.Length -lt 80
+    $blob = ("{0} {1}" -f $pr, $prof).ToLowerInvariant()
+    $extra = $null
 
-    if ($ws -and $ws.exists) {
-        # Structure: cheap tree when little context attached
-        if ($thinCtx -or $noAttach -or $blob -match 'structure|layout|where is|codebase|project|repo') {
-            try {
-                $depth = if ($Dial -ge 4) { '2' } else { '3' }
-                $tr = Invoke-PromptParleLocalTool -ToolId 'tree_pack' -Arg $depth
-                if ($tr.text -and $tr.text.Length -gt 20) {
-                    $extra.Add([string]$tr.text)
-                    $notes.Add("tree_pack: shallow tree (local, dial $Dial)")
-                }
-            } catch { }
+    if ($ws -and $ws.exists -and $ctx.Length -lt [Math]::Min(1200, [int]($budget * 0.15))) {
+        $wantDiff = $blob -match 'diff|change|pr\b|pull request|commit|patch|what changed'
+        $wantDeps = $blob -match 'dependenc|package\.json|npm|pip|upgrade|version'
+        $wantMap  = $blob -match 'structure|codebase|where is|file index|layout|tree'
+        try {
+            if ($wantDiff -and $ws.is_git) {
+                $extra = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(18000, [int]($budget * 0.55)))
+                if ($extra) { $notes.Add('diff'); $tools += 'git_diff' }
+            } elseif ($wantDeps) {
+                $extra = Get-PromptParleWorkspaceDepsMap -MaxChars 2800
+                if ($extra) { $notes.Add('deps'); $tools += 'deps' }
+            } elseif ($wantMap -or $ctx.Length -lt 40) {
+                # Prefer ultra-brief index over deep tree
+                $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
+                if ($extra) { $notes.Add('idx'); $tools += 'file_index' }
+            }
+        } catch { $extra = $null }
+        if ($extra) {
+            if ($ctx) { $ctx = $ctx + "`n`n" + $extra } else { $ctx = $extra }
         }
-
-        # File index when exploring / thin context / developer-ish profiles
-        if ($noAttach -or $thinCtx -or $blob -match 'file|codebase|repo|project|structure|find|where|index' -or $prof -match 'developer|security') {
+    } elseif ($ws -and $ws.exists -and $ws.is_git -and ($blob -match 'diff|pr\b|pull request|review changes|what changed')) {
+        # Review intent with existing attach: prefer diff over whole files if attach is huge
+        if ($ctx.Length -gt ($budget * 0.7)) {
             try {
-                $fi = Invoke-PromptParleLocalTool -ToolId 'file_index'
-                if ($fi.text) {
-                    $extra.Add([string]$fi.text)
-                    $notes.Add('file_index: workspace map (local)')
-                }
-            } catch { }
-        }
-
-        # Deps when dependencies matter or thin context on a code workspace
-        if ($blob -match 'dependenc|package\.json|npm|pip|module|import|require|version|upgrade' -or
-            ($thinCtx -and $prof -match 'developer|security')) {
-            try {
-                $dp = Invoke-PromptParleLocalTool -ToolId 'deps'
-                if ($dp.text -and $dp.text -notmatch 'no common dependency') {
-                    $extra.Add([string]$dp.text)
-                    $notes.Add('deps: manifests (local)')
-                }
-            } catch { }
-        }
-
-        # Git diff when reviewing changes — or auto if repo dirty and prompt is review-ish
-        $wantDiff = $blob -match 'diff|change|pr\b|pull request|review|commit|patch|what changed|delta'
-        if (-not $wantDiff -and $ws.is_git -and ($prof -match 'developer|security' -or $blob -match 'bug|fix|error')) {
-            $wantDiff = $true
-        }
-        if ($wantDiff -and $ws.is_git) {
-            try {
-                $gd = Invoke-PromptParleLocalTool -ToolId 'git_diff'
-                if ($gd.text -and $gd.text.Length -gt 40) {
-                    $extra.Add([string]$gd.text)
-                    $notes.Add('git_diff: local diff pack')
+                $gd = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(20000, $budget))
+                if ($gd -and $gd.Length -lt $ctx.Length) {
+                    $ctx = $gd
+                    $notes.Add('diff>files')
+                    $tools += 'git_diff'
                 }
             } catch { }
         }
     }
 
-    if ($extra.Count -gt 0) {
-        $block = ($extra -join "`n`n")
-        if ($ctx) { $ctx = $ctx + "`n`n" + $block } else { $ctx = $block }
+    # 4) Hard local budget (brief)
+    if ($ctx.Length -gt $budget) {
+        $ctx = $ctx.Substring(0, $budget) + "`n…[budget d$Dial]"
+        $notes.Add("cap $budget")
     }
 
-    if ($notes.Count -eq 0) {
-        $notes.Add('tools: on — no local packs needed this turn (secret_scan clean)')
+    $charsOut = $ctx.Length + $pr.Length
+    $saved = [Math]::Max(0, $charsIn - $charsOut)
+    if ($saved -gt 0) {
+        $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * $saved / $charsIn) } else { 0 }
+        $notes.Add("local −${pct}%")
+    } elseif ($notes.Count -eq 0) {
+        $notes.Add('brief ok')
     }
 
     return [pscustomobject]@{
         prompt        = $pr
         context       = $ctx
         notes         = @($notes.ToArray())
-        tools         = $tools
+        tools         = @($tools | Select-Object -Unique)
         agent         = if ($agent) { $agent.id } else { $AgentId }
         tools_enabled = $true
         dial          = $Dial
+        budget        = $budget
+        chars_in      = $charsIn
+        chars_out     = $charsOut
     }
 }
 
