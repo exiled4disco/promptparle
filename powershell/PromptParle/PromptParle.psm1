@@ -857,11 +857,14 @@ function Get-PromptParleSessionState {
         ssh_target        = ''
         ssh_port          = 22
         ssh_cwd           = ''
+        # 0.15: durable product bind (monorepo root + live deploy) — not per-turn keyword packs
+        product_root      = ''
+        product_live      = ''
     }
     if (Test-Path -LiteralPath $path) {
         try {
             $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd')) {
+            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd', 'product_root', 'product_live')) {
                 $v = Get-PromptParleProp $s $k
                 if ($null -ne $v -and "$v" -ne '') { $state[$k] = [string]$v }
             }
@@ -925,7 +928,9 @@ function New-PromptParleSessionSnapshot {
         $WorkspaceRecent = $null,
         [string]$SshTarget,
         $SshPort = $null,
-        [string]$SshCwd
+        [string]$SshCwd,
+        [string]$ProductRoot,
+        [string]$ProductLive
     )
     if (-not $Base) { $Base = Get-PromptParleSessionState }
     $recent = @()
@@ -962,6 +967,8 @@ function New-PromptParleSessionSnapshot {
         ssh_target       = if ($PSBoundParameters.ContainsKey('SshTarget')) { [string]$SshTarget } else { [string](Get-PromptParleProp $Base 'ssh_target' '') }
         ssh_port         = if ($null -ne $SshPort) { [int]$SshPort } else { [int](Get-PromptParleProp $Base 'ssh_port' 22) }
         ssh_cwd          = if ($PSBoundParameters.ContainsKey('SshCwd')) { [string]$SshCwd } else { [string](Get-PromptParleProp $Base 'ssh_cwd' '') }
+        product_root     = if ($PSBoundParameters.ContainsKey('ProductRoot')) { [string]$ProductRoot } else { [string](Get-PromptParleProp $Base 'product_root' '') }
+        product_live     = if ($PSBoundParameters.ContainsKey('ProductLive')) { [string]$ProductLive } else { [string](Get-PromptParleProp $Base 'product_live' '') }
     }
     return [pscustomobject]$out
 }
@@ -996,6 +1003,8 @@ function Save-PromptParleSessionState {
         ssh_target       = [string](Get-PromptParleProp $State 'ssh_target' '')
         ssh_port         = [int](Get-PromptParleProp $State 'ssh_port' 22)
         ssh_cwd          = [string](Get-PromptParleProp $State 'ssh_cwd' '')
+        product_root     = [string](Get-PromptParleProp $State 'product_root' '')
+        product_live     = [string](Get-PromptParleProp $State 'product_live' '')
         updated_at       = (Get-Date).ToString('o')
     }
     ($out | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
@@ -1132,24 +1141,130 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      Dense product system brief — static, cacheable via native role:system.
-      Same hard bans (homework / invent UI / false ship). Keep short.
-    .NOTES
-      0.14.12+: sent as separate `system` field (not baked into user prompt).
-      Providers that support prompt cache (Anthropic) mark this block cacheable.
+      0.15 architecture: normal AI assistant system brief (cacheable role:system).
+      Differentiator is token optimize + local evidence tags — not agent theater or ban lists.
     #>
-    # Keep short — paid via system role; cacheable. Order: role → answer → act → bans.
     return @(
-        'Hands-on eng partner (Grok Build / Claude Code energy) — continuous session, not ticket bot.',
-        'PromptParle already optimized this turn (dial). Trust tags as live evidence: [CONN][SSH][SSH-PRODUCT][WEB][MEM][ATTACH] + images.',
-        '[MEM]=auto-compact session memory (known). Never ask user to re-paste, summarize, or compact chat.',
-        'HANDOFF is a MAP not the codebase. Who/where table: Dev path=/home/ubuntu/projects/promptparle (portal+desktop monorepo), Live web root=/var/www/promptparle/public, Live app=/var/www/promptparle. SSH cwd ExampleCorp-Mapping only holds HANDOFF mirrors.',
-        'MATCH THE ASK: question / where is / is it in X → ANSWER plain prose first (path/fact). Portal/settings/API/CIDR work → use [SSH-PRODUCT] portal pack + monorepo paths; implement there.',
-        'BAN false blocker: "handoff has no portal/settings/login/API" — wrong. Handoff points at the monorepo; code is under Dev path (src/app, prisma, api). Missing = PP_PATH_MISSING in pack, not "handoff is desktop only".',
-        'BAN empty posture: Ready/Name it and I ship/spine locked/Handoff read with no answer.',
-        'BAN: numbered user homework / invent UI (local-ui=vanilla HTML) / false shipped claims.',
-        'Feature named → implement from monorepo evidence and ship. Tools ON ⇒ prep ran — act on [SSH-PRODUCT].'
+        'You are a capable engineering assistant in a continuous chat (same feel as Grok Build / Claude / Cursor).',
+        'PromptParle already optimized this turn for fewer tokens (dial). Tags are live evidence from the user machine: [PROJECT][CONN][SSH][MEM][ATTACH][WEB] + images — trust them.',
+        '[PROJECT] is the product bind (source root + live deploy). Handoff/docs are maps that point at those roots — not the whole codebase.',
+        '[MEM] is auto-compacted session memory; treat as known. Never ask the user to re-paste or summarize chat.',
+        'Behave like a normal AI client: answer questions directly; implement when asked; explore evidence before claiming something is missing.',
+        'Do not invent files/UI/stacks not in evidence. Do not claim committed/pushed/shipped without evidence. Do not assign homework when you can act from tools/evidence.',
+        'local-ui is vanilla HTML/CSS/JS when that path is in evidence. Prefer short clear answers over status theater.'
     ) -join ' '
+}
+
+function Get-PromptParleTurnKind {
+    <#
+    .SYNOPSIS
+      Coarse turn kind for prep depth — not a persona/agent.
+      question | implement | chat
+    #>
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    if (-not $p) { return 'chat' }
+    if ($p -match '(?i)\b(implement|build|ship|fix|add|create|patch|change|rename|bump|deploy|wire|refactor|apply)\b') {
+        return 'implement'
+    }
+    if ($p -match '(?i)^\s*(where|what|why|how|when|who|which|is |are |can |does |do |did |should |could |would |read |show |explain |list |find )\b' `
+        -or $p -match '\?\s*$' `
+        -or $p -match '(?i)\b(where is|is it in|in the handoff|look at the handoff|what does|tell me)\b') {
+        return 'question'
+    }
+    return 'chat'
+}
+
+function Resolve-PromptParleProductBind {
+    <#
+    .SYNOPSIS
+      Durable product roots for this session. Prefer saved bind; else infer from SSH/workspace.
+      Mapping handoff cwd is NOT product root — monorepo is.
+    #>
+    [CmdletBinding()]
+    param()
+    $defaultRoot = '/home/ubuntu/projects/promptparle'
+    $defaultLive = '/var/www/promptparle'
+    $root = ''
+    $live = ''
+    $src = 'default'
+    try {
+        $st = Get-PromptParleSessionState
+        $root = [string](Get-PromptParleProp $st 'product_root' '')
+        $live = [string](Get-PromptParleProp $st 'product_live' '')
+        if ($root) { $src = 'session' }
+        $sshCwd = [string](Get-PromptParleProp $st 'ssh_cwd' '')
+        $wsPath = [string](Get-PromptParleProp $st 'workspace_path' '')
+        if (-not $root) {
+            if ($sshCwd -match '(?i)/promptparle/?$') {
+                $root = $sshCwd.TrimEnd('/\')
+                $src = 'ssh_cwd'
+            } elseif ($sshCwd -match '(?i)ExampleCorp-Mapping') {
+                # Handoff mirror only — bind monorepo
+                $root = $defaultRoot
+                $src = 'handoff_mirror→monorepo'
+            } elseif ($wsPath -match '(?i)promptparle') {
+                $root = $wsPath
+                $src = 'workspace'
+            } elseif ([string](Get-PromptParleProp $st 'ssh_target' '')) {
+                # SSH up, no better signal — product host default
+                $root = $defaultRoot
+                $src = 'ssh_host_default'
+            }
+        }
+        if (-not $live) {
+            if ($root -eq $defaultRoot -or $root -match '(?i)/promptparle') {
+                $live = $defaultLive
+            }
+        }
+    } catch {
+        $root = $defaultRoot
+        $live = $defaultLive
+        $src = 'fallback'
+    }
+    if (-not $root) { $root = $defaultRoot; if ($src -eq 'default') { $src = 'product_default' } }
+    if (-not $live) { $live = $defaultLive }
+    # Persist bind so next turns don't re-infer from bad cwd
+    try {
+        $st2 = Get-PromptParleSessionState
+        $needSave = $false
+        if (-not [string](Get-PromptParleProp $st2 'product_root' '')) {
+            $st2 = New-PromptParleSessionSnapshot -Base $st2 -ProductRoot $root -ProductLive $live
+            $needSave = $true
+        } elseif (-not [string](Get-PromptParleProp $st2 'product_live' '')) {
+            $st2 = New-PromptParleSessionSnapshot -Base $st2 -ProductLive $live
+            $needSave = $true
+        }
+        if ($needSave) { Save-PromptParleSessionState -State $st2 }
+    } catch { }
+    return [pscustomobject]@{
+        root   = $root
+        live   = $live
+        public = ($live.TrimEnd('/\') + '/public')
+        source = $src
+    }
+}
+
+function Get-PromptParleProjectCard {
+    <#
+    .SYNOPSIS
+      Always-on tiny project map (~150-250 tokens). Architecture layer — not a one-off pack.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$TurnKind = 'chat'
+    )
+    $b = Resolve-PromptParleProductBind
+    $lines = @(
+        '[PROJECT] product bind (always — handoff/docs are maps into these roots)',
+        "source_root: $($b.root)",
+        "live_app: $($b.live)",
+        "live_public: $($b.public)",
+        'layout: portal=src/app + prisma + src/lib · desktop=powershell/PromptParle (+ local-ui) · ship=public/ + live_public',
+        "bind: $($b.source) · turn: $TurnKind",
+        'rule: answer from [PROJECT]/evidence; implement under source_root; deploy to live_*; do not claim portal missing because only a handoff mirror was in SSH cwd'
+    )
+    return ($lines -join "`n")
 }
 
 function Get-PromptParleChatFraming {
@@ -1165,7 +1280,7 @@ function Get-PromptParleChatFraming {
     )
     $sys = Get-PromptParleChatSystemPrompt
     $rt = if ($RuntimeNote) { $RuntimeNote.Trim() } else {
-        'Prep may have injected [CONN][SSH][MEM]. Answer the user ask first; ship only when they named work. No status theater.'
+        'Evidence tags may include [PROJECT][CONN][SSH][MEM]. Be a normal assistant: answer or implement from evidence.'
     }
     return [pscustomobject]@{
         System  = $sys
@@ -2804,183 +2919,148 @@ function Get-PromptParleSshPathCandidatesFromPrompt {
 }
 
 function Test-PromptParleProductWorkIntent {
-    <# True when the user is asking for product/engineering work (not small talk). #>
+    <# True when engineering/product context may need live evidence (broad — deep fetch is turn-kind gated). #>
     param([string]$Prompt = '')
     $p = if ($null -eq $Prompt) { '' } else { $Prompt }
     if (-not $p.Trim()) { return $false }
-    return [bool]($p -match '(?i)\b(implement|rename|build|ship|version|bump|update client|tarball|git push|local-ui|history label|chat history|fix|bug|feature|ui change|dial|compress|fleet|handoff|promptparle|desktop|moduleversion|release|activity log|sidebar|footer|logging|paste|attachment|image|screenshot|submit|clear after|why aren.?t you|did you|apply|patch|index\.html|portal|web\s*root|/var/www|settings|api\s*key|cidr|allowlist|ip.?restrict|network security|login|auth|next\.js|webserver|web server)\b')
-}
-
-function Test-PromptParlePortalWorkIntent {
-    <# True when ask targets portal / Next app / settings / API security — not only desktop UI. #>
-    param([string]$Prompt = '')
-    $p = if ($null -eq $Prompt) { '' } else { $Prompt }
-    if (-not $p.Trim()) { return $false }
-    return [bool]($p -match '(?i)\b(portal|web\s*root|/var/www|settings\s*page|user accounts?|login|register|api\s*key|cidr|allowlist|ip.?restrict|network security|auth middleware|next\.js|src/app|webserver|web server|promptparle\.com/app)\b')
+    # Almost any non-trivial turn with SSH up benefits from product bind status; exclude pure small talk
+    if ($p.Trim().Length -lt 8) { return $false }
+    if ($p -match '(?is)^(hi|hello|hey|thanks|thank you|ok|okay|sure|got it|k|cool|nice)[.!\s]*$') { return $false }
+    return $true
 }
 
 function Get-PromptParleSshProductWorkPack {
     <#
     .SYNOPSIS
-      When SSH is up and the user asks for product work, auto-run remote status
-      and pull key files so the model does not assign the user "run git and paste".
+      0.15 architecture: evidence by product bind + turn kind — not keyword mole packs.
+      Always (SSH): live status under product_root + capability index.
+      Deep UI/portal snips only on implement (or explicit code-path ask).
     #>
     [CmdletBinding()]
     param(
         [string]$Prompt = '',
-        [int]$MaxChars = 14000
+        [int]$MaxChars = 14000,
+        [string]$TurnKind = 'chat'
     )
     $empty = [pscustomobject]@{ text = ''; notes = @(); ok = $false }
-    if (-not (Test-PromptParleProductWorkIntent -Prompt $Prompt)) { return $empty }
     $ws = $null
     try { $ws = Get-PromptParleWorkspace } catch { return $empty }
     $target = [string](Get-PromptParleProp $ws 'ssh_target' '')
     if (-not $target) { return $empty }
 
+    $bind = Resolve-PromptParleProductBind
+    $pp = [string]$bind.root
+    $live = [string]$bind.live
+    if (-not $TurnKind) { $TurnKind = Get-PromptParleTurnKind -Prompt $Prompt }
+
     $notes = New-Object System.Collections.Generic.List[string]
     $parts = New-Object System.Collections.Generic.List[string]
     $used = 0
 
-    # Canonical PromptParle tree on this host (sibling of common SSH cwd)
-    $remoteCmd = @'
+    $ppQ = $pp -replace "'", "'\''"
+    $liveQ = $live -replace "'", "'\''"
+
+    $remoteCmd = @"
 set +e
-PP=/home/ubuntu/projects/promptparle
-echo "=== PP_HOST $(hostname) ==="
-echo "=== PP_PATH $PP ==="
-if [ -d "$PP" ]; then
-  cd "$PP" || exit 0
+PP='$ppQ'
+LIVE='$liveQ'
+echo "=== PP_HOST `$(hostname) ==="
+echo "=== PP_PATH `$PP ==="
+echo "=== LIVE `$LIVE ==="
+echo "=== TURN $TurnKind ==="
+if [ -d "`$PP" ]; then
+  cd "`$PP" || exit 0
   echo "=== GIT_STATUS ==="
-  git status -sb 2>/dev/null | head -40
+  git status -sb 2>/dev/null | head -20
   echo "=== GIT_LOG ==="
   git log -5 --oneline 2>/dev/null
   echo "=== VERSION ==="
   grep -E "ModuleVersion" powershell/PromptParle/PromptParle.psd1 2>/dev/null | head -3
-  echo "=== KEY_FILES ==="
-  ls -la powershell/PromptParle/PromptParle.psd1 powershell/PromptParle/local-ui/index.html HANDOFF.md 2>/dev/null
+  echo "=== CAPABILITY_INDEX ==="
+  echo "portal:"; find src/app -maxdepth 3 -type d 2>/dev/null | head -40
+  echo "desktop:"; ls powershell/PromptParle/local-ui/index.html powershell/PromptParle/PromptParle.psm1 HANDOFF.md 2>/dev/null
+  echo "api:"; ls src/app/api 2>/dev/null | head -20
+  echo "lib:"; ls src/lib 2>/dev/null | head -25
+  echo "prisma:"; ls prisma 2>/dev/null | head -10
 else
   echo "PP_PATH_MISSING"
-  pwd
-  ls -la 2>/dev/null | head -20
 fi
-'@
+if [ -d "`$LIVE" ]; then
+  echo "=== LIVE_OK ==="
+  cat "`$LIVE/public/version.txt" 2>/dev/null
+else
+  echo "LIVE_PATH_MISSING"
+fi
+"@
     try {
-        # Skip session cwd so we can hit absolute PP path regardless of ExampleCorp-Mapping cwd
         $r = Invoke-PromptParleSsh -RemoteCommand $remoteCmd -TimeoutSec 35 -SkipSessionCwd
         $body = [string]$r.text
         if ($body -and $body.Trim()) {
             $room = [Math]::Max(400, $MaxChars - $used - 80)
-            if ($body.Length -gt $room) { $body = $body.Substring(0, $room) + "`n…[ssh product pack truncated]" }
-            $parts.Add("[SSH-PRODUCT] Live remote status (auto — user was NOT asked to run this)`n$body")
+            if ($body.Length -gt $room) { $body = $body.Substring(0, $room) + "`n…[product evidence truncated]" }
+            $parts.Add("[SSH] Live product status under bind (auto)`n$body")
             $used += $body.Length
-            $notes.Add('ssh-product')
+            $notes.Add('product-bind')
         }
     } catch {
-        $notes.Add('ssh-product-skip')
+        $notes.Add('product-bind-skip')
         return [pscustomobject]@{ text = ''; notes = @($notes.ToArray()); ok = $false }
     }
 
-    # Pull high-value regions for desktop UI / product asks (never invent Tailwind)
-    $wantUi = $Prompt -match '(?i)rename|history|label|local-ui|ui|chat title|sidebar|activity log|footer|logging|paste|attachment|image|submit|composer|clear after|index\.html|update button|up to date'
-    $wantPortal = Test-PromptParlePortalWorkIntent -Prompt $Prompt
-    if ($wantUi) {
-        # index.html is large — fetch the REAL regions that match the ask (vanilla HTML, not Tailwind)
-        $uiCmd = @'
-set +e
-PP=/home/ubuntu/projects/promptparle
-f="$PP/powershell/PromptParle/local-ui/index.html"
-echo "=== DOCTRINE: local-ui is vanilla HTML/CSS/JS — NO Tailwind, NO React ==="
-if [ -f "$f" ]; then
-  echo "=== FILE local-ui/index.html (key line index) ==="
-  grep -n "side-foot-stack\|sideActivityLog\|side-legal\|side-activity\|menuActivityLog\|form.addEventListener\|clearComposer\|buildContextFromAttachments\|buildImagesPayload\|attachments = \|updateBtn\|Up to date\|function runUpdate\|function checkVersion\|function setUpdateButtonState\|hist-\|chatTitle\|renderHistoryList" "$f" 2>/dev/null | head -60
-  echo "=== SNIP side-foot + activity log CSS/HTML ==="
-  grep -n "side-foot-stack\|side-activity\|side-legal\|sideActivityLog\|menuActivityLog" "$f" 2>/dev/null | head -30
-  # CSS block for side activity (approx lines 88-180)
-  sed -n '88,180p' "$f" 2>/dev/null | head -c 4000
-  echo "=== SNIP side-foot HTML ==="
-  sed -n '1370,1400p' "$f" 2>/dev/null | head -c 3000
-  echo "=== SNIP submit + attach clear (composer) ==="
-  grep -n "clearComposerAttachments\|buildContextFromAttachments\|form.addEventListener('submit'\|attachments = \[\]\|buildImagesPayload\|ATTACH" "$f" 2>/dev/null | head -40
-  # Last ~200 lines often hold submit handler
-  tail -n 220 "$f" 2>/dev/null | head -c 10000
-fi
-echo "=== VERSION ==="
-grep -E "ModuleVersion" "$PP/powershell/PromptParle/PromptParle.psd1" 2>/dev/null | head -3
-ps1="$PP/powershell/PromptParle/PromptParle.psm1"
-if [ -f "$ps1" ]; then
-  echo "=== Get-PromptParleChatSystemPrompt ==="
-  sed -n '/function Get-PromptParleChatSystemPrompt/,/^function /p' "$ps1" 2>/dev/null | head -50
-fi
-echo "=== HANDOFF head ==="
-head -n 55 "$PP/HANDOFF.md" 2>/dev/null
-'@
-        try {
-            $ru = Invoke-PromptParleSsh -RemoteCommand $uiCmd -TimeoutSec 45 -SkipSessionCwd
-            $ub = [string]$ru.text
-            if ($ub -and $ub.Trim().Length -gt 40) {
-                $room = [Math]::Max(400, $MaxChars - $used - 80)
-                if ($ub.Length -gt $room) { $ub = $ub.Substring(0, $room) + "`n…[truncated]" }
-                $parts.Add("[SSH-PRODUCT] Code evidence (auto — REAL local-ui is vanilla; do NOT invent Tailwind)`n$ub")
-                $used += $ub.Length
-                $notes.Add('ssh-product-code')
-            }
-        } catch {
-            $notes.Add('ssh-product-code-skip')
-        }
-    }
+    $deep = ($TurnKind -eq 'implement') -or ($Prompt -match '(?i)\b(show code|open |read file|in local-ui|in src/|settings form|v1-auth)\b')
+    if ($deep) {
+        $wantUi = $Prompt -match '(?i)local-ui|index\.html|composer|activity log|sidebar|attachment|paste|update button|chat title|history'
+        $wantPortal = $Prompt -match '(?i)portal|settings|api|cidr|allowlist|auth|login|register|prisma|src/app|/var/www|ip.?restrict|network security'
+        if (-not $wantUi -and -not $wantPortal) { $wantPortal = $true; $wantUi = $true }
 
-    # Portal / settings / API / IP allowlist — pull REAL Next.js tree (not the Mapping handoff mirror)
-    if ($wantPortal) {
-        $portalCmd = @'
+        if ($wantUi) {
+            $uiCmd = @"
 set +e
-PP=/home/ubuntu/projects/promptparle
-LIVE=/var/www/promptparle
-echo "=== DOCTRINE: HANDOFF is a MAP not the product tree ==="
-echo "Dev path (source of truth): $PP"
-echo "Live Next app: $LIVE"
-echo "Live static/nginx public: $LIVE/public"
-echo "SSH cwd may be ExampleCorp-Mapping (handoff MIRROR only) — NEVER claim portal missing because only HANDOFF.md was fetched."
-if [ -d "$PP" ]; then
-  echo "=== PP tree (top) ==="
-  ls -la "$PP" 2>/dev/null | head -25
-  echo "=== src/app (portal routes) ==="
-  find "$PP/src/app" -maxdepth 3 -type d 2>/dev/null | head -60
-  echo "=== settings / auth / api-keys / v1 ==="
-  ls -la "$PP/src/app/app/settings" "$PP/src/app/api/settings" "$PP/src/app/api/auth" "$PP/src/app/api/api-keys" "$PP/src/app/api/v1" 2>/dev/null
-  echo "=== prisma models (users/settings) ==="
-  grep -n "model User\|model Session\|model ApiKey\|model Provider" "$PP/prisma/schema.prisma" 2>/dev/null | head -40
-  echo "=== SettingsForm / settings route heads ==="
-  head -n 80 "$PP/src/app/app/settings/page.tsx" 2>/dev/null
-  head -n 100 "$PP/src/app/app/settings/SettingsForm.tsx" 2>/dev/null
-  head -n 80 "$PP/src/app/api/settings/route.ts" 2>/dev/null
-  echo "=== v1 auth gate (API key path) ==="
-  head -n 80 "$PP/src/lib/v1-auth.ts" 2>/dev/null
-  ls -la "$PP/src/lib/v1-auth.ts" "$PP/src/lib/auth.ts" 2>/dev/null
-  echo "=== HANDOFF Who/where (paths only) ==="
-  sed -n '15,40p' "$PP/HANDOFF.md" 2>/dev/null
-else
-  echo "PP_PATH_MISSING — cannot implement portal without $PP"
+PP='$ppQ'
+f="`$PP/powershell/PromptParle/local-ui/index.html"
+echo "=== local-ui vanilla HTML (no invent Tailwind) ==="
+if [ -f "`$f" ]; then
+  grep -n "sideActivityLog\|clearComposer\|form.addEventListener\|menuBtn\|updateBtn\|function addMsg" "`$f" 2>/dev/null | head -40
+  tail -n 120 "`$f" 2>/dev/null | head -c 6000
 fi
-if [ -d "$LIVE" ]; then
-  echo "=== LIVE app present ==="
-  ls -la "$LIVE" 2>/dev/null | head -15
-  ls -la "$LIVE/public/version.txt" "$LIVE/public/PromptParle.psd1" 2>/dev/null
-  cat "$LIVE/public/version.txt" 2>/dev/null
-else
-  echo "LIVE_PATH_MISSING $LIVE"
-fi
-'@
-        try {
-            $rp = Invoke-PromptParleSsh -RemoteCommand $portalCmd -TimeoutSec 45 -SkipSessionCwd
-            $pb = [string]$rp.text
-            if ($pb -and $pb.Trim().Length -gt 40) {
-                $room = [Math]::Max(400, $MaxChars - $used - 80)
-                if ($pb.Length -gt $room) { $pb = $pb.Substring(0, $room) + "`n…[portal pack truncated]" }
-                $parts.Add("[SSH-PRODUCT] Portal evidence (auto — monorepo at /home/ubuntu/projects/promptparle; handoff is MAP only)`n$pb")
-                $used += $pb.Length
-                $notes.Add('ssh-product-portal')
-            }
-        } catch {
-            $notes.Add('ssh-product-portal-skip')
+"@
+            try {
+                $ru = Invoke-PromptParleSsh -RemoteCommand $uiCmd -TimeoutSec 40 -SkipSessionCwd
+                $ub = [string]$ru.text
+                if ($ub -and $ub.Trim().Length -gt 40) {
+                    $room = [Math]::Max(400, $MaxChars - $used - 80)
+                    if ($ub.Length -gt $room) { $ub = $ub.Substring(0, $room) + "`n…[truncated]" }
+                    $parts.Add("[SSH] Desktop UI evidence`n$ub")
+                    $used += $ub.Length
+                    $notes.Add('product-ui')
+                }
+            } catch { $notes.Add('product-ui-skip') }
+        }
+        if ($wantPortal) {
+            $portalCmd = @"
+set +e
+PP='$ppQ'
+LIVE='$liveQ'
+echo "=== portal monorepo evidence ==="
+ls -la "`$PP/src/app/app/settings" "`$PP/src/app/api/settings" "`$PP/src/app/api/auth" "`$PP/src/app/api/v1" 2>/dev/null
+grep -n "model User\|model Session\|model ApiKey" "`$PP/prisma/schema.prisma" 2>/dev/null | head -20
+head -n 60 "`$PP/src/app/app/settings/page.tsx" 2>/dev/null
+head -n 80 "`$PP/src/app/app/settings/SettingsForm.tsx" 2>/dev/null
+head -n 60 "`$PP/src/app/api/settings/route.ts" 2>/dev/null
+head -n 60 "`$PP/src/lib/v1-auth.ts" 2>/dev/null
+ls -la "`$LIVE" 2>/dev/null | head -12
+"@
+            try {
+                $rp = Invoke-PromptParleSsh -RemoteCommand $portalCmd -TimeoutSec 40 -SkipSessionCwd
+                $pb = [string]$rp.text
+                if ($pb -and $pb.Trim().Length -gt 40) {
+                    $room = [Math]::Max(400, $MaxChars - $used - 80)
+                    if ($pb.Length -gt $room) { $pb = $pb.Substring(0, $room) + "`n…[truncated]" }
+                    $parts.Add("[SSH] Portal evidence`n$pb")
+                    $used += $pb.Length
+                    $notes.Add('product-portal')
+                }
+            } catch { $notes.Add('product-portal-skip') }
         }
     }
 
@@ -3153,6 +3233,11 @@ function Invoke-PromptParleAgentLocalPrep {
     }
     $tools = New-Object System.Collections.Generic.List[string]
 
+    # Turn kind drives prep depth (architecture — not a persona)
+    $turnKind = 'chat'
+    try { $turnKind = Get-PromptParleTurnKind -Prompt $pr } catch { $turnKind = 'chat' }
+    $notes.Add("turn:$turnKind")
+
     # 0) Always inject Project Connections brief (tiny; model knows PC/Git/SSH)
     try {
         $connMax = 520
@@ -3171,7 +3256,25 @@ function Invoke-PromptParleAgentLocalPrep {
         $notes.Add('conn-skip')
     }
 
-    # 0b) Continuous chat memory — auto-compact every turn (no user manual compaction)
+    # 0a) Always-on [PROJECT] bind card — structural map (not keyword pack)
+    try {
+        $projCard = Get-PromptParleProjectCard -TurnKind $turnKind
+        if ($projCard -and $ctx -notmatch '(?m)^\[PROJECT\]') {
+            if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+                $ctx = $Matches[1] + "`n`n" + $projCard + "`n`n" + $Matches[2]
+            } elseif ($ctx) {
+                $ctx = $projCard + "`n`n" + $ctx
+            } else {
+                $ctx = $projCard
+            }
+            $notes.Add('project-card')
+            $tools.Add('project_bind')
+        }
+    } catch {
+        $notes.Add('project-card-skip')
+    }
+
+    # 0b) Continuous chat memory — auto-compact every turn (facts over theater)
     try {
         $memMax = 2800
         if ($Dial -le 2) { $memMax = 4200 }
@@ -3179,22 +3282,23 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($Dial -ge 4) { $memMax = 1800 }
         if ($Dial -ge 5) { $memMax = 1400 }
         $mem = $null
-        # Topic-shift: if this turn is not a security ask, compress prior security-corridor rants in memory
         $histForMem = $History
         $histTextForMem = $HistoryText
+        # Always sanitize assistant theater / false blockers so [MEM] does not re-teach lies
         try {
-            $turnIntent = Get-PromptParlePromptIntent -Prompt $pr
-            if ($turnIntent -ne 'security' -and $History -and $History.Count -gt 0) {
+            if ($History -and $History.Count -gt 0) {
                 $filtered = New-Object System.Collections.Generic.List[object]
                 foreach ($h in @($History)) {
                     $hr = [string](Get-PromptParleProp $h 'role' 'user')
                     $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
-                    if ($hr -match '(?i)assistant|bot|ai' -and $ht -match '(?i)do not build|ExecutionPolicy Bypass|ship.?blocker|blocked until|until that change is made') {
-                        $ht = '[prior security note compressed — not a work stoppage for other topics]'
-                    }
-                    # Compress false "no portal in handoff" rants — they poison later turns
-                    if ($hr -match '(?i)assistant|bot|ai' -and $ht -match '(?i)contain no portal|no portal backend|only the PromptParle desktop|no server-side components|cannot be implemented from the current handoff') {
-                        $ht = '[prior false blocker compressed — portal monorepo is /home/ubuntu/projects/promptparle; handoff is a path map only]'
+                    if ($hr -match '(?i)assistant|bot|ai') {
+                        if ($ht -match '(?i)Ready for the named addition|Name it and I ship|spine locked|Handoff read\.') {
+                            $ht = '[prior status theater omitted]'
+                        } elseif ($ht -match '(?i)contain no portal|no portal backend|only the PromptParle desktop|no server-side components|cannot be implemented from the current handoff|no matching paths or code in the evidence') {
+                            $ht = '[prior false missing-product claim omitted — use [PROJECT] bind]'
+                        } elseif ($ht -match '(?i)do not build|ExecutionPolicy Bypass|ship.?blocker|blocked until|until that change is made') {
+                            $ht = '[prior security note compressed]'
+                        }
                     }
                     $filtered.Add([pscustomobject]@{ role = $hr; text = $ht })
                 }
@@ -3208,9 +3312,9 @@ function Invoke-PromptParleAgentLocalPrep {
         }
         if ($mem -and $mem.text) {
             if ($ctx -notmatch '(?m)^\[MEM\]') {
-                # Place memory after CONN, before bulky attaches
-                if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
-                    $ctx = $Matches[1] + "`n`n" + $mem.text + "`n`n" + $Matches[2]
+                # Place memory after CONN/PROJECT, before bulky attaches
+                if ($ctx -match '(?s)^((?:\[(?:CONN|PROJECT)\][^\n]*(?:\n(?!\[)[^\n]*)*\n\n?)+)(.*)$') {
+                    $ctx = $Matches[1] + $mem.text + "`n`n" + $Matches[2]
                 } else {
                     $ctx = $mem.text + "`n`n" + $ctx
                 }
@@ -3250,8 +3354,8 @@ function Invoke-PromptParleAgentLocalPrep {
     if ($ctx.Length -gt 200) {
         $headKeep = ''
         $restCtx = $ctx
-        # Peel protected headers (CONN + MEM)
-        while ($restCtx -match '(?s)^(\[(?:CONN|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+        # Peel protected headers (CONN + PROJECT + MEM) — never densify the bind map away
+        while ($restCtx -match '(?s)^(\[(?:CONN|PROJECT|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
             if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
             else { $headKeep = $Matches[1] }
             $restCtx = $Matches[2]
@@ -3297,17 +3401,22 @@ function Invoke-PromptParleAgentLocalPrep {
         $notes.Add('ssh-fetch-skip')
     }
 
-    # 2.6) Product-work pack — auto remote status/code so model never assigns user "run git & paste"
+    # 2.6) Product bind live evidence — always when SSH up (depth by turn kind, not keyword moles)
     try {
         if (Test-PromptParleProductWorkIntent -Prompt $pr) {
-            $prodMax = [Math]::Min(16000, [int]($budget * 0.42))
-            if ($Dial -le 2) { $prodMax = [Math]::Min(20000, $prodMax + 4000) }
-            $prod = Get-PromptParleSshProductWorkPack -Prompt $pr -MaxChars $prodMax
+            $prodMax = [Math]::Min(12000, [int]($budget * 0.38))
+            if ($turnKind -eq 'implement') {
+                $prodMax = [Math]::Min(18000, [int]($budget * 0.48))
+            } elseif ($turnKind -eq 'question') {
+                $prodMax = [Math]::Min(8000, [int]($budget * 0.28))
+            }
+            if ($Dial -le 2) { $prodMax = [Math]::Min(20000, $prodMax + 3000) }
+            $prod = Get-PromptParleSshProductWorkPack -Prompt $pr -MaxChars $prodMax -TurnKind $turnKind
             if ($prod -and $prod.ok -and $prod.text) {
                 if ($ctx) { $ctx = $ctx + "`n`n" + $prod.text } else { $ctx = [string]$prod.text }
                 foreach ($pn in @($prod.notes)) { if ($pn) { $notes.Add([string]$pn) } }
                 $tools.Add('ssh')
-                $tools.Add('product_work')
+                $tools.Add('product_bind')
             }
         }
     } catch {
@@ -7970,7 +8079,7 @@ function Start-PromptParleLocalServer {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
-                        $rtNote = 'Prep ran. Evidence may include [CONN][SSH][SSH-PRODUCT][MEM][ATTACH]+images. Answer the ask first (facts/paths from evidence). Ship only if they named implement work. No "ready/name it/spine locked" theater; no homework; no invent UI; no false ship.'
+                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][ATTACH]. Normal assistant: answer questions; implement when asked; use product bind roots; no invent/false ship/homework.'
                         if ($localNotes -and $localNotes.Count -gt 0) {
                             $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
                         }
@@ -8314,7 +8423,7 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliRt = 'Prep ran. Answer ask first from [CONN][SSH][SSH-PRODUCT][ATTACH]. Ship only if implement named. No ready-theater; no homework/invent UI/false ship.'
+            $cliRt = 'Prep ran. [PROJECT][CONN][SSH][ATTACH] when present. Normal assistant: answer or implement from evidence.'
             $cliFrame = Get-PromptParleChatFraming -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = [string]$cliFrame.Prompt
