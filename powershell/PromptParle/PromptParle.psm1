@@ -1173,7 +1173,8 @@ function Get-PromptParleChatSystemPrompt {
         'PLAN: for non-trivial mutate, brief plan + blast radius in few lines; on clear go-ahead implement same turn. Tags CONN PROJECT SSH MEM ATTACH WEB OBSERVE HANDS GROUNDING PROVENANCE are live evidence — trust them over memory invention.',
         'GROUNDING 0.20: When [OBSERVE]/[WEB]/[GROUNDING] present, state ONLY facts supported by that text. Never invent capabilities (e.g. honeypots) not in the fetch.',
         'PROVENANCE 0.20: When [PROVENANCE] is present, you MUST report client YES/NO facts: on-source or not, and if prior assistant invented the claim say so explicitly. Never answer only "nowhere" without saying where the phrase entered the chat.',
-        'Opaque outcomes are bugs: hands result, apply/run/file, provenance facts, or one hard blocker.'
+        'QUALITY GATE 0.21: Client post-pass scores claims against evidence and may strike unverified product terms. Prefer source-backed wording so the gate stays clean.',
+        'Opaque outcomes are bugs: hands result, apply/run/file, provenance facts, quality score, or one hard blocker.'
     ) -join ' '
 }
 
@@ -3533,7 +3534,7 @@ function Invoke-PromptParleAgentTurn {
         tokens_sum_original  = $sumOrig
         tokens_sum_optimized = $sumOpt
         token_first          = $true
-        architecture         = '0.20-brain-hands-grounded'
+        architecture         = '0.21-brain-hands-quality'
         has_evidence_spine   = [bool]$evidenceSpine
     }
 
@@ -4773,6 +4774,333 @@ function Invoke-PromptParleProvenancePostPass {
         applied = $true
         reason  = 'fail-closed'
     }
+}
+
+# =============================================================================
+# 0.21 — Quality gate (BS detector + corrector, 0 extra AI tokens)
+# Extract checkable claims → match evidence → score → flag/correct.
+# =============================================================================
+
+function Remove-PromptParleClientAuditSections {
+    <# Strip prior client audit banners so re-gates don't score their own text. #>
+    param([string]$Text = '')
+    if (-not $Text) { return '' }
+    $t = [string]$Text
+    # Drop from first client audit heading to end (provenance/grounding/quality)
+    $t = [regex]::Replace($t, '(?ms)\r?\n---\r?\n## (?:Grounding|Provenance|Quality gate)\b[\s\S]*$', '')
+    $t = [regex]::Replace($t, '(?ms)^\s*## (?:Grounding|Provenance|Quality gate)\b[\s\S]*$', '')
+    return $t.TrimEnd()
+}
+
+function Get-PromptParleCheckableClaims {
+    <#
+    .SYNOPSIS
+      Extract 3–8 factual claims from a model reply for evidence matching.
+      Prefers product/site assertions; skips meta/chat/filler.
+    #>
+    param(
+        [string]$Response = '',
+        [int]$MaxClaims = 8
+    )
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    if (-not $Response) { return @() }
+    $body = Remove-PromptParleClientAuditSections -Text $Response
+    # Drop fenced code (apply/file/run/hands) — not product claims
+    $body = [regex]::Replace($body, '(?ms)```[\s\S]*?```', ' ')
+    $body = [regex]::Replace($body, '(?m)^\s{0,3}#{1,6}\s+.*$', ' ')
+    $body = [regex]::Replace($body, '(?m)^\s*[-*+]\s+', '')
+
+    $priorityRx = '(?i)\b(honeypot|decoy|zero-?day|patent|certified|certification|guaranteed|distributed|firewall|ransomware|ai-powered|machine learning|compliance|nist|fips|ot\b|scada|modbus|federation|amtd|vpatch|sensor|deception|capability|capabilities|feature|features|offers|provides|includes|supports|enables|integrates|platform|solution)\b'
+    $metaRx = '(?i)^(i (can|will|would|think|believe|am|have)|here''s|heres|let me|sure[,.]|of course|based on (the )?(above|context)|as an ai|hope (this|that)|feel free|please (let|note)|note that|importantly)\b'
+
+    # Sentence-ish splits
+    $parts = [regex]::Split($body, '(?<=[.!?])\s+|\r?\n+')
+    foreach ($raw in $parts) {
+        if ($out.Count -ge $MaxClaims) { break }
+        $s = [regex]::Replace(([string]$raw).Trim(), '\s+', ' ')
+        if ($s.Length -lt 18 -or $s.Length -gt 220) { continue }
+        if ($s -match $metaRx) { continue }
+        if ($s -match '(?i)^(what changed|applied|download|hands ran|client )') { continue }
+        if ($s -match '^\s*[_*`]') { continue }
+        # Must look like a factual assertion
+        $isPriority = [bool]($s -match $priorityRx)
+        $isAssert = [bool]($s -match '(?i)\b(is|are|was|were|has|have|offers|provides|includes|supports|enables|uses|used|features|allows|can|will|delivers|protects|detects|blocks|prevents)\b')
+        $hasNum = [bool]($s -match '\d')
+        if (-not ($isPriority -or ($isAssert -and ($hasNum -or $s.Length -ge 40)))) { continue }
+        if (-not $isAssert -and -not $isPriority) { continue }
+        $k = $s.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        [void]$out.Add($s)
+    }
+
+    # Fallback: high-value n-grams if few sentences
+    if ($out.Count -lt 2) {
+        foreach ($m in [regex]::Matches($body, '(?i)\b[a-z][a-z0-9]+(?:\s+[a-z][a-z0-9]+){1,5}\b')) {
+            if ($out.Count -ge $MaxClaims) { break }
+            $ph = $m.Value.Trim()
+            if ($ph.Length -lt 10 -or $ph.Length -gt 80) { continue }
+            if ($ph -notmatch $priorityRx) { continue }
+            $k = $ph.ToLowerInvariant()
+            if ($seen.ContainsKey($k)) { continue }
+            $seen[$k] = $true
+            [void]$out.Add($ph)
+        }
+    }
+    return @($out.ToArray())
+}
+
+function Get-PromptParleClaimMatchStatus {
+    <#
+    .SYNOPSIS
+      Match one claim against evidence corpus.
+      Returns: supported | partial | unsupported | skip
+    #>
+    param(
+        [string]$Claim = '',
+        [string]$Evidence = ''
+    )
+    if (-not $Claim) { return 'skip' }
+    if (-not $Evidence -or $Evidence.Length -lt 20) { return 'skip' }
+    $c = $Claim.ToLowerInvariant()
+    $ev = $Evidence.ToLowerInvariant()
+    if ($ev.Contains($c)) { return 'supported' }
+    # all-token / partial token match
+    $stop = @{
+        'the'=$true;'and'=$true;'for'=$true;'with'=$true;'that'=$true;'this'=$true;'from'=$true
+        'your'=$true;'their'=$true;'have'=$true;'has'=$true;'are'=$true;'was'=$true;'were'=$true
+        'will'=$true;'can'=$true;'into'=$true;'onto'=$true;'about'=$true;'using'=$true;'used'=$true
+        'also'=$true;'than'=$true;'then'=$true;'when'=$true;'which'=$true;'while'=$true;'over'=$true
+        'such'=$true;'more'=$true;'most'=$true;'other'=$true;'only'=$true;'just'=$true;'been'=$true
+        'based'=$true;'they'=$true;'them'=$true;'its'=$true;'our'=$true;'you'=$true;'not'=$true
+        'does'=$true;'did'=$true;'may'=$true;'might'=$true;'should'=$true;'could'=$true;'would'=$true
+        'across'=$true;'through'=$true;'between'=$true;'within'=$true;'without'=$true;'via'=$true
+        'including'=$true;'includes'=$true;'include'=$true;'provides'=$true;'provide'=$true
+        'offers'=$true;'offer'=$true;'enables'=$true;'enable'=$true;'allows'=$true;'allow'=$true
+        'platform'=$true;'solution'=$true;'solutions'=$true;'security'=$true;'network'=$true
+        'system'=$true;'systems'=$true;'product'=$true;'products'=$true;'company'=$true
+        'examplecorp'=$true;'website'=$true;'page'=$true;'site'=$true;'http'=$true;'https'=$true
+    }
+    $toks = @([regex]::Matches($c, '[a-z0-9]{3,}') | ForEach-Object { $_.Value } | Where-Object { -not $stop.ContainsKey($_) })
+    if ($toks.Count -eq 0) { return 'skip' }
+    $hit = 0
+    foreach ($t in $toks) { if ($ev.Contains($t)) { $hit++ } }
+    $ratio = $hit / [double]$toks.Count
+    if ($ratio -ge 0.85 -and $hit -eq $toks.Count) { return 'supported' }
+    if ($ratio -ge 0.6 -and $hit -ge 2) { return 'partial' }
+    # priority invention keywords missing from evidence → hard unsupported
+    $priorityMissing = $false
+    foreach ($t in $toks) {
+        if ($t -match '^(honeypot|honeypots|decoy|decoys|zero.?day|ransomware|certified|patent|fips|nist)$') {
+            if (-not $ev.Contains($t)) { $priorityMissing = $true; break }
+        }
+    }
+    if ($priorityMissing) { return 'unsupported' }
+    if ($ratio -lt 0.35 -or $hit -eq 0) { return 'unsupported' }
+    return 'partial'
+}
+
+function Invoke-PromptParleQualityGate {
+    <#
+    .SYNOPSIS
+      0.21 quality gate — under-the-hood BS detector + corrector (0 AI tokens).
+      Extract checkable claims, match against [OBSERVE]/[WEB]/[HANDS] evidence,
+      quantify support, flag unverified, soft-correct high-severity inventions.
+    .OUTPUTS
+      text, applied, claims[], supported, partial, unsupported, score_pct, corrected
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ResponseText = '',
+        [string]$Context = '',
+        [int]$MaxClaims = 8,
+        [switch]$Force,
+        [switch]$AlwaysShowScore
+    )
+    $raw = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
+    if (-not $raw -or $raw.Length -lt 40) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'too-short'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+    $hasSource = $Force -or ($Context -match '(?m)\[OBSERVE\]') -or ($Context -match '(?m)\[WEB\]') -or ($Context -match '(?m)\[HANDS\]') -or ($Context -match '(?m)\[GROUNDING\]') -or ($Context -match '(?m)\[EVIDENCE_SPINE\]') -or ($Context -match '(?m)\[ATTACH\]') -or ($Context -match '===== FILE:')
+    if (-not $hasSource) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'no-evidence'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+    $ev = Get-PromptParleEvidenceCorpus -Context $Context
+    if ($ev.Length -lt 40) {
+        foreach ($m in [regex]::Matches([string]$Context, '(?ms)\[EVIDENCE_SPINE\][^\n]*\r?\n(.*?)(?=\n\[|\z)')) {
+            $ev = $ev + "`n" + $m.Groups[1].Value
+        }
+    }
+    if ($ev.Length -lt 40) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'empty-evidence'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+
+    $body = Remove-PromptParleClientAuditSections -Text $raw
+    # Preserve any already-appended audit tails (provenance) — reattach after gate
+    $auditTail = ''
+    if ($raw.Length -gt $body.Length -and $raw.StartsWith($body)) {
+        $auditTail = $raw.Substring($body.Length)
+    } elseif ($raw -ne $body) {
+        # body was trimmed; keep original raw for output base if complex
+        if ($raw -match '(?ms)(\r?\n---\r?\n## (?:Grounding|Provenance|Quality gate)\b[\s\S]*)$') {
+            $auditTail = $Matches[1]
+            $body = $raw.Substring(0, $raw.Length - $auditTail.Length).TrimEnd()
+        }
+    }
+    # Drop stale quality/grounding tails (recompute); keep provenance fail-closed
+    if ($auditTail -match '(?m)## Quality gate') {
+        $auditTail = [regex]::Replace($auditTail, '(?ms)\r?\n---\r?\n## Quality gate\b[\s\S]*$', '')
+    }
+    if ($auditTail -match '(?m)## Grounding \(client') {
+        $auditTail = [regex]::Replace($auditTail, '(?ms)\r?\n---\r?\n## Grounding \(client[\s\S]*$', '')
+    }
+
+    $claimTexts = @(Get-PromptParleCheckableClaims -Response $body -MaxClaims $MaxClaims)
+    # Supplement with residual unverified n-grams if sparse
+    if ($claimTexts.Count -lt 3) {
+        $extra = @(Get-PromptParleUnverifiedPhrases -Response $body -Evidence $ev -MaxFlags 6)
+        foreach ($e in $extra) {
+            if ($claimTexts.Count -ge $MaxClaims) { break }
+            $dup = $false
+            foreach ($c in $claimTexts) { if ($c.ToLowerInvariant().Contains($e.ToLowerInvariant()) -or $e.ToLowerInvariant().Contains($c.ToLowerInvariant())) { $dup = $true; break } }
+            if (-not $dup) { $claimTexts += $e }
+        }
+    }
+
+    if ($claimTexts.Count -eq 0) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'no-claims'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    $nSup = 0; $nPart = 0; $nUnsup = 0
+    foreach ($cl in $claimTexts) {
+        $st = Get-PromptParleClaimMatchStatus -Claim $cl -Evidence $ev
+        if ($st -eq 'skip') { continue }
+        if ($st -eq 'supported') { $nSup++ }
+        elseif ($st -eq 'partial') { $nPart++ }
+        else { $nUnsup++; $st = 'unsupported' }
+        [void]$results.Add([pscustomobject]@{ claim = [string]$cl; status = [string]$st })
+    }
+    $checked = $nSup + $nPart + $nUnsup
+    if ($checked -eq 0) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'no-scored'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+    # partial counts half toward score
+    $score = [int][Math]::Round(100.0 * ($nSup + 0.5 * $nPart) / $checked)
+
+    # Soft-correct high-severity unsupported phrases in body (mark, don't invent replacement)
+    $corrected = $false
+    $work = $body
+    $severityRx = '(?i)\b(distributed\s+honeypots?|honeypots?|zero-?days?|guaranteed|patent(?:ed)?|certified\s+for)\b'
+    foreach ($r in $results) {
+        if ($r.status -ne 'unsupported') { continue }
+        $ph = [string]$r.claim
+        if ($ph.Length -gt 100) { continue }
+        if ($ph -notmatch $severityRx -and $ph -notmatch '(?i)honeypot|zero-?day|guaranteed') { continue }
+        # Prefer correcting short distinctive spans inside the claim
+        $span = $null
+        if ($ph -match '(?i)(distributed\s+honeypots?|honeypots?|zero-?days?)') { $span = $Matches[1] }
+        elseif ($ph.Length -le 60) { $span = $ph }
+        if (-not $span) { continue }
+        $esc = [regex]::Escape($span)
+        if ($work -match $esc) {
+            $marked = ("~~{0}~~ [unverified]" -f $span)
+            $work2 = [regex]::Replace($work, $esc, $marked, 1)
+            if ($work2 -ne $work) {
+                $work = $work2
+                $corrected = $true
+            }
+        }
+    }
+
+    $show = $AlwaysShowScore -or ($nUnsup -gt 0) -or ($nPart -gt 0) -or $corrected -or ($score -lt 100)
+    # Always show compact score on source-backed product turns when we scored anything
+    if (-not $show -and $checked -ge 1) { $show = $true }
+
+    if (-not $show) {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'clean-silent'
+            claims = @($results); supported = $nSup; partial = $nPart; unsupported = $nUnsup
+            score_pct = $score; corrected = $false
+        }
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('')
+    [void]$lines.Add('---')
+    [void]$lines.Add(('## Quality gate (client 0.21) — {0}% evidence-backed ({1}/{2} claims)' -f $score, $nSup, $checked))
+    [void]$lines.Add(('_Client self-check vs fetched [OBSERVE]/[WEB]/[HANDS] evidence — 0 AI tokens. supported={0} partial={1} unverified={2}_' -f $nSup, $nPart, $nUnsup))
+    if ($nUnsup -gt 0 -or $nPart -gt 0) {
+        [void]$lines.Add('')
+        [void]$lines.Add('| Claim | Status |')
+        [void]$lines.Add('| --- | --- |')
+        foreach ($r in $results) {
+            if ($r.status -eq 'supported') { continue }
+            $short = [string]$r.claim
+            if ($short.Length -gt 90) { $short = $short.Substring(0, 87) + '...' }
+            $short = $short.Replace('|', '/')
+            $label = [string]$r.status
+            if ($label -eq 'partial') { $label = 'partial (weak match)' }
+            elseif ($label -eq 'unsupported') { $label = '**unverified**' }
+            [void]$lines.Add(('| {0} | {1} |' -f $short, $label))
+        }
+    }
+    if ($corrected) {
+        [void]$lines.Add('')
+        [void]$lines.Add('_High-severity unverified product terms were struck through (~~like this~~ [unverified]) in the reply above. Treat them as not source-backed._')
+    }
+    if ($nUnsup -gt 0) {
+        [void]$lines.Add('')
+        [void]$lines.Add('_Ask "where does it say X" for provenance, or open the primary source. Do not treat unverified rows as site quotes._')
+    } elseif ($score -ge 80) {
+        [void]$lines.Add('')
+        [void]$lines.Add('_No high-risk unverified product claims detected in this pass. Still prefer primary sources for decisions._')
+    }
+
+    $out = [string]$work
+    if ($auditTail) { $out = $out + [string]$auditTail }
+    $out = $out + "`n" + [string]($lines -join "`n")
+
+    $reasonOut = 'scored'
+    if ($nUnsup -gt 0) { $reasonOut = 'unverified' }
+    elseif ($corrected) { $reasonOut = 'corrected' }
+
+    $claimArr = @()
+    foreach ($r in $results) {
+        $claimArr += [pscustomobject]@{
+            claim  = [string]$r.claim
+            status = [string]$r.status
+        }
+    }
+
+    $ret = New-Object psobject
+    $ret | Add-Member -NotePropertyName text -NotePropertyValue $out
+    $ret | Add-Member -NotePropertyName applied -NotePropertyValue $true
+    $ret | Add-Member -NotePropertyName reason -NotePropertyValue $reasonOut
+    $ret | Add-Member -NotePropertyName claims -NotePropertyValue $claimArr
+    $ret | Add-Member -NotePropertyName supported -NotePropertyValue ([int]$nSup)
+    $ret | Add-Member -NotePropertyName partial -NotePropertyValue ([int]$nPart)
+    $ret | Add-Member -NotePropertyName unsupported -NotePropertyValue ([int]$nUnsup)
+    $ret | Add-Member -NotePropertyName score_pct -NotePropertyValue ([int]$score)
+    $ret | Add-Member -NotePropertyName corrected -NotePropertyValue ([bool]$corrected)
+    $ret | Add-Member -NotePropertyName checked -NotePropertyValue ([int]$checked)
+    return $ret
 }
 
 
@@ -11310,7 +11638,7 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: obligation post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        # 0.20: provenance fail-closed + grounding audit (use frozen prep + agent hands evidence)
+                        # 0.20/0.21: provenance fail-closed + quality gate (BS detector/corrector, 0 AI tokens)
                         try {
                             $gctx = if ($groundingContext) { [string]$groundingContext } elseif ($context) { [string]$context } else { '' }
                             try {
@@ -11326,17 +11654,40 @@ function Start-PromptParleLocalServer {
                                     $metaOut.provenance_reason = [string]$pp.reason
                                 }
                             }
-                            $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
-                            if ($gp.applied) {
-                                $respText = [string]$gp.text
-                                Write-Host ("  chat: grounding flagged {0} phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
+                            # Quality gate supersedes separate grounding banner (includes claim score + soft-correct)
+                            $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
+                            if ($qg.applied) {
+                                $respText = [string]$qg.text
+                                Write-Host ("  chat: quality gate {0}% ({1} supported, {2} unverified, corrected={3})" -f `
+                                    $qg.score_pct, $qg.supported, $qg.unsupported, $qg.corrected) -ForegroundColor Yellow
                                 if ($metaOut) {
-                                    $metaOut.grounding_flagged = @($gp.flagged)
-                                    $metaOut.grounding_audit = $true
+                                    $metaOut.quality_gate = $true
+                                    $metaOut.quality_score_pct = [int]$qg.score_pct
+                                    $metaOut.quality_supported = [int]$qg.supported
+                                    $metaOut.quality_partial = [int]$qg.partial
+                                    $metaOut.quality_unsupported = [int]$qg.unsupported
+                                    $metaOut.quality_corrected = [bool]$qg.corrected
+                                    $metaOut.quality_reason = [string]$qg.reason
+                                    try {
+                                        $metaOut.quality_claims = @($qg.claims | ForEach-Object {
+                                            [ordered]@{ claim = [string]$_.claim; status = [string]$_.status }
+                                        })
+                                    } catch { }
+                                }
+                            } else {
+                                # Fallback: thin grounding flags when gate had nothing to score
+                                $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
+                                if ($gp.applied) {
+                                    $respText = [string]$gp.text
+                                    Write-Host ("  chat: grounding flagged {0} phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
+                                    if ($metaOut) {
+                                        $metaOut.grounding_flagged = @($gp.flagged)
+                                        $metaOut.grounding_audit = $true
+                                    }
                                 }
                             }
                         } catch {
-                            Write-Host ("  chat: grounding/provenance post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
+                            Write-Host ("  chat: quality/provenance post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
                         }
                         $payload = [ordered]@{
                             response         = $respText
@@ -11647,8 +11998,15 @@ function Start-PromptParle {
                     if ($evCli) { $gctxCli = [string]$evCli }
                     $ppCli = Invoke-PromptParleProvenancePostPass -ResponseText $txt -Context $gctxCli
                     if ($ppCli.applied) { $txt = [string]$ppCli.text; Write-Host '  provenance: fail-closed' -ForegroundColor Yellow }
-                    $gpCli = Invoke-PromptParleGroundingPostPass -ResponseText $txt -Context $gctxCli
-                    if ($gpCli.applied) { $txt = [string]$gpCli.text; Write-Host ("  grounding: {0} flag(s)" -f $gpCli.flagged.Count) -ForegroundColor Yellow }
+                    $qgCli = Invoke-PromptParleQualityGate -ResponseText $txt -Context $gctxCli
+                    if ($qgCli.applied) {
+                        $txt = [string]$qgCli.text
+                        Write-Host ("  quality: {0}% supported={1} unverified={2} corrected={3}" -f `
+                            $qgCli.score_pct, $qgCli.supported, $qgCli.unsupported, $qgCli.corrected) -ForegroundColor Yellow
+                    } else {
+                        $gpCli = Invoke-PromptParleGroundingPostPass -ResponseText $txt -Context $gctxCli
+                        if ($gpCli.applied) { $txt = [string]$gpCli.text; Write-Host ("  grounding: {0} flag(s)" -f $gpCli.flagged.Count) -ForegroundColor Yellow }
+                    }
                 } catch { }
                 Write-Host $txt
                 $ag = Get-PromptParleProp $result 'agent' $null
