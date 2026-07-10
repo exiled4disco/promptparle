@@ -734,7 +734,7 @@ function Get-PromptParleActiveAgentId {
 function Get-PromptParleSessionState {
     $path = Get-PromptParleSessionStatePath
     $state = [ordered]@{
-        active_agent      = 'auto'
+        active_agent      = 'none'
         provider          = 'openai'
         profile           = 'general'
         dial              = 3
@@ -775,19 +775,21 @@ function Get-PromptParleSessionState {
         } catch { }
     }
     # Deterministic default is Auto (legacy sessions with 'default' promote to auto)
-    if (-not $state.active_agent -or [string]$state.active_agent -eq 'default') {
-        $state.active_agent = 'auto'
+    # Agents retired 0.14 — keep active_agent field for old session JSON only
+    if (-not $state.active_agent) {
+        $state.active_agent = 'none'
     }
-    # Apply agent defaults when agent selected
-    $agent = Get-PromptParleAgent -Name $state.active_agent
+    # Never let a stored agent override dial/profile (dial is the only aggressiveness knob)
+    $agent = $null
+    try { $agent = Get-PromptParleAgent -Name $state.active_agent } catch { $agent = $null }
     if ($agent) {
         $state.agent = [ordered]@{
             id          = $agent.id
             name        = $agent.name
             description = $agent.description
             system      = $agent.system
-            profile     = $agent.profile
-            dial        = $agent.dial
+            profile     = 'general'
+            dial        = $state.dial
             commands    = $agent.commands
         }
     }
@@ -991,12 +993,8 @@ function Test-PromptParleAutoRouterAgent {
 function Resolve-PromptParleTurnLens {
     <#
     .SYNOPSIS
-      Pick agent + profile for THIS turn.
-    .DESCRIPTION
-      Auto (deterministic default): always map intent → best lens/tools path.
-      Specialized sticky (security/code/docs): stay in lane, but soft-escape on
-      clear topic shift so the user is never trapped in a corridor.
-      AgentLocked: force sticky specialized lens (rare; UI can send later).
+      Retired 0.14 — agents/lenses removed. Always general; dial owns shrink.
+      Kept as a no-op for any old callers.
     #>
     [CmdletBinding()]
     param(
@@ -1005,104 +1003,42 @@ function Resolve-PromptParleTurnLens {
         [string]$StickyProfile = 'general',
         [switch]$AgentLocked
     )
-    $intent = Get-PromptParlePromptIntent -Prompt $Prompt
-    $lens = Get-PromptParleDeterministicLens -Intent $intent
-    $stickyId = if ($StickyAgentId) { $StickyAgentId } else { 'auto' }
-    if ($stickyId -eq 'default') { $stickyId = 'auto' }
-
-    $sticky = $null
-    try { $sticky = Get-PromptParleAgent -Name $stickyId } catch { $sticky = $null }
-    $stickyProf = if ($sticky -and $sticky.profile) { [string]$sticky.profile } else { $StickyProfile }
-    if (-not $stickyProf) { $stickyProf = 'general' }
-
-    $doctrine = 'Answer the CURRENT user message fully. Prior chat findings are optional context only — do not refuse unrelated work, restate old ship-blockers, or force a previous specialized conclusion unless the user asks about it this turn.'
-
-    $isAuto = Test-PromptParleAutoRouterAgent -AgentId $stickyId
-    $agentId = $stickyId
-    $profile = $stickyProf
-    $override = $false
-    $reason = 'sticky agent'
-    $mode = 'sticky'
-
-    if ($isAuto -and -not $AgentLocked) {
-        # Deterministic default: always best lens for this message
-        $agentId = [string]$lens.agent_id
-        $profile = [string]$lens.profile
-        $override = $true
-        $mode = 'auto'
-        $reason = "Auto → $($lens.label) (intent=$intent)"
-    }
-    elseif (-not $AgentLocked) {
-        # Specialized sticky: soft-escape on topic shift (never a prison)
-        $stickyIsSec = ($stickyProf -eq 'security-review') -or ($stickyId -eq 'security')
-        $stickyIsCode = ($stickyProf -eq 'developer') -or ($stickyId -eq 'code')
-        $stickyIsDocs = ($stickyProf -eq 'documentation') -or ($stickyId -eq 'docs')
-
-        if ($stickyIsSec -and $intent -ne 'security') {
-            $agentId = [string]$lens.agent_id
-            $profile = [string]$lens.profile
-            $override = $true
-            $mode = 'escape'
-            $reason = "escape security → $($lens.label) (intent=$intent)"
-        }
-        elseif ($stickyIsCode -and $intent -ne 'code' -and $intent -in @('meta', 'product', 'docs', 'logs', 'security', 'general')) {
-            $agentId = [string]$lens.agent_id
-            $profile = [string]$lens.profile
-            $override = $true
-            $mode = 'escape'
-            $reason = "escape code → $($lens.label) (intent=$intent)"
-        }
-        elseif ($stickyIsDocs -and $intent -ne 'docs' -and $intent -in @('meta', 'code', 'security', 'product', 'general', 'logs')) {
-            $agentId = [string]$lens.agent_id
-            $profile = [string]$lens.profile
-            $override = $true
-            $mode = 'escape'
-            $reason = "escape docs → $($lens.label) (intent=$intent)"
-        }
-        else {
-            $agentId = $stickyId
-            $profile = $stickyProf
-            $mode = 'sticky'
-            $reason = "sticky $stickyId (intent=$intent)"
-        }
-    }
-    else {
-        # Hard lock specialized
-        $agentId = $stickyId
-        $profile = $stickyProf
-        $mode = 'locked'
-        $reason = "locked $stickyId"
-    }
-
-    # Never leave agent_id as 'auto' for system prompt — Auto is a router, not a persona
-    if ($agentId -eq 'auto') {
-        $agentId = [string]$lens.agent_id
-        $profile = [string]$lens.profile
-        $override = $true
-        if ($mode -eq 'auto') { $reason = "Auto → $($lens.label) (intent=$intent)" }
-    }
-
     return [pscustomobject]@{
-        intent         = $intent
-        agent_id       = $agentId
-        profile        = $profile
-        sticky_agent   = $stickyId
-        sticky_profile = $stickyProf
-        override       = [bool]$override
-        reason         = $reason
-        doctrine       = $doctrine
-        locked         = [bool]$AgentLocked
-        mode           = $mode
-        lens_label     = [string]$lens.label
-        dial_hint      = $lens.dial
+        intent         = 'general'
+        agent_id       = 'none'
+        profile        = 'general'
+        sticky_agent   = 'none'
+        sticky_profile = 'general'
+        override       = $false
+        reason         = 'agents retired — dial-only optimize'
+        doctrine       = ''
+        locked         = $false
+        mode           = 'none'
+        lens_label     = 'Chat'
+        dial_hint      = $null
     }
+}
+
+function Get-PromptParleChatSystemPrompt {
+    <#
+    .SYNOPSIS
+      Single product system brief — continuous chat, no multi-agent personas.
+      Dial owns token shrink; this only sets conversational behavior.
+    #>
+    return @(
+        'You are a capable assistant in a continuous conversation (like a coding/chat agent).',
+        'PromptParle optimizes (shrinks) context before it reaches you — high signal, lower tokens; trust [CONN]/[SSH]/[WEB]/[MEM] and attachments as evidence.',
+        'Answer the user fully with session continuity. Prefer concrete actions and evidence over filler.',
+        'Do not invent file paths, ship-blockers, or missing evidence. PowerShell ExecutionPolicy is not a security boundary (Microsoft).',
+        'When the user reports product issues (token savings, update, dial, SSH), investigate as product work — not only empathy.'
+    ) -join ' '
 }
 
 function Format-PromptParleAgentPrompt {
     <#
     .SYNOPSIS
-      Prepend agent system brief to the user prompt (local; free tier).
-      Uses turn lens when provided so sticky agents do not form a narrow corridor.
+      Prepend the single product system brief (agent personas retired 0.14).
+      AgentId/Doctrine/TurnNote kept for call-site compat; ignored.
     #>
     param(
         [string]$Prompt,
@@ -1110,29 +1046,8 @@ function Format-PromptParleAgentPrompt {
         [string]$Doctrine = '',
         [string]$TurnNote = ''
     )
-    if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
-    $agent = Get-PromptParleAgent -Name $AgentId
-    $sys = ''
-    $name = 'Default'
-    if ($agent) {
-        $name = [string]$agent.name
-        $sys = ($agent.system | ForEach-Object { $_ }) -join ''
-        if ($sys) { $sys = $sys.Trim() }
-    }
-    if (-not $sys) {
-        $sys = 'You are a helpful assistant. Prefer evidence from attached context.'
-    }
-    if ($sys -notmatch '(?i)\[CONN\]|project connections') {
-        $sys = $sys.TrimEnd('.') + '. Honor [CONN] Project connections (PC folder, Git, SSH) in context; do not invent paths. Use [WEB] briefs when present for external facts.'
-    }
-    if ($Doctrine) {
-        $sys = $sys.TrimEnd('.') + '. ' + $Doctrine.Trim()
-    }
-    $header = "[AGENT: $name]"
-    if ($TurnNote) {
-        $header = $header + "`n[TURN: $TurnNote]"
-    }
-    return ("{0}`n{1}`n`n[USER]`n{2}" -f $header, $sys, $Prompt)
+    $sys = Get-PromptParleChatSystemPrompt
+    return ("[SYSTEM]`n{0}`n`n[USER]`n{1}" -f $sys, $Prompt)
 }
 
 #region Local-first tools (run on this PC before AI tokens are spent)
@@ -2789,6 +2704,7 @@ function Invoke-PromptParleAgentLocalPrep {
       Doctrine: (0) connections (1) chat memory (2) mask (3) fidelity fleet
       (4) optional web (5) one structure/slice pack if thin (6) head+tail budget.
       Select signal over destroy: error stacks, prompt-hot lines, recent turns stay.
+      AgentId is ignored (0.14+) — dial owns aggressiveness; tools are product-wide.
     #>
     [CmdletBinding()]
     param(
@@ -2801,8 +2717,6 @@ function Invoke-PromptParleAgentLocalPrep {
         [object[]]$History = @(),
         [string]$HistoryText = ''
     )
-    if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
-    $agent = Get-PromptParleAgent -Name $AgentId
     $notes = New-Object System.Collections.Generic.List[string]
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
@@ -2883,16 +2797,15 @@ function Invoke-PromptParleAgentLocalPrep {
         $notes.Add('tools off')
         return [pscustomobject]@{
             prompt = $pr; context = $ctx; notes = @($notes.ToArray())
-            tools = @($tools); agent = if ($agent) { $agent.id } else { $AgentId }
+            tools = @($tools); agent = 'none'
             tools_enabled = $false
         }
     }
 
     if ($Dial -lt 1) { $Dial = 1 }
     if ($Dial -gt 5) { $Dial = 5 }
-    $prof = $Profile
-    if (-not $prof -and $agent) { $prof = [string]$agent.profile }
-    if (-not $prof) { $prof = 'general' }
+    $prof = if ($Profile) { $Profile } else { 'general' }
+    # 0.14: compressor profiles still accepted for API compat, but chat path always sends general
     $budget = Get-PromptParleLocalContextBudget -Dial $Dial
     $tools.Add('secret_scan')
     $tools.Add('code_brief')
@@ -3085,7 +2998,7 @@ function Invoke-PromptParleAgentLocalPrep {
         context       = $ctx
         notes         = @($notes.ToArray())
         tools         = @($tools | Select-Object -Unique)
-        agent         = if ($agent) { $agent.id } else { $AgentId }
+        agent         = 'none'
         tools_enabled = $true
         dial          = $Dial
         budget        = $budget
@@ -4356,31 +4269,27 @@ function Get-PromptParleSlashHelpText {
 Commands (type in chat instead of a normal message):
 
   /help                 This help
-  /status               Session: agent, provider, dial, workspace, ssh
-  /agents               List local agents
-  /agent [name]         Show or switch agent
-  /agent new <name> | system text…   Create agent (system after |)
-  /agent delete <name>  Delete a custom agent
-  /agent optimize …     Suggest local tools + tighter system (no AI tokens)
+  /status               Session: provider, dial, tools, workspace, ssh
   /tools [on|off]       Session local tools (default ON — auto before tokens)
   /tool <id> [arg]      Run a local tool now (file_index, deps, git_diff, web_search, …)
   /search <query>       Brief web search (local; injects results into next chat)
-  /dial [1-5]           Compression dial
-  /profile [name]       Optimization profile
+  /dial [1-5]           Shrink aggressiveness (always optimizes; 1 fidelity … 5 savings)
   /provider [id]        openai | anthropic | gemini | grok
-  /optimize             Toggle optimize-only (no AI spend)
+  /optimize             Toggle optimize-only (no model call — debug shrink)
   /usage                Cloud token savings summary
   /clear                Clear chat (UI) / screen (CLI)
   /quit                 Stop (CLI)
 
-Local-first tools (enabled per agent — run before AI tokens):
+Product (0.14+): continuous chat like a normal assistant, with an optimizer
+  between you and the model. Dial is the only shrink knob. Agents retired.
+
+Local-first tools (run before AI tokens when Tools ON):
   connections  chat_memory  secret_scan  code_brief  error_brief  relevant_slice
   file_index  deps  git_diff  tree_pack  web_search
   + workspace / git / ssh / files
   Fidelity-first: keep errors/stacks, prompt-hot code, recent turns; drop noise.
   Every chat gets [CONN] + optional [MEM] from prior turns.
   Web search auto-runs on search intent; or use /search <query>.
-  UI: Agent → Manage to create agents and pick tools
 
 Workspace & local directories (paths stay on this PC):
   /workspace            Show attached folder/repo
@@ -4482,12 +4391,6 @@ function Invoke-PromptParleSlashCommand {
             $message = Get-PromptParleSlashHelpText
         }
         '^/status$' {
-            $ag = Get-PromptParleAgent -Name $state.active_agent
-            $agName = if ($ag) { $ag.name } else { $state.active_agent }
-            $cmds = @()
-            if ($ag -and $ag.commands) {
-                foreach ($k in $ag.commands.Keys) { $cmds += "/$k" }
-            }
             $ws = Get-PromptParleWorkspace
             $wsLine = if ($ws.path) {
                 if ($ws.exists) {
@@ -4504,137 +4407,32 @@ function Invoke-PromptParleSlashCommand {
             } else { '(none — /ssh user@host [/path])' }
             $message = @"
 Session
-  Agent     : $agName ($($state.active_agent))
+  Mode      : chat + optimizer (agents retired 0.14)
   Provider  : $($state.provider)
-  Profile   : $($state.profile)
-  Dial      : $($state.dial)/5
+  Dial      : $($state.dial)/5  (only shrink aggressiveness knob)
   Model     : $(if ($state.model) { $state.model } else { '(default)' })
-  Optimize  : $($state.optimize_only)
+  Optimize  : $(if ($state.optimize_only) { 'optimize-only (no model call)' } else { 'always (then model)' })
   Tools     : $(if ($state.tools_enabled) { 'ON (local prep before tokens)' } else { 'off' })
   Workspace : $wsLine
   SSH       : $sshLine
-  Commands  : $(if ($cmds.Count) { $cmds -join ' ' } else { '(none)' })
 "@
         }
         '^/agents$' {
-            $list = @(Get-PromptParleAgentList)
-            $lines = @('Local agents (free desktop):')
-            foreach ($a in $list) {
-                $mark = if ($a.id -eq $state.active_agent) { '*' } else { ' ' }
-                $cmdKeys = @()
-                if ($a.commands) { foreach ($k in $a.commands.Keys) { $cmdKeys += "/$k" } }
-                $cmdStr = if ($cmdKeys.Count) { ' · ' + ($cmdKeys -join ' ') } else { '' }
-                $lines += ("  [{0}] {1}  ({2})  dial {3}  {4}{5}" -f $mark, $a.name, $a.id, $a.dial, $a.profile, $cmdStr)
-            }
-            $lines += 'Switch: /agent <name>   Create: /agent new <name> | system prompt…'
-            $message = $lines -join "`n"
+            $message = 'Agents retired in 0.14. Product is: you → optimizer (dial) → model. Use the Dial for shrink aggressiveness.'
         }
         '^/agent$' {
-            if (-not $arg) {
-                $ag = Get-PromptParleAgent -Name $state.active_agent
-                if ($ag) {
-                    $message = "Active agent: $($ag.name) ($($ag.id))`nProfile: $($ag.profile) · Dial: $($ag.dial)`n$($ag.description)`n$($ag.system)"
-                } else {
-                    $message = 'No active agent. Try /agents'
-                }
-            } elseif ($arg -match '^(new|create)\s+(\S+)(?:\s*\|\s*(.*))?$') {
-                $newName = $Matches[2]
-                $sys = if ($Matches[3]) { $Matches[3].Trim() } else { '' }
-                $optNew = Optimize-PromptParleAgent -Name $newName -System $sys -Description 'Custom agent' -Profile $state.profile -Dial $state.dial
-                $created = Save-PromptParleAgent -Name $newName -System $optNew.system -Profile $optNew.profile -Dial $optNew.dial `
-                    -Description 'Custom agent' -Tools @($optNew.tools)
-                Set-PromptParleActiveAgent -Name $created.id | Out-Null
-                $state.active_agent = $created.id
-                $state.profile = $created.profile
-                $state.dial = $created.dial
-                $toolStr = (@($created.tools) -join ', ')
-                $message = @"
-Created and activated agent '$($created.name)' ($($created.id))
-  Profile : $($created.profile) · Dial $($created.dial)/5
-  Tools   : $toolStr
-  (Local tools run on this PC before AI tokens.)
-Edit in UI: Agent → Manage · or ~/.promptparle/agents/$($created.id).json
-"@
-            } elseif ($arg -match '^(optimize)\s*(.*)$') {
-                $optArg = if ($Matches[2]) { $Matches[2].Trim() } else { '' }
-                $agOpt = $null
-                $nameOpt = ''
-                $sysOpt = ''
-                $descOpt = ''
-                if ($optArg -match '^(\S+)(?:\s*\|\s*(.*))?$') {
-                    $nameOpt = $Matches[1]
-                    $sysOpt = if ($Matches[2]) { $Matches[2].Trim() } else { '' }
-                    $agOpt = Get-PromptParleAgent -Name $nameOpt
-                } else {
-                    $agOpt = Get-PromptParleAgent -Name $state.active_agent
-                    $nameOpt = if ($agOpt) { $agOpt.name } else { 'Custom agent' }
-                }
-                if ($agOpt -and -not $sysOpt) {
-                    $sysOpt = [string]$agOpt.system
-                    $descOpt = [string]$agOpt.description
-                }
-                $optRes = Optimize-PromptParleAgent -Name $nameOpt -System $sysOpt -Description $descOpt `
-                    -Profile $(if ($agOpt) { $agOpt.profile } else { $state.profile }) `
-                    -Dial $(if ($agOpt) { [int]$agOpt.dial } else { [int]$state.dial }) `
-                    -Tools $(if ($agOpt) { @($agOpt.tools) } else { @() })
-                $reasonLines = if ($optRes.reasons) { ($optRes.reasons | ForEach-Object { "  - $_" }) -join "`n" } else { '  (no changes suggested)' }
-                $message = @"
-Agent optimize (local — 0 AI tokens)
-  Name    : $($optRes.name)
-  Profile : $($optRes.profile) · Dial $($optRes.dial)/5
-  Tools   : $(($optRes.tools) -join ', ')
-Reasons:
-$reasonLines
-System:
-$($optRes.system)
-
-Apply: /agent new $($optRes.name) | $($optRes.system)
-Or use Agent → Manage → Optimize in the UI, then Save.
-"@
-            } elseif ($arg -match '^(delete|rm|remove)\s+(\S+)$') {
-                $delName = $Matches[2]
-                try {
-                    Remove-PromptParleAgent -Name $delName | Out-Null
-                    $state.active_agent = Get-PromptParleActiveAgentId
-                    $ag2 = Get-PromptParleAgent -Name $state.active_agent
-                    if ($ag2) {
-                        $state.profile = $ag2.profile
-                        $state.dial = $ag2.dial
-                    }
-                    $message = "Deleted agent '$delName'."
-                } catch {
-                    $message = "$_"
-                }
-            } else {
-                try {
-                    $switched = Set-PromptParleActiveAgent -Name $arg
-                    $state.active_agent = $switched.id
-                    $state.profile = $switched.profile
-                    $state.dial = $switched.dial
-                    $message = "Agent set to $($switched.name) · profile $($switched.profile) · dial $($switched.dial)/5"
-                } catch {
-                    $message = "$_  Try /agents"
-                }
-            }
+            $message = 'Agents retired in 0.14. No agent switcher — continuous chat + dial. See /status and /help.'
         }
         '^/dial$' {
             if ($arg -match '^([1-5])$') {
                 $state.dial = [int]$Matches[1]
-                $message = "Dial set to $($state.dial)/5"
+                $message = "Dial set to $($state.dial)/5 (shrink aggressiveness; always optimizes)"
             } else {
                 $message = "Dial is $($state.dial)/5 (1 max fidelity … 5 max savings). Usage: /dial 3"
             }
         }
         '^/profile$' {
-            $profiles = @('general', 'developer', 'security-review', 'log-analysis', 'documentation', 'executive-summary')
-            if ($arg -and $profiles -contains $arg) {
-                $state.profile = $arg
-                $message = "Profile set to $arg"
-            } elseif ($arg) {
-                $message = "Unknown profile '$arg'. Use: $($profiles -join ', ')"
-            } else {
-                $message = "Profile is $($state.profile). Set with /profile <name>"
-            }
+            $message = 'Optimization profiles no longer switch chat persona (0.14). Use Dial for shrink aggressiveness. Chat always uses high-fidelity general optimize path.'
         }
         '^/provider$' {
             $ok = @('openai', 'anthropic', 'gemini', 'grok')
@@ -5042,7 +4840,7 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
                 $message = "Running agent command /$short"
             } else {
                 $handled = $true
-                $message = "Unknown command: $cmd  (try /help or /agents)"
+                $message = "Unknown command: $cmd  (try /help)"
             }
         }
     }
@@ -7499,8 +7297,8 @@ function Start-PromptParleLocalServer {
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
                         $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
                         if (-not $provider) { $provider = 'openai' }
-                        $profile = [string](Get-PromptParleProp $body 'profile' 'general')
-                        if (-not $profile) { $profile = 'general' }
+                        # Product 0.14: dial is the only aggressiveness knob (no agent/profile router)
+                        $profile = 'general'
                         $dialRaw = Get-PromptParleProp $body 'compression_level' $null
                         if ($null -eq $dialRaw) { $dialRaw = Get-PromptParleProp $body 'compressionLevel' $null }
                         $dial = 3
@@ -7554,76 +7352,25 @@ function Start-PromptParleLocalServer {
                             Save-PromptParleSessionState -State $stSave
                         } catch { }
 
-                        $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
-                        $turnLens = $null
-                        $turnAgentNote = $null
-                        if ($skipAgent -ne $true) {
-                            # Turn lens: sticky agent is preference; this message picks the real lens
-                            try {
-                                $stickyAgentId = 'auto'
-                                try {
-                                    $stickyAgentId = Get-PromptParleActiveAgentId
-                                } catch { $stickyAgentId = 'auto' }
-                                $agentLock = $false
-                                $lockFlag = Get-PromptParleProp $body 'agent_locked' (Get-PromptParleProp $body 'agentLocked' $null)
-                                if ($null -ne $lockFlag) { $agentLock = [bool]$lockFlag }
-                                $turnLens = Resolve-PromptParleTurnLens -Prompt $prompt -StickyAgentId $stickyAgentId -StickyProfile $profile -AgentLocked:$agentLock
-                                if ($turnLens) {
-                                    $profile = [string]$turnLens.profile
-                                    if ($turnLens.override -or $turnLens.mode -eq 'auto') {
-                                        $turnAgentNote = [string]$turnLens.reason
-                                        $localNotes = @($localNotes) + @("turn-lens:$($turnLens.mode):$($turnLens.sticky_agent)→$($turnLens.agent_id) ($($turnLens.intent))")
-                                        Write-Host ("  chat: {0}" -f $turnLens.reason) -ForegroundColor DarkCyan
-                                    }
-                                    # Optional dial hint from deterministic map (only if UI sent default-ish dial)
-                                    if ($null -ne $turnLens.dial_hint -and $dial -eq 3 -and $turnLens.mode -eq 'auto') {
-                                        try {
-                                            $dh = [int]$turnLens.dial_hint
-                                            if ($dh -ge 1 -and $dh -le 5 -and $dh -ne $dial) {
-                                                # Keep user dial unless map strongly prefers (code=2, logs=4)
-                                                if ($turnLens.intent -in @('code', 'logs')) {
-                                                    $dial = $dh
-                                                    $localNotes = @($localNotes) + @("dial-hint:$dh")
-                                                }
-                                            }
-                                        } catch { }
-                                    }
-                                }
-                            } catch {
-                                Write-Host ("  chat: turn-lens skip - {0}" -f $_) -ForegroundColor DarkYellow
-                                $turnLens = $null
+                        # You → local prep → cloud optimize (dial) → model. No agent router.
+                        try {
+                            $prepParams = @{
+                                Prompt       = $prompt
+                                Context      = $(if ($context) { $context } else { '' })
+                                ToolsEnabled = $toolsEnChat
+                                Dial         = $dial
+                                Profile      = $profile
                             }
-                            try {
-                                $prepParams = @{
-                                    Prompt       = $prompt
-                                    Context      = $(if ($context) { $context } else { '' })
-                                    ToolsEnabled = $toolsEnChat
-                                    Dial         = $dial
-                                    Profile      = $profile
-                                }
-                                if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
-                                elseif ($histText) { $prepParams.HistoryText = $histText }
-                                # Prefer turn agent for LocalPrep agent-aware bits
-                                if ($turnLens -and $turnLens.agent_id) {
-                                    $prepParams.AgentId = [string]$turnLens.agent_id
-                                }
-                                $prep = Invoke-PromptParleAgentLocalPrep @prepParams
-                                $prompt = [string]$prep.prompt
-                                if ($null -ne $prep.context) { $context = [string]$prep.context }
-                                if ($prep.notes) { $localNotes = @($localNotes) + @($prep.notes) }
-                            } catch {
-                                Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
-                            }
-                            $fmtParams = @{ Prompt = $prompt }
-                            if ($turnLens -and $turnLens.agent_id) {
-                                $fmtParams.AgentId = [string]$turnLens.agent_id
-                                $fmtParams.Doctrine = [string]$turnLens.doctrine
-                                if ($turnLens.override -or $turnLens.mode -eq 'auto') {
-                                    $fmtParams.TurnNote = [string]$turnLens.reason
-                                }
-                            }
-                            $prompt = Format-PromptParleAgentPrompt @fmtParams
+                            if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
+                            elseif ($histText) { $prepParams.HistoryText = $histText }
+                            $prep = Invoke-PromptParleAgentLocalPrep @prepParams
+                            $prompt = [string]$prep.prompt
+                            if ($null -ne $prep.context) { $context = [string]$prep.context }
+                            if ($prep.notes) { $localNotes = @($localNotes) + @($prep.notes) }
+                        } catch {
+                            Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
+                        $prompt = Format-PromptParleAgentPrompt -Prompt $prompt
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
                         Write-Host ("  chat: provider={0} profile={1} dial={2} tools={3} optimize_only={4} prompt={5}c context={6}c images={7} local_notes={8}" -f `
@@ -7854,7 +7601,7 @@ function Start-PromptParle {
 
     Write-Host ''
     Write-Host ("Ready. Talking to {0}." -f $selected.Name) -ForegroundColor Green
-    Write-Host 'Type a message, /help, /agents, /agent security, /audit …  /quit to leave.' -ForegroundColor DarkGray
+    Write-Host 'Type a message, /help, /dial 1-5, /status …  /quit to leave. (Optimizer always on; dial = shrink.)' -ForegroundColor DarkGray
     Write-Host ''
 
     while ($true) {
@@ -7942,20 +7689,8 @@ function Start-PromptParle {
         Write-Host 'thinking...' -ForegroundColor DarkGray
         try {
             $cliCtx = if ($sessionContext) { [string]$sessionContext } else { '' }
-            $cliLens = $null
-            try {
-                $cliSticky = 'auto'
-                try { $cliSticky = Get-PromptParleActiveAgentId } catch { $cliSticky = 'auto' }
-                $cliLens = Resolve-PromptParleTurnLens -Prompt $trimmed -StickyAgentId $cliSticky -StickyProfile $sessionProfile
-                if ($cliLens) {
-                    $sessionProfile = [string]$cliLens.profile
-                    if ($cliLens.override -or $cliLens.mode -eq 'auto') {
-                        Write-Host ("  {0}" -f $cliLens.reason) -ForegroundColor DarkCyan
-                    }
-                }
-            } catch {
-                Write-Host ("  turn-lens skip: {0}" -f $_) -ForegroundColor DarkYellow
-            }
+            # 0.14: dial-only optimize path; no agent turn-lens
+            $sessionProfile = 'general'
             try {
                 $cliPrepParams = @{
                     Prompt       = $trimmed
@@ -7964,7 +7699,6 @@ function Start-PromptParle {
                     Profile      = $sessionProfile
                     ToolsEnabled = $true
                 }
-                if ($cliLens -and $cliLens.agent_id) { $cliPrepParams.AgentId = [string]$cliLens.agent_id }
                 $cliPrep = Invoke-PromptParleAgentLocalPrep @cliPrepParams
                 $trimmed = [string]$cliPrep.prompt
                 if ($null -ne $cliPrep.context) { $cliCtx = [string]$cliPrep.context }
@@ -7974,15 +7708,7 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliFmt = @{ Prompt = $trimmed }
-            if ($cliLens -and $cliLens.agent_id) {
-                $cliFmt.AgentId = [string]$cliLens.agent_id
-                $cliFmt.Doctrine = [string]$cliLens.doctrine
-                if ($cliLens.override -or $cliLens.mode -eq 'auto') {
-                    $cliFmt.TurnNote = [string]$cliLens.reason
-                }
-            }
-            $sendPrompt = Format-PromptParleAgentPrompt @cliFmt
+            $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed
             $params = @{
                 Prompt           = $sendPrompt
                 Provider         = $sessionProvider

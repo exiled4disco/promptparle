@@ -1205,33 +1205,26 @@
 
         <div class="side-section">
           <h2>Chat</h2>
-          <div class="field-compact">
-            <label for="agentSelect" title="Sticky preference — each message can use a different lens if your question changes">Agent</label>
-            <div class="agent-row">
-              <select id="agentSelect"></select>
-              <button type="button" class="secondary mini-primary" id="manageAgentsBtn" title="Create and optimize local agents">Manage</button>
-            </div>
+          <!-- Agents retired 0.14 — continuous chat + dial-owned optimizer -->
+          <div class="field-compact" hidden aria-hidden="true">
+            <select id="agentSelect"><option value="none">none</option></select>
+            <button type="button" id="manageAgentsBtn" hidden>Manage</button>
           </div>
           <div class="field-compact">
             <label for="provider">Provider</label>
             <select id="provider"></select>
           </div>
           <div class="field-compact">
-            <label for="dial">Dial <span class="ver-line" style="display:inline" id="agentMeta"></span></label>
-            <!-- profile follows agent; hidden select kept for API payload -->
+            <label for="dial" title="Always optimizes (shrinks tokens). Dial = how aggressive. High fidelity kept.">Dial <span class="ver-line" style="display:inline" id="agentMeta"></span></label>
+            <!-- Profile fixed general; dial is the only aggressiveness control -->
             <select id="profile" class="hidden-profile" aria-hidden="true" tabindex="-1">
-              <option value="general">General</option>
-              <option value="developer">Developer</option>
-              <option value="security-review">Security review</option>
-              <option value="log-analysis">Log analysis</option>
-              <option value="documentation">Documentation</option>
-              <option value="executive-summary">Executive summary</option>
+              <option value="general" selected>General</option>
             </select>
             <div class="dial-row">
               <input type="range" id="dial" min="1" max="5" step="1" value="3" />
               <div class="dial-value">
                 <strong id="dialLabel">3 · Balanced</strong>
-                <span class="hint" id="dialHint"> · ~45–60% fewer</span>
+                <span class="hint" id="dialHint"> · always shrink · high fidelity</span>
               </div>
             </div>
             <div class="checks dial-tools">
@@ -1239,7 +1232,7 @@
                 <input type="checkbox" id="toolsEnabled" checked />
                 <strong>Tools</strong>
               </label>
-              <label title="Optimize context only — do not call the AI provider">
+              <label title="Debug: run optimizer only — do not call the AI provider">
                 <input type="checkbox" id="optimizeOnly" />
                 Optimize only
               </label>
@@ -1375,14 +1368,12 @@
       <div>
       <h3>Session</h3>
       <pre>/help                 this help
-/status               agent, workspace, ssh, dial, tools
-/agents · /agent &lt;name&gt;
-/agent new Name | system…
-/agent optimize [name]
+/status               provider, dial, tools, workspace, ssh
 /tools [on|off]       session local tools (default on)
 /tool file_index|deps|git_diff|code_brief
-/dial 1-5 · /provider · /optimize · /usage · /clear
-Sidebar: Dial + Tools (auto on) · Agent → Manage</pre>
+/dial 1-5             shrink aggressiveness (always optimizes)
+/provider · /optimize · /usage · /clear
+Sidebar: Provider + Dial + Tools — no agents</pre>
       </div>
       <div>
       <h3>Chat history</h3>
@@ -1391,10 +1382,10 @@ Sidebar: Dial + Tools (auto on) · Agent → Manage</pre>
 /clear                active chat only
 History: this browser (localStorage)</pre>
 
-      <h3>Agent shortcuts</h3>
-      <pre>security:  /audit  /threats
-docs:      /summary  /risks
-code:      /review  /explain</pre>
+      <h3>Product</h3>
+      <pre>You → optimizer (dial) → model
+Continuous chat. High-fidelity shrink.
+Agents / multi-lens routing retired.</pre>
       </div>
       <div class="help-span">
       <h3>Project connections</h3>
@@ -1709,11 +1700,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     let historySaveTimer = null;
 
     const DIAL_META = {
-      1: { label: '1 · Max fidelity', hint: '~0–15% fewer · near-full text' },
-      2: { label: '2 · High fidelity', hint: '~25–40% fewer · coverage + deep keep' },
-      3: { label: '3 · Balanced', hint: '~45–60% fewer · solid coverage' },
-      4: { label: '4 · High savings', hint: '~70–85% fewer · map + obligations' },
-      5: { label: '5 · Max savings', hint: '~85%+ fewer · executive crush' }
+      1: { label: '1 · Max fidelity', hint: 'always optimize · light shrink' },
+      2: { label: '2 · High fidelity', hint: 'always optimize · ~25–40% fewer' },
+      3: { label: '3 · Balanced', hint: 'always optimize · ~45–60% fewer' },
+      4: { label: '4 · High savings', hint: 'always optimize · ~70–85% fewer' },
+      5: { label: '5 · Max savings', hint: 'always optimize · ~85%+ fewer' }
     };
 
     function updateDialUi() {
@@ -2650,8 +2641,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     function updateAgentMeta(s) {
       if (!agentMeta) return;
-      const prof = (s && s.profile) || profileEl.value || 'general';
-      agentMeta.textContent = prof !== 'general' ? '· ' + prof : '';
+      // 0.14: no agent/profile persona — show dial-owned optimize only
+      agentMeta.textContent = '· optimize';
     }
 
     function renderChips() {
@@ -4179,14 +4170,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       } else if (toolsEnabledEl && typeof s.tools_enabled === 'undefined') {
         toolsEnabledEl.checked = true; // default ON
       }
-      if (s.active_agent && agentSelect) {
-        // option may not exist yet if agents still loading — set after load too
-        if (agentSelect.querySelector('option[value="' + s.active_agent + '"]')) {
-          agentSelect.value = s.active_agent;
-        } else {
-          agentSelect.dataset.pendingAgent = s.active_agent;
-        }
-      }
+      if (profileEl) profileEl.value = 'general';
+      if (agentSelect) agentSelect.value = 'none';
       updateAgentMeta(s);
       applyWorkspaceUi(s);
     }
@@ -4196,56 +4181,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     var agentEditId = '';
 
     async function loadAgents() {
-      try {
-        const res = await fetch('/api/agents');
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'agents failed');
-        agentCatalog = data.agents || [];
-        if (data.tools && data.tools.length) toolCatalog = data.tools;
-        agentSelect.innerHTML = '';
-        // Deterministic default first: Auto
-        var sorted = (agentCatalog || []).slice().sort(function (a, b) {
-          var rank = function (id) {
-            if (id === 'auto') return 0;
-            if (id === 'default') return 1;
-            if (id === 'code') return 2;
-            if (id === 'security') return 3;
-            if (id === 'docs') return 4;
-            return 10;
-          };
-          return rank(a.id) - rank(b.id);
-        });
-        sorted.forEach(function (a) {
-          const opt = document.createElement('option');
-          opt.value = a.id;
-          var extra = '';
-          if (a.id === 'auto') extra = ' · best lens each message';
-          else if (a.tools && a.tools.length) extra = ' · ' + a.tools.length + ' tools';
-          else if (a.commands && a.commands.length) extra = ' (/' + a.commands.join(', /') + ')';
-          opt.textContent = a.name + extra;
-          agentSelect.appendChild(opt);
-        });
-        var wantAgent = data.active_agent || 'auto';
-        if (wantAgent === 'default') wantAgent = 'auto';
-        if (agentSelect.querySelector('option[value="' + wantAgent + '"]')) {
-          agentSelect.value = wantAgent;
-        } else if (data.active_agent) {
-          agentSelect.value = data.active_agent;
-        }
-        if (agentSelect.dataset.pendingAgent) {
-          const pend = agentSelect.dataset.pendingAgent;
-          if (agentSelect.querySelector('option[value="' + pend + '"]')) {
-            agentSelect.value = pend;
-          }
-          delete agentSelect.dataset.pendingAgent;
-        }
-        updateAgentMeta({ active_agent: agentSelect.value, profile: profileEl.value, dial: parseInt(dialEl.value, 10) || 3 });
-        if (document.getElementById('agentModal').classList.contains('open')) {
-          renderAgentList();
-        }
-      } catch (e) {
-        agentSelect.innerHTML = '<option value="auto">Auto · best lens each message</option>';
+      // Agents retired 0.14 — stub keeps boot path safe
+      agentCatalog = [];
+      if (agentSelect) {
+        agentSelect.innerHTML = '<option value="none">none</option>';
+        agentSelect.value = 'none';
       }
+      if (profileEl) profileEl.value = 'general';
+      updateAgentMeta({ profile: 'general', dial: parseInt(dialEl.value, 10) || 3 });
     }
 
     function parseAgentCommands(str) {
@@ -4494,39 +4437,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       } catch (e) { /* ignore */ }
     }
 
-    agentSelect.addEventListener('change', async function () {
-      const id = agentSelect.value;
-      try {
-        const res = await fetch('/api/command', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            line: '/agent ' + id,
-            provider: providerEl.value,
-            profile: profileEl.value,
-            dial: parseInt(dialEl.value, 10) || 3,
-            optimize_only: !!optimizeOnlyEl.checked,
-            tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
-          })
-        });
-        const data = await res.json();
-        if (data.session) applySession(data.session);
-        if (data.message) addMsg('sys', data.message);
-      } catch (e) {
-        addMsg('sys', 'Could not switch agent: ' + (e.message || e), null, true);
-      }
-    });
-
-    document.getElementById('manageAgentsBtn').addEventListener('click', openAgentModal);
-    document.getElementById('agentCloseBtn').addEventListener('click', closeAgentModal);
-    document.getElementById('agentNewBtn').addEventListener('click', blankAgentForm);
-    document.getElementById('agentSaveBtn').addEventListener('click', function () { saveAgentFromForm(false); });
-    document.getElementById('agentActivateBtn').addEventListener('click', function () { saveAgentFromForm(true); });
-    document.getElementById('agentOptimizeBtn').addEventListener('click', optimizeAgentFromForm);
-    document.getElementById('agentDeleteBtn').addEventListener('click', deleteAgentFromForm);
-    document.getElementById('agentModal').addEventListener('click', function (e) {
-      if (e.target === document.getElementById('agentModal')) closeAgentModal();
-    });
+    // Agent UI retired 0.14 — no switcher listeners
+    if (agentSelect) {
+      agentSelect.addEventListener('change', function () {
+        agentSelect.value = 'none';
+        if (profileEl) profileEl.value = 'general';
+      });
+    }
 
     async function runSlash(line) {
       const res = await fetch('/api/command', {
@@ -4882,11 +4799,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // Keep agent meta chip in sync when dial moves
     dialEl.addEventListener('input', function () {
       updateAgentMeta({
-        active_agent: agentSelect.value,
-        agent_name: agentSelect.options[agentSelect.selectedIndex]
-          ? agentSelect.options[agentSelect.selectedIndex].textContent.split(' (')[0]
-          : agentSelect.value,
-        profile: profileEl.value,
+        active_agent: 'none',
+        agent_name: 'chat',
+        profile: 'general',
         dial: parseInt(dialEl.value, 10) || 3
       });
     });
@@ -5116,8 +5031,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       wait.id = 'waiting';
       var toolsOn = !toolsEnabledEl || toolsEnabledEl.checked;
       wait.textContent = optimizeOnlyEl.checked
-        ? 'Optimizing (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · ' + (agentSelect.value || 'default') + ')…'
-        : 'Sending (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · ' + (agentSelect.value || 'default') + ')' +
+        ? 'Optimizing (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ')…'
+        : 'Sending (dial ' + dialNow + '/5 · tools ' + (toolsOn ? 'on' : 'off') + ' · optimize on)' +
           (context ? ' · context ' + context.length.toLocaleString() + 'c' : '') +
           (hist.length ? ' · mem ' + hist.length : '') + '…';
       chat.appendChild(wait);
@@ -5129,7 +5044,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       try {
         const payload = {
           provider: providerEl.value,
-          profile: profileEl.value,
+          profile: 'general',
           compression_level: dialNow,
           prompt: prompt,
           context: context || undefined,
@@ -5168,24 +5083,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         } else {
           const text = data.response || data.Response || '(empty response)';
           addMsg('bot', text, meta);
-          try {
-            var nm = meta ? normalizeMeta(meta) : null;
-            var tools = (nm && nm.local_tools) ? nm.local_tools : (meta && meta.local_tools) ? meta.local_tools : [];
-            if (tools && tools.length) {
-              var lens = null;
-              for (var ti = 0; ti < tools.length; ti++) {
-                var ts = String(tools[ti] || '');
-                if (ts.indexOf('turn-lens:') === 0) { lens = ts; break; }
-              }
-              if (lens) {
-                logOps('Agent lens this turn: ' + lens.replace('turn-lens:', ''), { level: 'ok' });
-              }
-            }
-          } catch (eLens) { /* ignore */ }
           if (!meta || !(normalizeMeta(meta).original_tokens > 0)) {
             addMsg('sys', 'Note: token savings metadata missing from response — check PowerShell window for PromptParle stats.', null, true);
           } else if (normalizeMeta(meta).token_reduction_percent === 0 && context && context.length > 2000) {
-            addMsg('sys', '0% reduction on a large attach — try dial 4–5, or profile “executive-summary”.', null, true);
+            addMsg('sys', '0% reduction on a large attach — try dial 4–5 (dial is the only shrink knob).', null, true);
           }
         }
       } catch (err) {
