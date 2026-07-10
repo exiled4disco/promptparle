@@ -1,10 +1,10 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Prove PromptParle is optimizing — noisy context in, lean context out.
+  Prove PromptParle is optimizing - noisy context in, lean context out.
 
 .DESCRIPTION
-  1) Optimize-only (no AI spend) — shows token reduction banner
+  1) Optimize-only (no AI spend) - shows token reduction banner
   2) Optional full AI call with -Full
   3) Prints portal Usage reminder
 
@@ -57,7 +57,7 @@ if ($result.Metadata) {
     Write-Host ("  Optimized tokens : {0}" -f $opt)
     Write-Host ("  Reduction        : {0}%" -f $pct) -ForegroundColor Green
     if ($pct -lt 20) {
-        Write-Host '  Unexpected low savings — update module (git pull + Install-PromptParle.ps1)' -ForegroundColor Yellow
+        Write-Host '  Unexpected low savings - update module (git pull + Install-PromptParle.ps1)' -ForegroundColor Yellow
     } else {
         Write-Host '  Savings look good. Check portal Usage for before/after text.' -ForegroundColor Green
     }

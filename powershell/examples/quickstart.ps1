@@ -1,4 +1,4 @@
-# PromptParle quickstart examples
+﻿# PromptParle quickstart examples
 # Prerequisites:
 #   Import-Module PromptParle
 #   Set-PromptParleApiKey -ApiKey 'pp_live_...'

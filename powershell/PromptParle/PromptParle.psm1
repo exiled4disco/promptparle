@@ -1,7 +1,7 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  PromptParle PowerShell module — AI context optimization gateway client.
+  PromptParle PowerShell module - AI context optimization gateway client.
 
 .DESCRIPTION
   Send prompts through PromptParle for optimization and provider routing.
@@ -332,7 +332,7 @@ function Get-PromptParleConfig {
 
     $c = Get-PromptParleConfigInternal
     $masked = if ($c.ApiKey -and $c.ApiKey.Length -gt 12) {
-        $c.ApiKey.Substring(0, 12) + '…' + $c.ApiKey.Substring($c.ApiKey.Length - 4)
+        $c.ApiKey.Substring(0, 12) + '...' + $c.ApiKey.Substring($c.ApiKey.Length - 4)
     } elseif ($c.ApiKey) {
         '****'
     } else {
@@ -682,10 +682,10 @@ function Start-PromptParleLocalServer {
       Run a local chat UI on http://127.0.0.1 (this PC only).
 
     .DESCRIPTION
-      Browser UI is local — nothing serves HTML from AWS.
+      Browser UI is local - nothing serves HTML from AWS.
       Chat still uses your desktop API key to call PromptParle for
       optimize + your stored provider keys. AI token spend is on YOUR
-      provider account (BYOK), not PromptParle's OpenAI bill.
+      provider account (BYOK), not the PromptParle OpenAI bill.
 
     .PARAMETER Port
       Local port. Default 7788.
@@ -699,8 +699,8 @@ function Start-PromptParleLocalServer {
     if (-not $config.ApiKey) {
         Write-Host ''
         Write-Host 'Local chat needs a desktop API key (stays on your PC).' -ForegroundColor Yellow
-        Write-Host '1) https://promptparle.com/app/api-keys  → create pp_live_…' -ForegroundColor White
-        Write-Host "2) Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
+        Write-Host '1) https://promptparle.com/app/api-keys  -> create pp_live_...' -ForegroundColor White
+        Write-Host '2) Set-PromptParleApiKey -ApiKey pp_live_YOUR_KEY' -ForegroundColor White
         Write-Host '3) pp' -ForegroundColor Cyan
         Write-Host ''
         return
@@ -712,7 +712,7 @@ function Start-PromptParleLocalServer {
         $uiPath = Join-Path $root 'local-ui/index.html'
     }
     if (-not (Test-Path -LiteralPath $uiPath)) {
-        throw "Local UI not found at $uiPath — reinstall the module (git pull + Install-PromptParle.ps1)."
+        throw "Local UI not found at $uiPath - reinstall the module (git pull + Install-PromptParle.ps1)."
     }
     $html = Get-Content -LiteralPath $uiPath -Raw -Encoding UTF8
 
@@ -723,7 +723,7 @@ function Start-PromptParleLocalServer {
     try {
         $listener.Start()
     } catch {
-        Write-Host "Could not bind $prefix — is port $Port in use?" -ForegroundColor Red
+        Write-Host "Could not bind $prefix - is port $Port in use?" -ForegroundColor Red
         Write-Host $_ -ForegroundColor Red
         Write-Host "Try: Start-PromptParle -Port 7790" -ForegroundColor Yellow
         return
@@ -821,7 +821,7 @@ function Start-PromptParleLocalServer {
 function Start-PromptParle {
     <#
     .SYNOPSIS
-      Start PromptParle — local browser chat by default.
+      Start PromptParle - local browser chat by default.
 
     .DESCRIPTION
       Default: starts a LOCAL web UI on http://127.0.0.1:7788 and opens it.
@@ -873,7 +873,7 @@ function Start-PromptParle {
         Write-Host ''
         Write-Host 'Needs a desktop API key on this PC.' -ForegroundColor Yellow
         Write-Host '1) https://promptparle.com/app/api-keys' -ForegroundColor White
-        Write-Host "2) Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
+        Write-Host '2) Set-PromptParleApiKey -ApiKey pp_live_YOUR_KEY' -ForegroundColor White
         Write-Host '3) pp' -ForegroundColor Cyan
         Write-Host ''
         return

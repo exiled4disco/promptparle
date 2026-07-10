@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Install the PromptParle module into the current user's PowerShell module path.
@@ -83,8 +83,8 @@ Import-Module PromptParle -Force
 $loaded = Get-Module PromptParle
 Write-Host ("Imported PromptParle {0}" -f $loaded.Version) -ForegroundColor Green
 
-if ($loaded.Version -lt [version]'0.4.0') {
-    Write-Host 'WARNING: expected 0.4.0+ for local chat. git pull and reinstall.' -ForegroundColor Yellow
+if ($loaded.Version -lt [version]'0.4.1') {
+    Write-Host 'WARNING: expected 0.4.1+ for local chat. git pull and reinstall.' -ForegroundColor Yellow
 }
 
 Write-Host ''

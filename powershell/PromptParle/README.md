@@ -2,11 +2,11 @@
 
 **Trim the prompt. Keep the signal.**
 
-Client for the [PromptParle](https://promptparle.com) API — optimize context, mask secrets, and route to OpenAI, Claude, Gemini, or Grok.
+Client for the [PromptParle](https://promptparle.com) API - optimize context, mask secrets, and route to OpenAI, Claude, Gemini, or Grok.
 
 ## Install
 
-### Option A — from GitHub (recommended on Windows)
+### Option A - from GitHub (recommended on Windows)
 
 Requires [Git for Windows](https://git-scm.com/download/win).
 
@@ -23,7 +23,7 @@ cd $env:USERPROFILE\src\promptparle
 .\powershell\Install-PromptParle.ps1 -Force
 ```
 
-### Option B — copy into your modules path
+### Option B - copy into your modules path
 
 **Windows (PowerShell 5.1 or 7):**
 
@@ -46,7 +46,7 @@ Copy-Item -Recurse -Force ./powershell/PromptParle/* $dest
 Import-Module PromptParle -Force
 ```
 
-### Option C — import from a local checkout
+### Option C - import from a local checkout
 
 ```powershell
 Import-Module ./powershell/PromptParle/PromptParle.psd1 -Force
@@ -54,15 +54,15 @@ Import-Module ./powershell/PromptParle/PromptParle.psd1 -Force
 ./powershell/Install-PromptParle.ps1 -Force
 ```
 
-### Option D — site tarball
+### Option D - site tarball
 
 https://promptparle.com/PromptParle-PowerShell.tgz
 
 ## Setup
 
 1. Create an account at https://promptparle.com and verify email  
-2. **Providers** → add OpenAI / Claude / Gemini / Grok key  
-3. **API Keys** → create a desktop key (`pp_live_…`)  
+2. **Providers** -> add OpenAI / Claude / Gemini / Grok key  
+3. **API Keys** -> create a desktop key (`pp_live_...`)  
 4. Configure the module:
 
 ```powershell
@@ -121,7 +121,7 @@ Add-Content $PROFILE "Import-Module PromptParle"
 | Cost | Who pays |
 |------|----------|
 | OpenAI / Claude / Gemini / Grok tokens | **You** (keys you added under Providers) |
-| Local chat UI | Free — runs on your PC |
+| Local chat UI | Free - runs on your PC |
 | PromptParle server (optimize + route + usage) | PromptParle infra (small API calls) |
 
 Portal **Usage** still records savings. We are not putting the full chat SPA load on AWS for every keystroke of HTML.
@@ -134,7 +134,7 @@ Portal **Usage** still records savings. We are not putting the full chat SPA loa
 | `Start-PromptParleLocalServer` | Same local server |
 | `Start-PromptParle -Cli` | Terminal chat |
 | `Start-PromptParle -Cloud` | Open portal chat (optional) |
-| `Set-PromptParleApiKey` | Save `pp_live_…` key |
+| `Set-PromptParleApiKey` | Save `pp_live_...` key |
 | `Get-PromptParleConfig` | Show config (key masked) |
 | `Get-PromptParleProvider` | List providers + which keys are set |
 | `Get-PromptParleUsage` | Token savings summary |
