@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.13.0'
+    ModuleVersion     = '0.13.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.13.1: Fix module parse error ($tag:) that blocked Import-Module after Update
 0.13.0: Fidelity-first token cut — error_brief, relevant_slice, chat [MEM], prompt-hot keep, head+tail budget
 0.12.9: Chat always gets [CONN] Project connections brief; optimized web_search (+ /search); CLI uses LocalPrep
 0.12.8: Live SSH folder list while typing (Dir field + terminal cd/path)

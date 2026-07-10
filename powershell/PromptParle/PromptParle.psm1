@@ -1750,7 +1750,7 @@ function Invoke-PromptParleChatMemoryBrief {
             $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen 180
             if ($extract) {
                 $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
-                $lines.Add("· $tag: $extract")
+                $lines.Add("· ${tag}: $extract")
             }
         }
     }
@@ -5311,28 +5311,78 @@ function Update-PromptParleClient {
         if (-not $newVer) { $newVer = $remote }
         if (-not $newVer) { $newVer = 'unknown' }
 
+        # Parse-check BEFORE overwriting the install (prevents a bad package from bricking the client)
+        $psmCheck = Join-Path $source 'PromptParle.psm1'
+        if (-not (Test-Path -LiteralPath $psmCheck)) {
+            throw 'Package missing PromptParle.psm1 — aborting update (existing install left intact).'
+        }
+        try {
+            $parseErrs = $null
+            $parseTok = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+                $psmCheck,
+                [ref]$parseTok,
+                [ref]$parseErrs
+            )
+            if ($parseErrs -and $parseErrs.Count -gt 0) {
+                $first = $parseErrs[0]
+                $where = if ($first.Extent) {
+                    "line $($first.Extent.StartLineNumber): $($first.Message)"
+                } else { [string]$first.Message }
+                throw "Downloaded module failed parse check ($where). Existing install left intact."
+            }
+        } catch {
+            if ("$_" -match 'parse check|missing PromptParle') { throw }
+            Write-Host ("  note: parse preflight skipped ({0})" -f $_) -ForegroundColor DarkYellow
+        }
+
         $userModules = Get-PromptParleUserModulesDir
         $dest = Join-Path $userModules 'PromptParle'
         New-Item -ItemType Directory -Path $userModules -Force | Out-Null
 
+        # Snapshot current install so we can roll back if copy/import fails
+        $backup = $null
+        if (Test-Path -LiteralPath $dest) {
+            $backup = Join-Path $temp 'PromptParle-backup'
+            try {
+                Copy-Item -LiteralPath $dest -Destination $backup -Recurse -Force -ErrorAction Stop
+            } catch {
+                $backup = $null
+                Write-Host ("  note: could not snapshot current install ({0})" -f $_) -ForegroundColor DarkYellow
+            }
+        }
+
         Write-Host ("Installing PromptParle {0} -> {1}" -f $newVer, $dest) -ForegroundColor Cyan
 
         # Copy into place (replace files; keep folder if locked bits fail partially)
-        if (Test-Path -LiteralPath $dest) {
-            Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
-                $target = Join-Path $dest $_.Name
-                if ($_.PSIsContainer) {
-                    if (Test-Path -LiteralPath $target) {
-                        Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+        try {
+            if (Test-Path -LiteralPath $dest) {
+                Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+                    $target = Join-Path $dest $_.Name
+                    if ($_.PSIsContainer) {
+                        if (Test-Path -LiteralPath $target) {
+                            Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+                        } else {
+                            Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force
+                        }
                     } else {
-                        Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force
+                        Copy-Item -LiteralPath $_.FullName -Destination $target -Force
                     }
-                } else {
-                    Copy-Item -LiteralPath $_.FullName -Destination $target -Force
                 }
+            } else {
+                Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
             }
-        } else {
-            Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
+        } catch {
+            if ($backup -and (Test-Path -LiteralPath $backup)) {
+                Write-Host '  copy failed — restoring previous install...' -ForegroundColor Yellow
+                try {
+                    if (Test-Path -LiteralPath $dest) {
+                        Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                    Copy-Item -LiteralPath $backup -Destination $dest -Recurse -Force
+                } catch { }
+            }
+            throw
         }
 
         Get-ChildItem -LiteralPath $dest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -5371,10 +5421,27 @@ function Update-PromptParleClient {
                 'powershell'
             }
             $destEsc = $manifestPath -replace "'", "''"
+            # Restart must surface import failures (log file) so a bad package does not leave UI "dead" silently
+            $logEsc = (Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-restart.log') -replace "'", "''"
             $cmd = @"
-Start-Sleep -Seconds 2
-Import-Module '$destEsc' -Force -Global
-try { Start-PromptParleLocalServer -Port $RestartPort } catch { Start-PromptParle }
+`$ErrorActionPreference = 'Continue'
+`$log = '$logEsc'
+try {
+  Start-Sleep -Seconds 2
+  "restart begin `$(Get-Date -Format o)" | Set-Content -LiteralPath `$log -Encoding UTF8
+  Import-Module '$destEsc' -Force -Global -ErrorAction Stop
+  "import ok version=`$(try { Get-PromptParleClientVersion } catch { '?' })" | Add-Content -LiteralPath `$log
+  try {
+    Start-PromptParleLocalServer -Port $RestartPort
+  } catch {
+    "local server failed: `$_" | Add-Content -LiteralPath `$log
+    Start-PromptParle
+  }
+} catch {
+  "RESTART FAILED: `$_" | Add-Content -LiteralPath `$log
+  try { [Console]::Error.WriteLine("PromptParle restart failed: `$_") } catch { }
+  exit 1
+}
 "@
             Write-Host ("Restarting local chat on port {0}..." -f $RestartPort) -ForegroundColor Cyan
             Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) | Out-Null
@@ -6999,6 +7066,10 @@ Export-ModuleMember -Function @(
     'Save-PromptParleAgent',
     'Remove-PromptParleAgent',
     'Set-PromptParleActiveAgent',
+    'Get-PromptParleToolCatalog',
+    'Invoke-PromptParleLocalTool',
+    'Invoke-PromptParleAgentLocalPrep',
+    'Optimize-PromptParleAgent',
     'Invoke-PromptParleSlashCommand',
     'Get-PromptParleWorkspace',
     'Set-PromptParleWorkspace',
