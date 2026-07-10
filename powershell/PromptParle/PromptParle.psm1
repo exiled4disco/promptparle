@@ -678,33 +678,36 @@ function Write-PromptParleHttpResponse {
 
 function Get-PromptParleListenersOnPort {
     param([int]$Port)
-    $pids = @()
+    # Always return Object[] so StrictMode callers can use .Count safely
+    $pids = New-Object System.Collections.Generic.List[int]
     try {
         if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-            $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-            foreach ($c in @($conns)) {
-                if ($c.OwningProcess) { $pids += [int]$c.OwningProcess }
+            $conns = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+            foreach ($c in $conns) {
+                if ($c.OwningProcess) { [void]$pids.Add([int]$c.OwningProcess) }
             }
         }
     } catch { }
 
     if ($pids.Count -eq 0 -and $script:PromptParleIsWindows) {
         try {
-            $lines = netstat -ano -p tcp 2>$null | Select-String -Pattern (":$Port\s+") 
+            $lines = @(netstat -ano -p tcp 2>$null | Select-String -Pattern (":$Port\s+"))
             foreach ($line in $lines) {
                 $s = $line.ToString()
                 if ($s -notmatch 'LISTENING') { continue }
-                $parts = ($s -split '\s+') | Where-Object { $_ }
+                $parts = @(($s -split '\s+') | Where-Object { $_ })
                 if ($parts.Count -ge 5) {
                     $procId = 0
                     if ([int]::TryParse($parts[-1], [ref]$procId) -and $procId -gt 0) {
-                        $pids += $procId
+                        [void]$pids.Add($procId)
                     }
                 }
             }
         } catch { }
     }
-    return @($pids | Select-Object -Unique)
+    $unique = @($pids | Select-Object -Unique)
+    # comma forces array even for 0 or 1 element
+    return ,$unique
 }
 
 function Clear-PromptParleLocalPort {
@@ -718,8 +721,8 @@ function Clear-PromptParleLocalPort {
         [switch]$Quiet
     )
 
-    $pids = Get-PromptParleListenersOnPort -Port $Port
-    if ($pids.Count -eq 0) {
+    $pids = @(Get-PromptParleListenersOnPort -Port $Port)
+    if (@($pids).Length -eq 0) {
         # Nothing listening - do not wait on HTTP timeout
         return
     }
@@ -736,8 +739,8 @@ function Clear-PromptParleLocalPort {
         Start-Sleep -Milliseconds 200
     } catch { }
 
-    $pids = Get-PromptParleListenersOnPort -Port $Port
-    foreach ($procId in $pids) {
+    $pids = @(Get-PromptParleListenersOnPort -Port $Port)
+    foreach ($procId in @($pids)) {
         if ($procId -eq $PID) { continue }
         $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
         if (-not $proc) { continue }
@@ -780,8 +783,8 @@ function Stop-PromptParleLocalServer {
     if ($AllCommonPorts) {
         $any = $false
         foreach ($p in 7788..7798) {
-            $listeners = Get-PromptParleListenersOnPort -Port $p
-            if ($listeners.Count -gt 0) {
+            $listeners = @(Get-PromptParleListenersOnPort -Port $p)
+            if (@($listeners).Length -gt 0) {
                 $any = $true
                 Clear-PromptParleLocalPort -Port $p
             }
