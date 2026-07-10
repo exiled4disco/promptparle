@@ -1170,8 +1170,10 @@ function Get-PromptParleChatSystemPrompt {
         'When evidence is enough: answer or implement. NEVER answer with the method (no run-ls homework, no search-yourself) when hands can do it. NEVER Generating-now without a file fence body for user documents.',
         'MUTATE: apply path=rel full files under source_root (client writes, backups, never live /var/www). run allowlisted pipeline only (prisma/npm/git status-class). Client reports What changed.',
         'DELIVER: user docs need file name=Report.md (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
-        'PLAN: for non-trivial mutate, brief plan + blast radius in few lines; on clear go-ahead implement same turn. Tags CONN PROJECT SSH MEM ATTACH WEB OBSERVE HANDS are live evidence — trust them over memory invention.',
-        'Opaque outcomes are bugs: hands result, apply/run/file, or one hard blocker.'
+        'PLAN: for non-trivial mutate, brief plan + blast radius in few lines; on clear go-ahead implement same turn. Tags CONN PROJECT SSH MEM ATTACH WEB OBSERVE HANDS GROUNDING PROVENANCE are live evidence — trust them over memory invention.',
+        'GROUNDING 0.20: When [OBSERVE]/[WEB]/[GROUNDING] present, state ONLY facts supported by that text. Never invent capabilities (e.g. honeypots) not in the fetch.',
+        'PROVENANCE 0.20: When [PROVENANCE] is present, you MUST report client YES/NO facts: on-source or not, and if prior assistant invented the claim say so explicitly. Never answer only "nowhere" without saying where the phrase entered the chat.',
+        'Opaque outcomes are bugs: hands result, apply/run/file, provenance facts, or one hard blocker.'
     ) -join ' '
 }
 
@@ -3330,8 +3332,9 @@ function Remove-PromptParleHandsBlocks {
 function Invoke-PromptParleAgentTurn {
     <#
     .SYNOPSIS
-      0.19 token-first agent loop: brain (API) + hands (local/SSH/web).
-      Max rounds capped by dial. After hands, next round context is ONLY compact [HANDS] (token win).
+      0.20 token-first agent loop: brain (API) + hands (local/SSH/web).
+      Max rounds capped by dial. After hands, next round = [HANDS] pack + compact evidence spine
+      (PROVENANCE/GROUNDING/OBSERVE excerpt) so confidence is not dropped for tokens.
     #>
     [CmdletBinding()]
     param(
@@ -3369,7 +3372,12 @@ function Invoke-PromptParleAgentTurn {
 
     $handsCatalog = Get-PromptParleHandsCatalogBrief
     $baseRuntime = if ($Runtime) { $Runtime.Trim() } else { '' }
-    $runtime = ($baseRuntime + ' AGENT 0.19 token-first: use hands fence (tool: arg) when you need client evidence; keep requests tiny; when done, final answer with apply/run/file — no method homework.').Trim()
+    $runtime = ($baseRuntime + ' AGENT 0.20 token-first: use hands fence (tool: arg) when you need client evidence; keep requests tiny; when done, final answer with apply/run/file — no method homework. Never invent product facts not in [OBSERVE]/[HANDS]/[EVIDENCE_SPINE].').Trim()
+
+    # Frozen prep evidence for post-pass + spine (agent must not discard confidence for tokens)
+    $prepEvidence = if ($Context) { [string]$Context } else { '' }
+    $evidenceSpine = ''
+    try { $evidenceSpine = Get-PromptParleEvidenceSpine -Context $prepEvidence -MaxChars 3200 } catch { $evidenceSpine = '' }
 
     $roundContext = $Context
     if ($roundContext) {
@@ -3438,17 +3446,27 @@ function Invoke-PromptParleAgentTurn {
         }
         if ($batch.Count -eq 0) {
             $roundPrompt = $Prompt + "`n`n[CLIENT] Hands already provided earlier this turn. Give the final answer now — no more hands requests."
-            $roundContext = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000
+            $packEmpty = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000
+            $roundContext = if ($evidenceSpine) {
+                ($handsCatalog + "`n`n" + $evidenceSpine + "`n`n" + $packEmpty)
+            } else {
+                ($handsCatalog + "`n`n" + $packEmpty)
+            }
             continue
         }
 
         $pack = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000
-        $roundContext = $handsCatalog + "`n`n" + $pack
+        $roundContext = if ($evidenceSpine) {
+            ($handsCatalog + "`n`n" + $evidenceSpine + "`n`n" + $pack)
+        } else {
+            ($handsCatalog + "`n`n" + $pack)
+        }
         $roundPrompt = @(
             $Prompt.Trim()
             ''
-            '[CLIENT DIRECTIVE — hands fulfilled · token-first 0.19]'
+            '[CLIENT DIRECTIVE — hands fulfilled · token-first 0.20]'
             'Client already ran hands tools. Results are in [HANDS] context.'
+            'If [PROVENANCE]/[EVIDENCE_SPINE]/[GROUNDING] present, treat as client truth — do not invent product facts beyond them.'
             'Produce the FINAL user-facing answer now (or apply/run/file).'
             'Do not re-request the same tools. Do not dump methods. Be concise.'
         ) -join "`n"
@@ -3493,6 +3511,16 @@ function Invoke-PromptParleAgentTurn {
         }
     }
 
+    # Evidence for post-pass: prep + hands (so grounding sees web_page results from agent rounds)
+    $evidenceContext = $prepEvidence
+    if ($allHands.Count -gt 0) {
+        try {
+            $hp = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 12000
+            if ($evidenceContext) { $evidenceContext = $evidenceContext + "`n`n" + $hp }
+            else { $evidenceContext = $hp }
+        } catch { }
+    }
+
     $metaOut = $null
     if ($lastResult) {
         $metaOut = Get-PromptParleProp $lastResult 'metadata'
@@ -3505,7 +3533,8 @@ function Invoke-PromptParleAgentTurn {
         tokens_sum_original  = $sumOrig
         tokens_sum_optimized = $sumOpt
         token_first          = $true
-        architecture         = '0.19-brain-hands'
+        architecture         = '0.20-brain-hands-grounded'
+        has_evidence_spine   = [bool]$evidenceSpine
     }
 
     if ($null -ne $lastResult) {
@@ -3518,20 +3547,23 @@ function Invoke-PromptParleAgentTurn {
                 $lastResult | Add-Member -NotePropertyName response -NotePropertyValue $lastResp -Force
             }
             $lastResult | Add-Member -NotePropertyName agent -NotePropertyValue ([pscustomobject]$agentMeta) -Force
+            $lastResult | Add-Member -NotePropertyName evidence_context -NotePropertyValue $evidenceContext -Force
             return $lastResult
         } catch {
             return [pscustomobject]@{
-                response         = $lastResp
-                metadata         = $metaOut
-                agent            = [pscustomobject]$agentMeta
-                optimized_prompt = Get-PromptParleProp $lastResult 'optimized_prompt' $null
+                response          = $lastResp
+                metadata          = $metaOut
+                agent             = [pscustomobject]$agentMeta
+                evidence_context  = $evidenceContext
+                optimized_prompt  = Get-PromptParleProp $lastResult 'optimized_prompt' $null
             }
         }
     }
     return [pscustomobject]@{
-        response = $lastResp
-        metadata = $metaOut
-        agent    = [pscustomobject]$agentMeta
+        response         = $lastResp
+        metadata         = $metaOut
+        agent            = [pscustomobject]$agentMeta
+        evidence_context = $evidenceContext
     }
 }
 
@@ -4286,6 +4318,464 @@ function Invoke-PromptParleObservePrep {
     }
 }
 
+
+# =============================================================================
+# 0.20 — Evidence provenance + grounding (structural confidence)
+# Client verifies claims against fetched sources and prior assistant text.
+# =============================================================================
+
+function Test-PromptParleProvenanceIntent {
+    <# True when user is auditing a prior claim against a source (site/doc/memory). #>
+    param([string]$Prompt = '')
+    if (-not $Prompt) { return $false }
+    $p = $Prompt.ToLowerInvariant()
+    if ($p -match '(?i)\b(where (on|does|did|in)|where''?s|show me where|point (me )?to|cite|citation|source for|got (this|that|it) from|come from|did you (get|find|invent|make)|is that (on|from|in) (the )?(site|website|page|doc)|not (on|in) (the )?(site|website)|prove|evidence for)\b') {
+        return $true
+    }
+    if ($p -match '(?i)\b(does it (actually )?say|did (the )?(site|page|website) say|said that)\b') { return $true }
+    return $false
+}
+
+function Get-PromptParleChallengedPhrases {
+    <# Extract phrases the user is challenging (quotes, or after say/said/claim). #>
+    param([string]$Prompt = '')
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    if (-not $Prompt) { return @() }
+    $add = {
+        param([string]$s)
+        if (-not $s) { return }
+        $s = $s.Trim().Trim('"').Trim("'").Trim()
+        $s = [regex]::Replace($s, '(?i)\s+(on|in|at|from|about)\s+(the\s+)?(site|website|page|doc|source).*$', '').Trim()
+        $s = [regex]::Replace($s, '(?i)^(that|it|this|the|a|an)\s+', '').Trim()
+        if ($s.Length -lt 3 -or $s.Length -gt 120) { return }
+        $k = $s.ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($s) }
+    }
+    foreach ($m in [regex]::Matches($Prompt, '"([^"]{3,120})"')) { & $add $m.Groups[1].Value }
+    foreach ($m in [regex]::Matches($Prompt, '''([^'']{3,120})''')) { & $add $m.Groups[1].Value }
+    foreach ($m in [regex]::Matches($Prompt, '(?i)\b(?:say|said|claim(?:ed|s)?|mention(?:ed|s)?|wrote|called|named)\s+(.+?)(?:\?|$|,|\.|;)')) {
+        $s = $m.Groups[1].Value
+        $s = [regex]::Replace($s, '(?i)^(it|that|this|you)\s+', '').Trim()
+        & $add $s
+    }
+    foreach ($m in [regex]::Matches($Prompt, '(?i)\b(?:where (?:does|did|on)|got|source for|evidence for|prove)\s+(.+?)(?:\?|$|,|\.|;)')) {
+        $s = $m.Groups[1].Value
+        $s = [regex]::Replace($s, '(?i)^(it|that|this|you|the phrase|the claim|the word|the words)\s+', '').Trim()
+        $s = [regex]::Replace($s, '(?i)^(say|said|claim)\s+', '').Trim()
+        & $add $s
+    }
+    # known high-value product invention patterns when present unquoted
+    if ($Prompt -match '(?i)\bdistributed\s+honeypots?\b') { & $add 'distributed honeypots' }
+    if ($Prompt -match '(?i)\bhoneypots?\b' -and $out.Count -eq 0) { & $add 'honeypots' }
+    return @($out.ToArray())
+}
+
+function Get-PromptParleEvidenceSpine {
+    <#
+    .SYNOPSIS
+      Compact confidence spine for multi-round agent turns.
+      Token-first: keep PROVENANCE full, GROUNDING rules, short OBSERVE/WEB excerpt — not full dump.
+    #>
+    param(
+        [string]$Context = '',
+        [int]$MaxChars = 3200
+    )
+    if (-not $Context) { return '' }
+    $parts = New-Object System.Collections.Generic.List[string]
+    # Full PROVENANCE (small, mandatory)
+    foreach ($m in [regex]::Matches($Context, '(?ms)(\[PROVENANCE\][^\n]*(?:\n(?!\[)[^\n]*)*)')) {
+        [void]$parts.Add($m.Groups[1].Value.Trim())
+    }
+    # GROUNDING rules (tiny)
+    foreach ($m in [regex]::Matches($Context, '(?ms)(\[GROUNDING\][^\n]*(?:\n(?!\[)[^\n]*)*)')) {
+        [void]$parts.Add($m.Groups[1].Value.Trim())
+    }
+    # OBSERVE / WEB excerpts — head+tail fidelity, not whole page
+    $ev = Get-PromptParleEvidenceCorpus -Context $Context
+    if ($ev -and $ev.Length -gt 0) {
+        $room = [Math]::Max(400, $MaxChars - (($parts -join "`n").Length))
+        $excerpt = if ($ev.Length -gt $room) {
+            Get-PromptParleFidelityTrim -Text $ev -MaxChars $room -Marker '…[spine]…'
+        } else { $ev }
+        [void]$parts.Add("[EVIDENCE_SPINE] client-kept (0.20) — do not invent beyond this`n$excerpt")
+    }
+    if ($parts.Count -eq 0) { return '' }
+    $text = ($parts -join "`n`n")
+    if ($text.Length -gt $MaxChars) {
+        $text = Get-PromptParleFidelityTrim -Text $text -MaxChars $MaxChars -Marker '…[spine cap]…'
+    }
+    return $text
+}
+
+function Get-PromptParleEvidenceCorpus {
+    <# Build searchable evidence string from context tags (observe/web/hands/attach/spine). #>
+    param([string]$Context = '')
+    if (-not $Context) { return '' }
+    $parts = New-Object System.Collections.Generic.List[string]
+    $tagRx = '(?:OBSERVE|WEB|HANDS|CONN|PROJECT|MEM|SSH|ATTACH|GROUNDING|PROVENANCE|EVIDENCE_SPINE)'
+    foreach ($m in [regex]::Matches($Context, "(?ms)\[OBSERVE\][^\n]*\r?\n(.*?)(?=\n\[$tagRx\]|\z)")) {
+        [void]$parts.Add($m.Groups[1].Value)
+    }
+    foreach ($m in [regex]::Matches($Context, "(?ms)\[WEB\][^\n]*\r?\n(.*?)(?=\n\[$tagRx\]|\z)")) {
+        [void]$parts.Add($m.Groups[1].Value)
+    }
+    foreach ($m in [regex]::Matches($Context, "(?ms)\[EVIDENCE_SPINE\][^\n]*\r?\n(.*?)(?=\n\[$tagRx\]|\z)")) {
+        [void]$parts.Add($m.Groups[1].Value)
+    }
+    foreach ($m in [regex]::Matches($Context, '(?ms)\[HANDS\][^\n]*[\s\S]*?(?=\n\[(?:OBSERVE|WEB|CONN|PROJECT|MEM|SSH|ATTACH|GROUNDING|PROVENANCE|EVIDENCE_SPINE)\]|\z)')) {
+        [void]$parts.Add($m.Value)
+    }
+    foreach ($m in [regex]::Matches($Context, '(?ms)===== FILE:[\s\S]{0,20000}')) {
+        [void]$parts.Add($m.Value)
+    }
+    return ($parts -join "`n")
+}
+
+function Test-PromptParlePhraseInText {
+    param([string]$Phrase = '', [string]$Text = '')
+    if (-not $Phrase -or -not $Text) { return $false }
+    $p = $Phrase.ToLowerInvariant()
+    $t = $Text.ToLowerInvariant()
+    if ($t.Contains($p)) { return $true }
+    # loose: all significant tokens present near each other
+    $tokens = @([regex]::Matches($p, '[a-z0-9]{3,}') | ForEach-Object { $_.Value })
+    if ($tokens.Count -eq 0) { return $false }
+    $hit = 0
+    foreach ($tok in $tokens) {
+        if ($t.Contains($tok)) { $hit++ }
+    }
+    return ($hit -ge $tokens.Count)  # all tokens must appear
+}
+
+function Get-PromptParlePriorAssistantBlob {
+    param([object[]]$History = @())
+    $lines = New-Object System.Collections.Generic.List[string]
+    $n = 0
+    for ($i = $History.Count - 1; $i -ge 0 -and $n -lt 8; $i--) {
+        $hr = [string](Get-PromptParleProp $History[$i] 'role' 'user')
+        $ht = [string](Get-PromptParleProp $History[$i] 'text' (Get-PromptParleProp $History[$i] 'content' ''))
+        if ($hr -match '(?i)assistant|bot|ai') {
+            [void]$lines.Add($ht)
+            $n++
+        }
+    }
+    return ($lines -join "`n---`n")
+}
+
+function Invoke-PromptParleProvenancePrep {
+    <#
+    .SYNOPSIS
+      0.20: client-side audit of challenged claims vs fetched evidence + prior assistant.
+      Structural — not a model guess. Inject [PROVENANCE] before the brain answers.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [string]$Context = '',
+        [object[]]$History = @()
+    )
+    $phrases = @(Get-PromptParleChallengedPhrases -Prompt $Prompt)
+    if ($phrases.Count -eq 0 -and $Prompt -match '(?i)distributed\s+honeypots?') {
+        $phrases = @('distributed honeypots')
+    }
+    # If still empty, use a short window after "say"
+    if ($phrases.Count -eq 0 -and $Prompt -match '(?i)\b(?:say|said|claim(?:ed)?|wrote)\s+(.{5,80})') {
+        $phrases = @($Matches[1].Trim().TrimEnd('?.!,'))
+    }
+
+    $evidence = Get-PromptParleEvidenceCorpus -Context $Context
+    $priorAsst = Get-PromptParlePriorAssistantBlob -History $History
+    $priorUser = ''
+    foreach ($h in @($History)) {
+        $hr = [string](Get-PromptParleProp $h 'role' '')
+        if ($hr -match '(?i)user') {
+            $priorUser += "`n" + [string](Get-PromptParleProp $h 'text' '')
+        }
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('[PROVENANCE] client-verified (0.20) — not model opinion. Answer MUST report these facts.')
+    if ($phrases.Count -eq 0) {
+        $lines.Add('challenged_phrases: (none extracted — still audit any disputed claim against [OBSERVE]/[WEB] vs prior assistant)')
+    }
+    $anyOnPage = $false
+    $anyPriorAsst = $false
+    foreach ($ph in $phrases) {
+        $onPage = Test-PromptParlePhraseInText -Phrase $ph -Text $evidence
+        $inAsst = Test-PromptParlePhraseInText -Phrase $ph -Text $priorAsst
+        $inUser = Test-PromptParlePhraseInText -Phrase $ph -Text $priorUser
+        if ($onPage) { $anyOnPage = $true }
+        if ($inAsst) { $anyPriorAsst = $true }
+        $lines.Add(('claim: "{0}"' -f $ph))
+        $lines.Add(('  in_fetched_source [OBSERVE]/[WEB]/[HANDS]: {0}' -f $(if ($onPage) { 'YES' } else { 'NO' })))
+        $lines.Add(('  in_prior_assistant (this chat): {0}' -f $(if ($inAsst) { 'YES — model said this earlier' } else { 'NO' })))
+        $lines.Add(('  in_prior_user: {0}' -f $(if ($inUser) { 'YES' } else { 'NO' })))
+        if (-not $onPage -and $inAsst) {
+            $lines.Add('  origin: PRIOR ASSISTANT INVENTION (not supported by fetched source)')
+        } elseif (-not $onPage -and -not $inAsst) {
+            $lines.Add('  origin: NOT IN SOURCE and NOT IN PRIOR ASSISTANT — do not invent a citation')
+        } elseif ($onPage) {
+            $lines.Add('  origin: supported by fetched source text')
+        }
+    }
+    $lines.Add('RULES (mandatory):')
+    $lines.Add('1) State clearly whether the claim appears in the fetched source (yes/no).')
+    $lines.Add('2) If NO but prior assistant said it: say so explicitly — "I introduced that phrase in my earlier summary; it was not on the page."')
+    $lines.Add('3) Offer closest on-page wording from [OBSERVE] only. Do not defend unsupported claims.')
+    $lines.Add('4) Never answer only "nowhere" without provenance when prior assistant originated the claim.')
+
+    $text = ($lines -join "`n")
+    return [pscustomobject]@{
+        text            = $text
+        phrases         = $phrases
+        any_on_page     = $anyOnPage
+        any_prior_asst  = $anyPriorAsst
+        notes           = @('provenance-prep')
+    }
+}
+
+function Get-PromptParleGroundingBlock {
+    <#
+    .SYNOPSIS
+      0.20: attach strict grounding rules when web/page observe is present.
+    #>
+    param([string]$Context = '')
+    if (-not $Context) { return '' }
+    if ($Context -notmatch '(?m)\[OBSERVE\] kind=web' -and $Context -notmatch '(?m)\[WEB\]') { return '' }
+    $ev = Get-PromptParleEvidenceCorpus -Context $Context
+    if ($ev.Length -lt 40) { return '' }
+    return @(
+        '[GROUNDING] 0.20 structural — source-backed turn',
+        'You may ONLY state product/site facts that appear in [OBSERVE]/[WEB]/[HANDS] evidence above.',
+        'If a capability is not in that text, OMIT it. Do not invent honeypots, vendors, certifications, or features.',
+        'When summarizing a website: prefer short quotes or close paraphrase of on-page lines. Mark uncertainty explicitly.',
+        'If you previously invented a claim, correct it when challenged (see [PROVENANCE] when present).'
+    ) -join "`n"
+}
+
+function Get-PromptParleUnverifiedPhrases {
+    <#
+    .SYNOPSIS
+      Scan model response for multi-word claims not present in evidence corpus.
+      Conservative: flag 2–5 word phrases with substance tokens missing from evidence.
+    #>
+    param(
+        [string]$Response = '',
+        [string]$Evidence = '',
+        [int]$MaxFlags = 8
+    )
+    $flags = New-Object System.Collections.Generic.List[string]
+    if (-not $Response -or -not $Evidence) { return @() }
+    $ev = $Evidence.ToLowerInvariant()
+    $stop = @{
+        'the'=$true;'and'=$true;'for'=$true;'with'=$true;'that'=$true;'this'=$true;'from'=$true
+        'your'=$true;'their'=$true;'have'=$true;'has'=$true;'are'=$true;'was'=$true;'were'=$true
+        'will'=$true;'can'=$true;'into'=$true;'onto'=$true;'about'=$true;'using'=$true;'used'=$true
+        'also'=$true;'than'=$true;'then'=$true;'when'=$true;'which'=$true;'while'=$true;'over'=$true
+        'such'=$true;'more'=$true;'most'=$true;'other'=$true;'only'=$true;'just'=$true;'been'=$true
+        'based'=$true;'provides'=$true;'provide'=$true;'platform'=$true;'solution'=$true;'security'=$true
+        'network'=$true;'system'=$true;'systems'=$true;'real'=$true;'time'=$true;'designed'=$true
+    }
+    # Candidate: 2-5 word runs of letters
+    foreach ($m in [regex]::Matches($Response, '(?i)\b[a-z][a-z0-9]+(?:\s+[a-z][a-z0-9]+){1,4}\b')) {
+        if ($flags.Count -ge $MaxFlags) { break }
+        $ph = $m.Value.Trim()
+        if ($ph.Length -lt 8 -or $ph.Length -gt 80) { continue }
+        $low = $ph.ToLowerInvariant()
+        if ($ev.Contains($low)) { continue }
+        $toks = @($low -split '\s+')
+        $sub = 0
+        foreach ($t in $toks) {
+            if ($t.Length -ge 4 -and -not $stop.ContainsKey($t)) { $sub++ }
+        }
+        if ($sub -lt 2) { continue }
+        # require at least one distinctive token absent from evidence
+        $missingDistinct = $false
+        foreach ($t in $toks) {
+            if ($t.Length -lt 4 -or $stop.ContainsKey($t)) { continue }
+            if (-not $ev.Contains($t)) { $missingDistinct = $true; break }
+        }
+        if (-not $missingDistinct) { continue }
+        # high-value product claim patterns always flag if not in evidence
+        $priority = $low -match '(?i)honeypot|decoy|zero.?day|patent|certified|guaranteed|distributed|firewall|ransomware|ai-powered|machine learning'
+        if (-not $priority) {
+            # skip bland phrases
+            if ($sub -lt 3) { continue }
+        }
+        $dup = $false
+        foreach ($f in $flags) { if ($f.ToLowerInvariant() -eq $low) { $dup = $true; break } }
+        if (-not $dup) { [void]$flags.Add($ph) }
+    }
+    return @($flags.ToArray())
+}
+
+function Invoke-PromptParleGroundingPostPass {
+    <#
+    .SYNOPSIS
+      0.20: after model answers a source-backed turn, attach client grounding audit.
+      User confidence: unverified claims are labeled — not silently trusted.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ResponseText = '',
+        [string]$Context = '',
+        [switch]$Force
+    )
+    $text = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
+    if (-not $text) {
+        return [pscustomobject]@{ text = $text; flagged = @(); applied = $false }
+    }
+    $hasSource = $Force -or ($Context -match '(?m)\[OBSERVE\]') -or ($Context -match '(?m)\[PROVENANCE\]') -or ($Context -match '(?m)\[GROUNDING\]') -or ($Context -match '(?m)\[WEB\]') -or ($Context -match '(?m)\[HANDS\]') -or ($Context -match '(?m)\[EVIDENCE_SPINE\]')
+    if (-not $hasSource) {
+        return [pscustomobject]@{ text = $text; flagged = @(); applied = $false }
+    }
+    $ev = Get-PromptParleEvidenceCorpus -Context $Context
+    # also mine EVIDENCE_SPINE / raw OBSERVE bodies if corpus empty
+    if ($ev.Length -lt 40) {
+        foreach ($m in [regex]::Matches($Context, '(?ms)\[EVIDENCE_SPINE\][^\n]*\r?\n(.*?)(?=\n\[|\z)')) {
+            $ev = $ev + "`n" + $m.Groups[1].Value
+        }
+    }
+    if ($ev.Length -lt 40) {
+        return [pscustomobject]@{ text = $text; flagged = @(); applied = $false }
+    }
+    $flags = @(Get-PromptParleUnverifiedPhrases -Response $text -Evidence $ev -MaxFlags 8)
+    if ($flags.Count -eq 0) {
+        return [pscustomobject]@{ text = $text; flagged = @(); applied = $false }
+    }
+    $banner = New-Object System.Collections.Generic.List[string]
+    $banner.Add('')
+    $banner.Add('---')
+    $banner.Add('## Grounding (client 0.20) — confidence audit')
+    $banner.Add('_The client checked this reply against fetched [OBSERVE]/[WEB]/[HANDS] evidence. These phrases were **not** found in that evidence (treat as unverified / possible invention):_')
+    foreach ($f in $flags) {
+        $banner.Add(('- `{0}`' -f $f))
+    }
+    $banner.Add('')
+    $banner.Add('_Do not treat flagged phrases as site quotes. Ask "where does it say X" for provenance, or open the primary URL._')
+    $out = $text + "`n" + ($banner -join "`n")
+    return [pscustomobject]@{
+        text    = $out
+        flagged = $flags
+        applied = $true
+    }
+}
+
+function Invoke-PromptParleProvenancePostPass {
+    <#
+    .SYNOPSIS
+      0.20 fail-closed for claim audits: if [PROVENANCE] says prior assistant invented
+      a claim and the model only says "nowhere"/dodges origin, client appends the facts.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ResponseText = '',
+        [string]$Context = ''
+    )
+    $text = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
+    $ctxStr = if ($null -eq $Context) { '' } else { [string]$Context }
+    if (-not $text -or $ctxStr -notmatch '(?m)\[PROVENANCE\]') {
+        return [pscustomobject]@{ text = $text; applied = $false; reason = 'no-provenance' }
+    }
+    # Parse claim lines from PROVENANCE block into simple objects
+    $claims = New-Object System.Collections.Generic.List[object]
+    $phrase = $null
+    $onSource = $false
+    $inAsst = $false
+    $origin = ''
+    $pending = $false
+    foreach ($line in ($ctxStr -split "`n")) {
+        if ($line -match '^\s*claim:\s*"([^"]+)"') {
+            if ($pending) {
+                [void]$claims.Add([pscustomobject]@{
+                    phrase    = [string]$phrase
+                    on_source = [bool]$onSource
+                    in_asst   = [bool]$inAsst
+                    origin    = [string]$origin
+                })
+            }
+            $phrase = [string]$Matches[1]
+            $onSource = $false
+            $inAsst = $false
+            $origin = ''
+            $pending = $true
+        } elseif ($pending) {
+            if ($line -match 'in_fetched_source[^:]*:\s*(YES|NO)') {
+                $onSource = ($Matches[1] -eq 'YES')
+            } elseif ($line -match 'in_prior_assistant[^:]*:\s*(YES|NO)') {
+                $inAsst = ($Matches[1] -eq 'YES')
+            } elseif ($line -match '^\s*origin:\s*(.+)$') {
+                $origin = [string]$Matches[1].Trim()
+            }
+        }
+    }
+    if ($pending) {
+        [void]$claims.Add([pscustomobject]@{
+            phrase    = [string]$phrase
+            on_source = [bool]$onSource
+            in_asst   = [bool]$inAsst
+            origin    = [string]$origin
+        })
+    }
+    if ($claims.Count -eq 0) {
+        return [pscustomobject]@{ text = $text; applied = $false; reason = 'no-claims' }
+    }
+
+    $low = $text.ToLowerInvariant()
+    $acksInvention = [bool]($low -match 'i (introduced|invented|added|made up|inferred|assumed)|prior (assistant|reply|summary|turn)|not (on|in) (the )?(page|site|website|source)|was not (on|in)|i said that|my earlier')
+    $onlyNowhere = [bool]($low -match '\b(nowhere|not (found|present|mentioned)|doesn''t say|does not say|no mention)\b') -and (-not $acksInvention)
+
+    $hasInvented = $false
+    $hasUnsupported = $false
+    $banner = New-Object System.Collections.Generic.List[string]
+    [void]$banner.Add('')
+    [void]$banner.Add('---')
+    [void]$banner.Add('## Provenance (client 0.20) — structural facts')
+    [void]$banner.Add('_Client audited challenged claims against fetched evidence and this chat''s prior assistant text. Model answer was incomplete on origin; facts below are authoritative:_')
+    foreach ($c in $claims) {
+        $on = [bool]$c.on_source
+        $ia = [bool]$c.in_asst
+        $invented = (-not $on) -and $ia
+        $unsupported = (-not $on) -and (-not $ia)
+        if ($invented) { $hasInvented = $true }
+        if ($unsupported) { $hasUnsupported = $true }
+        $onSrc = if ($on) { 'YES' } else { 'NO' }
+        $inA = if ($ia) { 'YES (prior assistant said this)' } else { 'NO' }
+        [void]$banner.Add(('- **"{0}"** — on fetched source: **{1}**; in prior assistant: **{2}**' -f [string]$c.phrase, $onSrc, $inA))
+        if ($invented) {
+            [void]$banner.Add('  - **Origin:** prior assistant invention — not supported by the fetched page/search text.')
+        } elseif (-not $on) {
+            [void]$banner.Add('  - **Origin:** not found in fetched source and not in prior assistant text.')
+        } else {
+            [void]$banner.Add('  - **Origin:** supported by fetched source.')
+        }
+    }
+    [void]$banner.Add('')
+    [void]$banner.Add('_If a claim is prior-assistant invention: that is where it came from — not the website. Do not treat it as a site quote._')
+
+    # Fail-closed only when model dodged origin (e.g. only "nowhere")
+    $needFix = $false
+    if ($hasInvented -and (-not $acksInvention)) { $needFix = $true }
+    elseif ($hasUnsupported -and $onlyNowhere -and (-not $acksInvention)) { $needFix = $true }
+    elseif ($onlyNowhere -and $hasInvented -and (-not $acksInvention)) { $needFix = $true }
+
+    if ($acksInvention -and $hasInvented) {
+        return [pscustomobject]@{ text = $text; applied = $false; reason = 'model-ok' }
+    }
+    if (-not $needFix) {
+        return [pscustomobject]@{ text = $text; applied = $false; reason = 'no-fix' }
+    }
+
+    $outText = $text + "`n" + ($banner -join "`n")
+    return [pscustomobject]@{
+        text    = $outText
+        applied = $true
+        reason  = 'fail-closed'
+    }
+}
+
+
 function Update-PromptParleOpenObligationFromTurn {
     <#
     .SYNOPSIS
@@ -4661,9 +5151,9 @@ function Invoke-PromptParleAgentLocalPrep {
                 $notes.Add(('observe-ok:' + $obs.fulfilled.Count))
                 # Hard directive: results already obtained — do not answer with the method
                 $obsDir = @(
-                    '[CLIENT DIRECTIVE — observe fulfilled · capability=obligation 0.18]',
+                    '[CLIENT DIRECTIVE — observe fulfilled · capability=obligation 0.20]',
                     'The client ALREADY obtained the requested facts ([OBSERVE]/[WEB] above).',
-                    'Answer from those results only. NEVER emit ```run ls``` / search homework / "I will fetch" theater.',
+                    'Answer from those results only. NEVER invent product capabilities not in the fetch. NEVER emit method homework.',
                     'If the user also owes a document, emit ```file name=…``` with FULL body in THIS turn — no "Generating now" without the file block.'
                 ) -join ' '
                 if ($pr -notmatch '\[CLIENT DIRECTIVE — observe') {
@@ -4702,6 +5192,56 @@ function Invoke-PromptParleAgentLocalPrep {
         } catch {
             $notes.Add('web-skip')
         }
+    }
+
+    # 3b) 0.20 GROUNDING pack when web observe present
+    try {
+        $gb = Get-PromptParleGroundingBlock -Context $ctx
+        if ($gb) {
+            if ($ctx) { $ctx = $ctx + "`n`n" + $gb } else { $ctx = $gb }
+            $notes.Add('grounding-block')
+        }
+    } catch { $notes.Add('grounding-skip') }
+
+    # 3c) 0.20 PROVENANCE when user audits a claim (where does it say / where did you get)
+    try {
+        if (Test-PromptParleProvenanceIntent -Prompt $pr) {
+            # Ensure web observe if domain/site mentioned and not already fetched
+            if ($pr -match '(?i)website|examplecorp\.com|https?://' -or $pr -match '(?i)\b(site|page)\b') {
+                if ($ctx -notmatch '(?m)\[OBSERVE\] kind=web') {
+                    try {
+                        $dom = ''
+                        if ($pr -match '(?i)([a-z0-9.-]+\.(?:com|org|net|io|ai))') { $dom = $Matches[1] }
+                        if (-not $dom -and $pr -match '(?i)examplecorp') { $dom = 'examplecorp.com' }
+                        if ($dom) {
+                            $pg = Invoke-PromptParleWebPageFetch -UrlOrDomain $dom -MaxChars 6000
+                            if ($pg.ok -and $pg.text) {
+                                $blk = "[OBSERVE] kind=web_page client-first (0.20 provenance)`nurl: $($pg.url)`nrule: Use for claim audit only.`n---`n$($pg.text)"
+                                if ($ctx) { $ctx = $ctx + "`n`n" + $blk } else { $ctx = $blk }
+                                $notes.Add('provenance-refetch')
+                            }
+                        }
+                    } catch { }
+                }
+            }
+            $prov = Invoke-PromptParleProvenancePrep -Prompt $pr -Context $ctx -History $History
+            if ($prov.text) {
+                if ($ctx) { $ctx = $ctx + "`n`n" + $prov.text } else { $ctx = $prov.text }
+                foreach ($n in @($prov.notes)) { if ($n) { $notes.Add([string]$n) } }
+                $pdir = @(
+                    '[CLIENT DIRECTIVE — provenance owed · 0.20]',
+                    'Client already audited challenged claims in [PROVENANCE].',
+                    'Your answer MUST include: (1) on-source yes/no (2) if prior assistant invented it, say that explicitly (3) closest on-page wording only from [OBSERVE].',
+                    'Do not stop at "nowhere" without provenance of where the phrase entered this chat.'
+                ) -join ' '
+                if ($pr -notmatch '\[CLIENT DIRECTIVE — provenance') {
+                    $pr = $pr + "`n`n" + $pdir
+                    $notes.Add('provenance-directive')
+                }
+            }
+        }
+    } catch {
+        $notes.Add('provenance-skip')
     }
 
     # Deliver sticky: if document owed, remind model of post-condition
@@ -4802,21 +5342,35 @@ function Invoke-PromptParleAgentLocalPrep {
         }
     }
 
-    # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM headers
+    # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM; protect PROVENANCE/GROUNDING anywhere
     if ($ctx.Length -gt $budget) {
+        $protected = New-Object System.Collections.Generic.List[string]
+        $work = $ctx
+        foreach ($tag in @('PROVENANCE', 'GROUNDING')) {
+            $rx = '(?ms)(\[' + $tag + '\][^\n]*(?:\n(?!\[)[^\n]*)*)'
+            foreach ($m in [regex]::Matches($work, $rx)) {
+                [void]$protected.Add($m.Groups[1].Value.Trim())
+            }
+            $work = [regex]::Replace($work, $rx, '')
+        }
         $headKeep = ''
-        $rest = $ctx
+        $rest = $work
         while ($rest -match '(?s)^(\[(?:CONN|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
             if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
             else { $headKeep = $Matches[1] }
             $rest = $Matches[2]
         }
-        $room = $budget - $headKeep.Length - 20
+        $protText = if ($protected.Count -gt 0) { ($protected -join "`n`n") } else { '' }
+        $room = $budget - $headKeep.Length - $protText.Length - 40
         if ($room -lt 200) { $room = 200 }
         if ($rest.Length -gt $room) {
             $rest = Get-PromptParleFidelityTrim -Text $rest -MaxChars $room -Marker "…[budget d$Dial]…"
         }
-        $ctx = if ($headKeep) { $headKeep + "`n`n" + $rest } else { $rest }
+        $pieces = @()
+        if ($headKeep) { $pieces += $headKeep }
+        if ($protText) { $pieces += $protText }
+        if ($rest) { $pieces += $rest.Trim() }
+        $ctx = ($pieces -join "`n`n")
         $notes.Add("cap $budget")
     }
 
@@ -10509,6 +11063,7 @@ function Start-PromptParleLocalServer {
 
                         # You → local prep → cloud optimize (dial) → model. No agent router.
                         $prep = $null
+                        $groundingContext = if ($context) { [string]$context } else { '' }
                         try {
                             $prepParams = @{
                                 Prompt       = $prompt
@@ -10526,6 +11081,9 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                         }
+                        # 0.20: freeze prep evidence for grounding/provenance post-pass
+                        # (agent rounds may compress context; post-pass must still see OBSERVE/PROVENANCE)
+                        $groundingContext = if ($context) { [string]$context } else { $groundingContext }
                         # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
                         $turnForRt = 'chat'
                         try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt -History $histArr } catch { }
@@ -10534,18 +11092,21 @@ function Start-PromptParleLocalServer {
                         if (-not $oblForRt) {
                             try { $oblForRt = Resolve-PromptParleTurnObligation -Prompt $prompt -History $histArr } catch { }
                         }
-                        $rtNote = 'Prep ran (0.18). Tags may include [PROJECT][CONN][SSH][MEM][ATTACH][WEB][OBSERVE]. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn.'
+                        $rtNote = 'Prep ran (0.20). Tags may include [PROJECT][CONN][SSH][MEM][ATTACH][WEB][OBSERVE][GROUNDING][PROVENANCE]. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn; never invent product facts not in evidence.'
                         if ($oblForRt -and $oblForRt.mode -eq 'mutate') {
-                            $rtNote = 'MUTATE TURN 0.18 · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
+                            $rtNote = 'MUTATE TURN 0.20 · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
                             $turnForRt = 'implement'
                         } elseif ($oblForRt -and $oblForRt.mode -eq 'deliver') {
-                            $rtNote = 'DELIVER TURN 0.18 · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
+                            $rtNote = 'DELIVER TURN 0.20 · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
                         } elseif ($oblForRt -and $oblForRt.mode -eq 'observe') {
-                            $rtNote = 'OBSERVE TURN 0.18 · client already filled [OBSERVE]/[WEB] when possible. Present results only. NEVER ```run ls``` or search-homework as the answer.'
+                            $rtNote = 'OBSERVE TURN 0.20 · client already filled [OBSERVE]/[WEB] when possible. Present results only; invent nothing beyond evidence. NEVER ```run ls``` or search-homework as the answer.'
                         } elseif ($turnForRt -eq 'implement') {
                             $rtNote = 'IMPLEMENT TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` for migrate/build client executes. NEVER tell the user to run npx. No theater.'
                         } elseif ($turnForRt -eq 'question') {
-                            $rtNote = 'QUESTION TURN 0.18. Answer from [PROJECT]/[OBSERVE]/[WEB]/evidence first. Client-first observe already ran when applicable — do not answer with methods/commands.'
+                            $rtNote = 'QUESTION TURN 0.20. Answer from [PROJECT]/[OBSERVE]/[WEB]/[PROVENANCE] evidence first. Client-first observe already ran when applicable — do not answer with methods/commands. Never invent capabilities.'
+                        }
+                        if ($groundingContext -match '(?m)\[PROVENANCE\]') {
+                            $rtNote = $rtNote + ' PROVENANCE OWED: report client YES/NO on-source and prior-assistant origin. Never only "nowhere".'
                         }
                         # Document turns: this-turn attachment beats prior MEM summaries
                         try {
@@ -10748,6 +11309,34 @@ function Start-PromptParleLocalServer {
                             }
                         } catch {
                             Write-Host ("  chat: obligation post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
+                        }
+                        # 0.20: provenance fail-closed + grounding audit (use frozen prep + agent hands evidence)
+                        try {
+                            $gctx = if ($groundingContext) { [string]$groundingContext } elseif ($context) { [string]$context } else { '' }
+                            try {
+                                $evFromAgent = Get-PromptParleProp $result 'evidence_context' $null
+                                if ($evFromAgent -and [string]$evFromAgent) { $gctx = [string]$evFromAgent }
+                            } catch { }
+                            $pp = Invoke-PromptParleProvenancePostPass -ResponseText $respText -Context $gctx
+                            if ($pp.applied) {
+                                $respText = [string]$pp.text
+                                Write-Host '  chat: provenance FAIL-CLOSED (client origin facts appended)' -ForegroundColor Yellow
+                                if ($metaOut) {
+                                    $metaOut.provenance_fail_closed = $true
+                                    $metaOut.provenance_reason = [string]$pp.reason
+                                }
+                            }
+                            $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
+                            if ($gp.applied) {
+                                $respText = [string]$gp.text
+                                Write-Host ("  chat: grounding flagged {0} phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
+                                if ($metaOut) {
+                                    $metaOut.grounding_flagged = @($gp.flagged)
+                                    $metaOut.grounding_audit = $true
+                                }
+                            }
+                        } catch {
+                            Write-Host ("  chat: grounding/provenance post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
                         }
                         $payload = [ordered]@{
                             response         = $respText
@@ -11020,7 +11609,8 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $cliRt = 'Prep ran. AGENT 0.19 token-first brain+hands. [PROJECT][CONN][SSH][HANDS] when present.'
+            $cliGroundingCtx = if ($cliCtx) { [string]$cliCtx } else { '' }
+            $cliRt = 'Prep ran. AGENT 0.20 token-first brain+hands+grounding. [PROJECT][CONN][SSH][HANDS][PROVENANCE] when present.'
             $cliFrame = Get-PromptParleChatFraming -Prompt $trimmed -RuntimeNote $cliRt
             $params = @{
                 Prompt           = [string]$cliFrame.Prompt
@@ -11051,6 +11641,15 @@ function Start-PromptParle {
             } else {
                 Write-Host ("{0}>" -f $sessionProvider) -ForegroundColor Magenta
                 $txt = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+                try {
+                    $gctxCli = $cliGroundingCtx
+                    $evCli = Get-PromptParleProp $result 'evidence_context' $null
+                    if ($evCli) { $gctxCli = [string]$evCli }
+                    $ppCli = Invoke-PromptParleProvenancePostPass -ResponseText $txt -Context $gctxCli
+                    if ($ppCli.applied) { $txt = [string]$ppCli.text; Write-Host '  provenance: fail-closed' -ForegroundColor Yellow }
+                    $gpCli = Invoke-PromptParleGroundingPostPass -ResponseText $txt -Context $gctxCli
+                    if ($gpCli.applied) { $txt = [string]$gpCli.text; Write-Host ("  grounding: {0} flag(s)" -f $gpCli.flagged.Count) -ForegroundColor Yellow }
+                } catch { }
                 Write-Host $txt
                 $ag = Get-PromptParleProp $result 'agent' $null
                 if ($ag) {
