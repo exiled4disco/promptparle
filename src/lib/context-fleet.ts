@@ -5,7 +5,11 @@
  * for that modality, then merged into one low-token packet.
  */
 
-import { compressDocument, looksLikeDocument } from "./document-compress";
+import {
+  compressDocument,
+  looksLikeDocument,
+  leanMarkdownDocument,
+} from "./document-compress";
 import { compressCode, looksLikeCode } from "./code-compress";
 import { compressSheet, looksLikeSheet } from "./sheet-compress";
 import {
@@ -241,13 +245,16 @@ function compressPart(
 
   if (
     kind === "document" ||
-    (looksLikeDocument(part.text) && profile !== "log-analysis")
+    (looksLikeDocument(part.text) && profile !== "log-analysis") ||
+    (part.name && /\.(md|markdown|txt|rst)$/i.test(part.name))
   ) {
+    const attemptNotes: string[] = [];
     const r = compressDocument(part.text, {
       prompt,
       profile,
       compressionLevel: dial,
     });
+    attemptNotes.push(...(r.notes || []));
     if (r.applied) {
       return {
         text: r.text,
@@ -255,6 +262,79 @@ function compressPart(
         strategy: r.strategy,
         stats: { ...r.stats, kind: "document", dial },
         applied: true,
+      };
+    }
+    // Denser retry: executive nudge + lower keep ratio (dial 3+ often hits "brief grew")
+    if (dial >= 2 && part.text.length >= 800) {
+      const denserDial = Math.min(5, dial + 1) as 1 | 2 | 3 | 4 | 5;
+      const r2 = compressDocument(part.text, {
+        prompt,
+        profile:
+          profile === "general" || profile === "developer"
+            ? "executive-summary"
+            : profile,
+        compressionLevel: denserDial,
+        targetKeepRatio: denserDial >= 4 ? 0.22 : 0.32,
+      });
+      attemptNotes.push(...(r2.notes || []));
+      if (r2.applied) {
+        return {
+          text: r2.text,
+          notes: [
+            "Document hybrid had no net savings — denser pass applied",
+            ...r2.notes,
+          ],
+          strategy: r2.strategy || "signal-brief",
+          stats: { ...r2.stats, kind: "document", dial: denserDial },
+          applied: true,
+        };
+      }
+    }
+    // Structure-preserving markdown lean (tables/sections) — last safe shrink
+    if (part.text.length >= 600) {
+      const lean = leanMarkdownDocument(part.text, {
+        dial,
+        targetRatio: dial <= 2 ? 0.65 : dial === 3 ? 0.42 : 0.28,
+      });
+      if (lean.text.length < part.text.length) {
+        return {
+          text: lean.text,
+          notes: [
+            ...attemptNotes.filter(Boolean),
+            "Document brief skipped — md-lean applied",
+            ...lean.notes,
+          ],
+          strategy: "md-lean",
+          stats: {
+            kind: "document",
+            dial,
+            keptBlocks: lean.keptBlocks,
+            charsIn: part.text.length,
+            charsOut: lean.text.length,
+          },
+          applied: true,
+        };
+      }
+    }
+    // Surface why we could not shrink (never silent "Fleet: no safe reduction")
+    if (attemptNotes.length) {
+      // fall through with notes carried into light cleanup
+      const light = dedupeLines(part.text.replace(/\n{3,}/g, "\n\n"), false);
+      if (light.length < part.text.length) {
+        return {
+          text: light,
+          notes: [...attemptNotes, "Light whitespace/dedupe"],
+          strategy: "lean",
+          stats: { kind: kind || "document", dial },
+          applied: true,
+        };
+      }
+      return {
+        text: part.text,
+        notes: attemptNotes,
+        strategy: "passthrough",
+        stats: { kind: kind || "document", dial },
+        applied: false,
       };
     }
   }

@@ -87,9 +87,9 @@ export function splitContextParts(context: string): ContextPart[] {
   const text = (context || "").trim();
   if (!text) return [];
 
-  // ===== FILE: name =====  or  --- FILE: name ---
+  // ===== FILE: name =====  or  ===== FILE (SSH): name =====  or  --- FILE: name ---
   const re =
-    /(?:^|\n)(?:=====|---)\s*FILE:\s*(.+?)\s*(?:=====|---)\s*\n/gi;
+    /(?:^|\n)(?:=====|---)\s*FILE(?:\s*\([^)]*\))?\s*:\s*(.+?)\s*(?:=====|---)\s*\n/gi;
   const markers: { name: string; index: number; headerEnd: number }[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {

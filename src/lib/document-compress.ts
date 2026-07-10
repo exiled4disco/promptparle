@@ -834,9 +834,37 @@ export function compressDocument(
   }
 
   if (brief.length >= context.length) {
+    // Hybrid brief grew (dense tables/checklists) — fall back to structure-preserving lean
+    const lean = leanMarkdownDocument(context, {
+      dial,
+      targetRatio: Math.min(0.55, targetRatio),
+    });
+    if (lean.text.length < context.length) {
+      notes.push(
+        "Signal brief grew — used structure-preserving lean instead",
+        ...lean.notes
+      );
+      const savedPct = Math.round((1 - lean.text.length / context.length) * 100);
+      notes.push(`MD LEAN −${savedPct}% chars (dial ${dial})`);
+      return {
+        text: lean.text,
+        notes,
+        applied: true,
+        strategy: "md-lean",
+        stats: {
+          ...emptyStats,
+          sections: sections.length,
+          paragraphsIn,
+          paragraphsKept: lean.keptBlocks,
+        },
+      };
+    }
     return {
       text: context,
-      notes: ["Signal brief skipped (no net savings on this text)"],
+      notes: [
+        "Signal brief skipped (no net savings on this text)",
+        "Lean fallback also found no safe reduction",
+      ],
       applied: false,
       strategy: "none",
       stats: { ...emptyStats, sections: sections.length, paragraphsIn },
@@ -871,3 +899,157 @@ export function compressDocument(
     },
   };
 }
+
+
+/**
+ * Structure-preserving markdown lean — always tries for real savings without
+ * inventing a larger SIGNAL BRIEF envelope. Used when hybrid brief expands.
+ */
+export function leanMarkdownDocument(
+  context: string,
+  opts: { dial?: number; targetRatio?: number } = {}
+): { text: string; notes: string[]; keptBlocks: number } {
+  const dial = normalizeCompressionLevel(opts.dial ?? 3);
+  const targetRatio = opts.targetRatio ?? (dial <= 2 ? 0.7 : dial === 3 ? 0.45 : dial === 4 ? 0.28 : 0.18);
+  const notes: string[] = [];
+  let text = (context || "").replace(/\r\n/g, "\n");
+  const before = text.length;
+  if (before < 200) {
+    return { text: context, notes: [], keptBlocks: 0 };
+  }
+
+  const chrome = stripChrome(text);
+  text = chrome.text;
+  if (chrome.removed > 0) notes.push(`Stripped ${chrome.removed} chrome lines`);
+
+  // Collapse 3+ blank lines
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  let keptBlocks = 0;
+  let tableRowsKept = 0;
+  let tableRowsDropped = 0;
+  let sectionLines = 0;
+  const maxLinesPerSection =
+    dial <= 2 ? 40 : dial === 3 ? 18 : dial === 4 ? 10 : 6;
+  const maxTableRows = dial <= 2 ? 12 : dial === 3 ? 6 : dial === 4 ? 4 : 3;
+
+  const isTableSep = (l: string) =>
+    /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(l);
+  const isTableRow = (l: string) =>
+    /^\s*\|.+\|\s*$/.test(l) || (/\|/.test(l) && (l.match(/\|/g) || []).length >= 2);
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const t = line.trim();
+
+    // Headings always keep; reset section budget
+    if (/^#{1,6}\s+\S/.test(t)) {
+      out.push(line.trimEnd());
+      sectionLines = 0;
+      keptBlocks++;
+      i++;
+      continue;
+    }
+
+    // Markdown table: keep header + sep + first N rows
+    if (isTableRow(line) || isTableSep(line)) {
+      const table: string[] = [];
+      while (i < lines.length && (isTableRow(lines[i]) || isTableSep(lines[i]) || !lines[i].trim())) {
+        if (!lines[i].trim()) {
+          i++;
+          break;
+        }
+        table.push(lines[i].trimEnd());
+        i++;
+      }
+      // Drop pure separator-only noise; keep header + data
+      const data = table.filter((r) => !isTableSep(r));
+      const seps = table.filter((r) => isTableSep(r));
+      if (data.length) {
+        out.push(data[0]);
+        if (seps[0]) out.push(seps[0]);
+        const rest = data.slice(1, 1 + maxTableRows);
+        tableRowsKept += rest.length + 1;
+        tableRowsDropped += Math.max(0, data.length - 1 - rest.length);
+        for (const r of rest) out.push(r);
+        if (data.length - 1 > maxTableRows) {
+          out.push(`| … ${data.length - 1 - maxTableRows} more rows |`);
+        }
+        keptBlocks++;
+      }
+      sectionLines += 2;
+      continue;
+    }
+
+    // Bullet / checklist — keep within section budget
+    if (/^[-*+]\s+|^\d+\.\s+|^\[[ xX]\]\s+/.test(t)) {
+      if (sectionLines < maxLinesPerSection) {
+        // Soft densify long bullets
+        let b = line.trimEnd();
+        if (b.length > 220 && dial >= 3) {
+          b = b.slice(0, 200).replace(/\s+\S*$/, "") + "…";
+        }
+        out.push(b);
+        sectionLines++;
+        keptBlocks++;
+      }
+      i++;
+      continue;
+    }
+
+    // Empty line — keep single
+    if (!t) {
+      if (out.length && out[out.length - 1] !== "") out.push("");
+      i++;
+      continue;
+    }
+
+    // Prose paragraph line
+    if (sectionLines < maxLinesPerSection) {
+      let p = line.trimEnd();
+      if (p.length > 280 && dial >= 3) {
+        p = p.slice(0, 260).replace(/\s+\S*$/, "") + "…";
+      }
+      out.push(p);
+      sectionLines++;
+      keptBlocks++;
+    }
+    i++;
+  }
+
+  let result = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // Hard budget by target ratio
+  const budget = Math.max(600, Math.floor(before * targetRatio));
+  if (result.length > budget) {
+    // Prefer keeping head + tail of result
+    const head = Math.floor(budget * 0.72);
+    const tail = Math.max(200, budget - head - 40);
+    if (result.length > head + tail + 20) {
+      result =
+        result.slice(0, head).replace(/\s+\S*$/, "") +
+        "\n\n…[md-lean mid omitted]…\n\n" +
+        result.slice(-tail).replace(/^\S*\s+/, "");
+      notes.push(`Hard budget ~${Math.round(targetRatio * 100)}% of original`);
+    }
+  }
+
+  if (tableRowsDropped > 0) {
+    notes.push(`Tables: kept ≤${maxTableRows} rows/section (dropped ~${tableRowsDropped})`);
+  }
+
+  if (result.length >= before) {
+    // Absolute last resort: whitespace only
+    const ws = context.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (ws.length < before) {
+      return { text: ws, notes: ["Whitespace collapse only"], keptBlocks: 1 };
+    }
+    return { text: context, notes: [], keptBlocks: 0 };
+  }
+
+  return { text: result, notes, keptBlocks };
+}
+
