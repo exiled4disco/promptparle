@@ -100,7 +100,10 @@ export function UsageHistory({
                   {formatNumber(row.optimizedTokens)}
                 </span>
                 {row.optimizedTokens > row.originalTokens ? (
-                  <span className="badge badge-warn" title="Payload grew vs raw input">
+                  <span
+                    className="badge badge-warn"
+                    title="Payload grew vs raw input (should be rare)"
+                  >
                     expanded
                   </span>
                 ) : row.reductionPercent > 0 ? (
@@ -108,8 +111,11 @@ export function UsageHistory({
                     −{row.reductionPercent}%
                   </span>
                 ) : (
-                  <span className="badge" title="No size change">
-                    0%
+                  <span
+                    className="badge"
+                    title="Already compact — unique prose/docs often show 0%. Savings show up on noisy logs, dupes, and filler."
+                  >
+                    0% compact
                   </span>
                 )}
                 <span

@@ -210,8 +210,10 @@
         const pct = meta.token_reduction_percent ?? 0;
         const expanded = meta.expanded || opt > orig;
         let save = expanded
-          ? '<span class="warn">expanded / no savings</span>'
-          : (pct > 0 ? '<span class="ok">−' + pct + '% saved</span>' : '<span>0% (compact)</span>');
+          ? '<span class="warn">expanded (bug — should not happen)</span>'
+          : (pct > 0
+            ? '<span class="ok">−' + pct + '% saved</span>'
+            : '<span title="Unique document text often has nothing to strip">0% compact</span>');
         const imgN = meta.image_count || 0;
         m.innerHTML =
           '<span>' + orig + ' → ' + opt + ' tokens</span>' + save +

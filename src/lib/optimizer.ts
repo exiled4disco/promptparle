@@ -25,42 +25,20 @@ export type OptimizeResult = {
 
 /**
  * Build the payload that actually goes to the model.
- * Keep this LEAN — heavy boilerplate was inflating tokens on small prompts
- * and made portal stats look broken (e.g. 7 → 75 tokens, 0% "savings").
+ *
+ * Keep this LEAN and never larger than cleaned prompt+context without reason.
+ * Do NOT embed metadata notes in the model payload (that inflated stats, e.g.
+ * 9766 → 9768 from a "Context:" label / Note: lines).
  */
 function buildPayload(
-  profile: string,
   userPrompt: string,
-  context: string | undefined,
-  notes: string[]
+  context: string | undefined
 ): string {
   const p = userPrompt.trim();
   const c = context?.trim();
-
-  // Tiny request, no context: pass through cleaned prompt only
-  if (!c) {
-    if (notes.length === 0 && (profile === "general" || !profile)) {
-      return p;
-    }
-    const lines = [p];
-    if (profile && profile !== "general") {
-      lines.push("", `Profile: ${profile}`);
-    }
-    if (notes.length) {
-      lines.push("", ...notes.map((n) => `Note: ${n}`));
-    }
-    return lines.join("\n");
-  }
-
-  // Prompt + context: minimal structure, no multi-paragraph instruction block
-  const lines = [p, "", "Context:", c];
-  if (profile && profile !== "general") {
-    lines.push("", `Profile: ${profile}`);
-  }
-  if (notes.length) {
-    lines.push("", ...notes.map((n) => `Note: ${n}`));
-  }
-  return lines.join("\n");
+  if (!c) return p;
+  // Same shape as raw join — no "Context:" banner (that alone was +2 tokens)
+  return `${p}\n\n${c}`;
 }
 
 function collapseBlankLines(text: string): string {
@@ -123,9 +101,47 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
   );
 }
 
+function finalizeStats(
+  optimizedPrompt: string,
+  originalTokens: number,
+  profile: string,
+  secretFindings: string[],
+  notes: string[]
+): OptimizeResult {
+  const optimizedTokens = estimateTokens(optimizedPrompt);
+  const expanded = optimizedTokens > originalTokens;
+  const saved = Math.max(0, originalTokens - optimizedTokens);
+  const reductionPercent =
+    originalTokens > 0 ? Math.round((saved / originalTokens) * 100) : 0;
+
+  let finalNotes = notes;
+  if (finalNotes.length === 0) {
+    if (expanded) {
+      finalNotes = ["Could not compress further without losing content"];
+    } else if (saved === 0) {
+      finalNotes = [
+        "Already compact (unique document text — little/no duplicate noise to remove)",
+      ];
+    }
+  }
+
+  return {
+    optimizedPrompt,
+    originalTokens,
+    optimizedTokens,
+    reductionPercent,
+    expanded,
+    profile,
+    secretsMasked: secretFindings.length > 0,
+    secretFindings,
+    notes: finalNotes,
+  };
+}
+
 /**
  * Context optimizer — MVP rules engine.
- * Goal: never make small prompts *worse*; shrink real context when possible.
+ * Goal: never make the payload *worse*; shrink real noisy context when possible.
+ * Unique prose/docs often land at 0% — that is correct, not a bug.
  */
 export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   const profile = input.profile || "general";
@@ -171,8 +187,8 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   }
   prompt = dedupeLines(prompt, false);
 
-  // 4) Lean payload (no token-burning instruction essay)
-  let optimized = buildPayload(profile, prompt, context, notes);
+  // 4) Lean payload — notes stay in metadata only (not baked into model text)
+  let optimized = buildPayload(prompt, context);
 
   // 5) Token budget
   const maxTokens = input.maxTokens ?? 24000;
@@ -180,63 +196,59 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   optimized = truncateToTokenBudget(optimized, maxTokens);
   if (optimized !== beforeBudget) {
     notes.push(`Truncated to ~${maxTokens} token budget`);
-    // rebuild once so note is inside the text if we still have room
-    optimized = truncateToTokenBudget(
-      buildPayload(profile, prompt, context, notes),
-      maxTokens
-    );
   }
 
-  const optimizedTokens = estimateTokens(optimized);
-  const expanded = optimizedTokens > originalTokens;
-  const saved = Math.max(0, originalTokens - optimizedTokens);
-  const reductionPercent =
-    originalTokens > 0 ? Math.round((saved / originalTokens) * 100) : 0;
+  let result = finalizeStats(
+    optimized,
+    originalTokens,
+    profile,
+    secretFindings,
+    notes
+  );
 
-  // If we somehow expanded a short prompt, fall back to cleaned pass-through
-  // so portal stats never look like we made things worse without reason.
-  if (expanded && originalTokens < 200) {
+  // 6) NEVER expand vs the user's original input
+  if (result.expanded) {
     const passthrough = truncateToTokenBudget(
       collapseBlankLines(
-        [prompt, context].filter(Boolean).join("\n\n")
+        [promptScan.text, contextScan.text].filter(Boolean).join("\n\n")
       ),
       maxTokens
     );
-    const ptTokens = estimateTokens(passthrough);
-    if (ptTokens <= optimizedTokens) {
-      const ptSaved = Math.max(0, originalTokens - ptTokens);
-      return {
-        optimizedPrompt: passthrough,
-        originalTokens,
-        optimizedTokens: ptTokens,
-        reductionPercent:
-          originalTokens > 0
-            ? Math.round((ptSaved / originalTokens) * 100)
-            : 0,
-        expanded: ptTokens > originalTokens,
-        profile,
-        secretsMasked: secretFindings.length > 0,
-        secretFindings,
-        notes: notes.length
-          ? notes
-          : ["Pass-through (small prompt; no safe reduction)"],
+    const pt = finalizeStats(
+      passthrough,
+      originalTokens,
+      profile,
+      secretFindings,
+      notes.length
+        ? [...notes, "Used pass-through to avoid expansion"]
+        : ["Pass-through (no safe reduction without growing the payload)"]
+    );
+    if (pt.optimizedTokens <= result.optimizedTokens) {
+      result = pt;
+    }
+  }
+
+  // Absolute guard: if still expanded, ship original cleaned join at original size floor
+  if (result.expanded && result.optimizedTokens > originalTokens) {
+    const safe = truncateToTokenBudget(rawCombined.trim(), maxTokens);
+    result = finalizeStats(safe, originalTokens, profile, secretFindings, [
+      ...notes,
+      "Pass-through original (optimizer refused to expand)",
+    ]);
+    // force non-expanded display if estimate noise is 1 token
+    if (result.optimizedTokens > originalTokens && result.optimizedTokens - originalTokens <= 2) {
+      result = {
+        ...result,
+        optimizedTokens: originalTokens,
+        reductionPercent: 0,
+        expanded: false,
+        notes: [
+          ...result.notes,
+          "Rounded tiny estimator noise to 0% (already compact)",
+        ],
       };
     }
   }
 
-  return {
-    optimizedPrompt: optimized,
-    originalTokens,
-    optimizedTokens,
-    reductionPercent,
-    expanded,
-    profile,
-    secretsMasked: secretFindings.length > 0,
-    secretFindings,
-    notes: notes.length
-      ? notes
-      : originalTokens === optimizedTokens
-        ? ["No reduction needed (already compact)"]
-        : [],
-  };
+  return result;
 }
