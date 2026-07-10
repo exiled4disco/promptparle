@@ -676,30 +676,105 @@ function Write-PromptParleHttpResponse {
     $Context.Response.OutputStream.Close()
 }
 
+function Clear-PromptParleLocalPort {
+    <#
+    .SYNOPSIS
+      Free a local port used by PromptParle (HTTP stop, then PowerShell listeners).
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$Port = 7788,
+        [switch]$Quiet
+    )
+
+    $stopUrl = "http://127.0.0.1:$Port/api/stop"
+    try {
+        if ($PSVersionTable.PSVersion.Major -le 5) {
+            Invoke-WebRequest -Uri $stopUrl -Method POST -UseBasicParsing -TimeoutSec 2 | Out-Null
+        } else {
+            Invoke-WebRequest -Uri $stopUrl -Method POST -TimeoutSec 2 | Out-Null
+        }
+        if (-not $Quiet) { Write-Host "Asked server on port $Port to stop." -ForegroundColor DarkGray }
+        Start-Sleep -Milliseconds 400
+    } catch { }
+
+    # Free leftover listeners held by other PowerShell processes (common after crash)
+    $pids = @()
+    try {
+        if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+            $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+            foreach ($c in @($conns)) {
+                if ($c.OwningProcess) { $pids += [int]$c.OwningProcess }
+            }
+        }
+    } catch { }
+
+    # netstat fallback (Windows)
+    if ($pids.Count -eq 0 -and $script:PromptParleIsWindows) {
+        try {
+            $lines = netstat -ano -p tcp 2>$null | Select-String ":$Port\s+.*LISTENING"
+            foreach ($line in $lines) {
+                $parts = ($line.ToString() -split '\s+') | Where-Object { $_ }
+                if ($parts.Count -ge 5) {
+                    $procId = 0
+                    if ([int]::TryParse($parts[-1], [ref]$procId) -and $procId -gt 0) {
+                        $pids += $procId
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    foreach ($procId in ($pids | Select-Object -Unique)) {
+        if ($procId -eq $PID) { continue }
+        $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if (-not $proc) { continue }
+        $name = $proc.ProcessName
+        if ($name -match '^(powershell|pwsh|powershell_ise)$') {
+            if (-not $Quiet) {
+                Write-Host ("Stopping leftover {0} (PID {1}) on port {2}..." -f $name, $procId, $Port) -ForegroundColor Yellow
+            }
+            try {
+                Stop-Process -Id $procId -Force -ErrorAction Stop
+                if (-not $Quiet) { Write-Host ("Stopped PID {0}." -f $procId) -ForegroundColor Green }
+            } catch {
+                if (-not $Quiet) { Write-Host ("Could not stop PID {0}: {1}" -f $procId, $_) -ForegroundColor Red }
+            }
+        } else {
+            if (-not $Quiet) {
+                Write-Host ("Port {0} held by {1} (PID {2}) - not auto-killed." -f $Port, $name, $procId) -ForegroundColor Yellow
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+}
+
 function Stop-PromptParleLocalServer {
     <#
     .SYNOPSIS
       Stop a local PromptParle chat server (same machine).
     .PARAMETER Port
       Port the server is on. Default 7788.
+    .PARAMETER AllCommonPorts
+      Also clear 7788-7798.
     #>
     [CmdletBinding()]
-    param([int]$Port = 7788)
+    param(
+        [int]$Port = 7788,
+        [switch]$AllCommonPorts
+    )
 
-    $stopUrl = "http://127.0.0.1:$Port/api/stop"
-    try {
-        if ($PSVersionTable.PSVersion.Major -le 5) {
-            Invoke-WebRequest -Uri $stopUrl -Method POST -UseBasicParsing -TimeoutSec 3 | Out-Null
-        } else {
-            Invoke-WebRequest -Uri $stopUrl -Method POST -TimeoutSec 3 | Out-Null
+    if ($AllCommonPorts) {
+        foreach ($p in 7788..7798) {
+            Clear-PromptParleLocalPort -Port $p -Quiet
         }
-        Write-Host "Sent stop to $stopUrl" -ForegroundColor Green
-    } catch {
-        Write-Host "Could not reach local server on port $Port (already stopped?)." -ForegroundColor Yellow
-        Write-Host 'If PowerShell is still stuck: close that window, or in another window run:' -ForegroundColor DarkGray
-        Write-Host '  Get-Process powershell,pwsh -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -match "PromptParle|powershell" }' -ForegroundColor DarkGray
-        Write-Host '  # or close the stuck window with the X button' -ForegroundColor DarkGray
+        Write-Host 'Cleared local PromptParle ports 7788-7798.' -ForegroundColor Green
+        return
     }
+
+    Clear-PromptParleLocalPort -Port $Port
+    Write-Host ("Port {0} cleared (or was already free)." -f $Port) -ForegroundColor Green
 }
 
 function Start-PromptParleLocalServer {
@@ -720,7 +795,7 @@ function Start-PromptParleLocalServer {
         - Close this PowerShell window with the X
 
     .PARAMETER Port
-      Local port. Default 7788.
+      Preferred local port. Default 7788. If busy, tries the next free port.
     #>
     [CmdletBinding()]
     param(
@@ -748,20 +823,36 @@ function Start-PromptParleLocalServer {
     }
     $html = Get-Content -LiteralPath $uiPath -Raw -Encoding UTF8
 
-    $prefix = "http://127.0.0.1:$Port/"
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add($prefix)
+    # Free preferred port, then bind (try a few ports if needed)
+    $listener = $null
+    $boundPort = $null
+    $tryPorts = @($Port) + @(7788..7798 | Where-Object { $_ -ne $Port })
 
-    try {
-        $listener.Start()
-    } catch {
-        Write-Host "Could not bind $prefix - is port $Port in use?" -ForegroundColor Red
-        Write-Host $_ -ForegroundColor Red
-        Write-Host 'Stop the old server first:' -ForegroundColor Yellow
-        Write-Host "  Stop-PromptParleLocalServer -Port $Port" -ForegroundColor Cyan
-        Write-Host '  # or close the other PowerShell window with the X' -ForegroundColor DarkGray
-        Write-Host "  # or try: Start-PromptParle -Port 7790" -ForegroundColor DarkGray
+    foreach ($tryPort in $tryPorts) {
+        Clear-PromptParleLocalPort -Port $tryPort -Quiet
+        $prefix = "http://127.0.0.1:$tryPort/"
+        $candidate = New-Object System.Net.HttpListener
+        $candidate.Prefixes.Add($prefix)
+        try {
+            $candidate.Start()
+            $listener = $candidate
+            $boundPort = $tryPort
+            $Port = $tryPort
+            break
+        } catch {
+            try { $candidate.Close() } catch { }
+        }
+    }
+
+    if (-not $listener) {
+        Write-Host 'Could not start local chat - ports 7788-7798 are busy.' -ForegroundColor Red
+        Write-Host 'Run:  Stop-PromptParleLocalServer -AllCommonPorts' -ForegroundColor Cyan
+        Write-Host 'Or close other PowerShell windows, then:  pp' -ForegroundColor Cyan
         return
+    }
+
+    if ($boundPort -ne 7788) {
+        Write-Host ("Using port {0} (7788 was busy)." -f $boundPort) -ForegroundColor Yellow
     }
 
     $script:PromptParleShouldStop = $false
@@ -777,7 +868,7 @@ function Start-PromptParleLocalServer {
     }
     [Console]::add_CancelKeyPress($cancelHandler)
 
-    $url = $prefix.TrimEnd('/') + '/'
+    $url = "http://127.0.0.1:$Port/"
     Write-Host ''
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host '  PromptParle  (LOCAL)' -ForegroundColor Cyan
@@ -790,7 +881,7 @@ function Start-PromptParleLocalServer {
     Write-Host '    - Ctrl+C in this window' -ForegroundColor White
     Write-Host '    - Browser button: Stop server' -ForegroundColor White
     Write-Host '    - Close this window with the X' -ForegroundColor White
-    Write-Host "    - Other window: Stop-PromptParleLocalServer -Port $Port" -ForegroundColor White
+    Write-Host '    - Other window: Stop-PromptParleLocalServer' -ForegroundColor White
     Write-Host ''
 
     Open-PromptParleUrl -Url $url
@@ -1181,6 +1272,116 @@ function Start-PromptParle {
     }
 }
 
+function Uninstall-PromptParle {
+    <#
+    .SYNOPSIS
+      Remove PromptParle from this PC (module, optional config, optional git clone).
+
+    .PARAMETER RemoveConfig
+      Also delete saved API key at ~/.promptparle
+
+    .PARAMETER RemoveClone
+      Also delete the git clone (default: %USERPROFILE%\src\promptparle)
+
+    .PARAMETER ClonePath
+      Override clone path when using -RemoveClone
+
+    .EXAMPLE
+      Uninstall-PromptParle
+      Uninstall-PromptParle -RemoveConfig
+      Uninstall-PromptParle -RemoveConfig -RemoveClone
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+    param(
+        [switch]$RemoveConfig,
+        [switch]$RemoveClone,
+        [string]$ClonePath
+    )
+
+    Write-Host ''
+    Write-Host 'Uninstalling PromptParle...' -ForegroundColor Cyan
+
+    # 1) Stop local servers
+    try { Stop-PromptParleLocalServer -AllCommonPorts } catch {
+        Clear-PromptParleLocalPort -Port 7788 -Quiet
+    }
+
+    # 2) Unload module
+    Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
+
+    # 3) Remove module folders
+    $candidates = @()
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    if ($docs) {
+        $candidates += (Join-Path $docs 'WindowsPowerShell\Modules\PromptParle')
+        $candidates += (Join-Path $docs 'PowerShell\Modules\PromptParle')
+    }
+    if ($env:USERPROFILE) {
+        $candidates += (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules\PromptParle')
+        $candidates += (Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules\PromptParle')
+    }
+    if ($HOME) {
+        $candidates += (Join-Path $HOME '.local/share/powershell/Modules/PromptParle')
+    }
+
+    $removed = $false
+    foreach ($path in ($candidates | Select-Object -Unique)) {
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            if ($PSCmdlet.ShouldProcess($path, 'Remove module folder')) {
+                Remove-Item -LiteralPath $path -Recurse -Force
+                Write-Host "Removed module: $path" -ForegroundColor Green
+                $removed = $true
+            }
+        }
+    }
+    if (-not $removed) {
+        Write-Host 'No module folder found in standard locations.' -ForegroundColor Yellow
+    }
+
+    # 4) Optional config
+    if ($RemoveConfig) {
+        $configDirs = @()
+        if ($env:PROMPTPARLE_CONFIG_DIR) { $configDirs += $env:PROMPTPARLE_CONFIG_DIR }
+        if ($env:USERPROFILE) { $configDirs += (Join-Path $env:USERPROFILE '.promptparle') }
+        if ($HOME) { $configDirs += (Join-Path $HOME '.promptparle') }
+        foreach ($dir in ($configDirs | Select-Object -Unique)) {
+            if ($dir -and (Test-Path -LiteralPath $dir)) {
+                if ($PSCmdlet.ShouldProcess($dir, 'Remove API key config')) {
+                    Remove-Item -LiteralPath $dir -Recurse -Force
+                    Write-Host "Removed config: $dir" -ForegroundColor Green
+                }
+            }
+        }
+    } else {
+        Write-Host 'Kept API key config (use -RemoveConfig to delete).' -ForegroundColor DarkGray
+    }
+
+    # 5) Optional clone
+    if ($RemoveClone) {
+        if (-not $ClonePath) {
+            if ($env:USERPROFILE) {
+                $ClonePath = Join-Path $env:USERPROFILE 'src\promptparle'
+            } else {
+                $ClonePath = Join-Path $HOME 'src/promptparle'
+            }
+        }
+        if (Test-Path -LiteralPath $ClonePath) {
+            if ($PSCmdlet.ShouldProcess($ClonePath, 'Remove git clone')) {
+                Remove-Item -LiteralPath $ClonePath -Recurse -Force
+                Write-Host "Removed clone: $ClonePath" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "Clone not found: $ClonePath" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host ''
+    Write-Host 'Uninstall complete.' -ForegroundColor Green
+    Write-Host 'Reinstall:' -ForegroundColor Cyan
+    Write-Host '  irm https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/Install-FromGitHub.ps1 | iex'
+    Write-Host ''
+}
+
 # Friendly entry points
 Set-Alias -Name pp -Value Start-PromptParle -Scope Script -Force
 Set-Alias -Name promptparle -Value Start-PromptParle -Scope Script -Force
@@ -1197,7 +1398,8 @@ Export-ModuleMember -Function @(
     'Start-PromptParle',
     'Start-PromptParleLocalServer',
     'Stop-PromptParleLocalServer',
-    'Open-PromptParleBrowser'
+    'Open-PromptParleBrowser',
+    'Uninstall-PromptParle'
 ) -Alias @(
     'pp',
     'promptparle'

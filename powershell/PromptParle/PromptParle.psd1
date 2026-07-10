@@ -1,6 +1,6 @@
 ﻿@{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.5.0'
+    ModuleVersion     = '0.5.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -17,7 +17,8 @@
         'Start-PromptParle',
         'Start-PromptParleLocalServer',
         'Stop-PromptParleLocalServer',
-        'Open-PromptParleBrowser'
+        'Open-PromptParleBrowser',
+        'Uninstall-PromptParle'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

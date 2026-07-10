@@ -235,10 +235,14 @@ Write-Host ("  Path    : {0}" -f $dest)
 Write-Host ("  API key : {0}" -f $(if ($keyOk) { 'OK' } else { 'not configured / failed' }))
 Write-Host ''
 Write-Host 'Commands:' -ForegroundColor Cyan
-Write-Host '  pp                          Start local chat (http://127.0.0.1:7788)'
-Write-Host '  Stop-PromptParleLocalServer Stop local chat'
-Write-Host '  Get-PromptParleProvider     List AI providers'
-Write-Host '  Get-PromptParleUsage        Token savings'
+Write-Host '  pp                              Start local chat'
+Write-Host '  Stop-PromptParleLocalServer     Stop local chat (frees port)'
+Write-Host '  Uninstall-PromptParle           Remove module from this PC'
+Write-Host '  Uninstall-PromptParle -RemoveConfig   Also delete saved API key'
+Write-Host '  Get-PromptParleProvider         List AI providers'
+Write-Host ''
+Write-Host 'Or from the repo folder:' -ForegroundColor DarkGray
+Write-Host '  .\powershell\Uninstall-PromptParle.ps1'
 Write-Host ''
 
 if ($keyOk) {
@@ -249,13 +253,14 @@ if ($keyOk) {
     }
     if ($doStart) {
         Write-Host 'Starting local PromptParle...' -ForegroundColor Cyan
-        Write-Host '(Stop with Ctrl+C, browser Stop server, or Stop-PromptParleLocalServer)' -ForegroundColor DarkGray
+        Write-Host '(Stop: Ctrl+C, browser Stop server, or Stop-PromptParleLocalServer)' -ForegroundColor DarkGray
+        # Clear leftover server from earlier sessions before bind
+        try { Stop-PromptParleLocalServer -AllCommonPorts } catch { }
         Start-PromptParle
     } else {
         Write-Host 'When ready:  pp' -ForegroundColor Cyan
     }
 } else {
     Write-Host 'Next: create a key at https://promptparle.com/app/api-keys' -ForegroundColor Yellow
-    Write-Host 'Then: Set-PromptParleApiKey -ApiKey pp_live_YOUR_KEY' -ForegroundColor Yellow
-    Write-Host 'Then: pp' -ForegroundColor Yellow
+    Write-Host 'Then re-run:  .\powershell\Install-PromptParle.ps1' -ForegroundColor Yellow
 }
