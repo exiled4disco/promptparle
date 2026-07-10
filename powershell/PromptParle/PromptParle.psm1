@@ -3663,21 +3663,35 @@ function Get-PromptParleRemoteClientVersion {
     #>
     [CmdletBinding()]
     param()
+    # TLS 1.2 required on older Windows PowerShell for promptparle.com
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { }
+
+    $bust = [int]((Get-Date).ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds
     # Portal is authoritative for ship — GitHub can lag until push.
     $urls = @(
-        'https://promptparle.com/PromptParle.psd1',
-        'https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1'
+        "https://promptparle.com/PromptParle.psd1?v=$bust",
+        "https://raw.githubusercontent.com/exiled4disco/promptparle/main/powershell/PromptParle/PromptParle.psd1?v=$bust"
     )
+    $lastErr = $null
     foreach ($url in $urls) {
         try {
-            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20 -Headers @{
+                'Cache-Control' = 'no-cache'
+                'Pragma'        = 'no-cache'
+            }
             $raw = [string]$resp.Content
             if ($raw -match "ModuleVersion\s*=\s*'([^']+)'") {
-                return $Matches[1]
+                return [string]$Matches[1]
             }
         } catch {
+            $lastErr = "$_"
             continue
         }
+    }
+    if ($lastErr) {
+        Write-Verbose "Remote version check failed: $lastErr"
     }
     return $null
 }
@@ -3685,11 +3699,20 @@ function Get-PromptParleRemoteClientVersion {
 function Compare-PromptParleVersion {
     param([string]$A, [string]$B)
     try {
-        $va = [version](($A -replace '[^0-9.]', '') -replace '^\.', '0.')
-        $vb = [version](($B -replace '[^0-9.]', '') -replace '^\.', '0.')
+        $sa = (($A -replace '[^0-9.]', '') -replace '^\.', '0.')
+        $sb = (($B -replace '[^0-9.]', '') -replace '^\.', '0.')
+        if (-not $sa) { $sa = '0.0.0' }
+        if (-not $sb) { $sb = '0.0.0' }
+        # Normalize to at least Major.Minor.Build so "0.12" vs "0.12.5" compares cleanly
+        $pa = @($sa.Split('.') | ForEach-Object { $_ })
+        $pb = @($sb.Split('.') | ForEach-Object { $_ })
+        while ($pa.Count -lt 3) { $pa += '0' }
+        while ($pb.Count -lt 3) { $pb += '0' }
+        $va = [version](($pa[0..2] -join '.'))
+        $vb = [version](($pb[0..2] -join '.'))
         return $va.CompareTo($vb)
     } catch {
-        if ($A -eq $B) { return 0 }
+        if ("$A" -eq "$B") { return 0 }
         return -1
     }
 }
@@ -3701,7 +3724,22 @@ function Get-PromptParleUpdateStatus {
     #>
     [CmdletBinding()]
     param()
-    $local = Get-PromptParleClientVersion
+    # Prefer on-disk manifest (what Update installs) over in-memory module version
+    $local = $null
+    $root = $null
+    try { $root = Get-PromptParleModuleRoot } catch { $root = $null }
+    if ($root) {
+        $local = Read-PromptParleVersionFromManifest -ManifestPath (Join-Path $root 'PromptParle.psd1')
+    }
+    if (-not $local) {
+        $dest = Join-Path (Get-PromptParleUserModulesDir) 'PromptParle\PromptParle.psd1'
+        $local = Read-PromptParleVersionFromManifest -ManifestPath $dest
+    }
+    if (-not $local) {
+        try { $local = Get-PromptParleClientVersion } catch { $local = '0.0.0' }
+    }
+    if (-not $local) { $local = '0.0.0' }
+
     $remote = $null
     $err = $null
     try {
@@ -3709,16 +3747,19 @@ function Get-PromptParleUpdateStatus {
     } catch {
         $err = "$_"
     }
+    if (-not $remote -and -not $err) {
+        $err = 'Could not read remote ModuleVersion from portal or GitHub'
+    }
     $updateAvailable = $false
     if ($remote) {
         $updateAvailable = (Compare-PromptParleVersion -A $local -B $remote) -lt 0
     }
     return [pscustomobject]@{
-        local_version    = $local
-        remote_version   = $remote
-        update_available = $updateAvailable
+        local_version    = [string]$local
+        remote_version   = if ($remote) { [string]$remote } else { $null }
+        update_available = [bool]$updateAvailable
         check_error      = $err
-        module_root      = Get-PromptParleModuleRoot
+        module_root      = $root
     }
 }
 
@@ -4363,16 +4404,25 @@ function Start-PromptParleLocalServer {
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/version') {
                     try {
                         $st = Get-PromptParleUpdateStatus
-                        $payload = @{
-                            ok               = $true
-                            local_version    = $st.local_version
-                            remote_version   = $st.remote_version
-                            update_available = [bool]$st.update_available
-                            check_error      = $st.check_error
-                            module_root      = $st.module_root
-                            port             = $Port
-                        } | ConvertTo-Json -Compress
-                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                        $locV = [string](Get-PromptParleProp $st 'local_version' '0.0.0')
+                        $remV = Get-PromptParleProp $st 'remote_version' $null
+                        if ($null -ne $remV) { $remV = [string]$remV }
+                        $upd = $false
+                        try { $upd = [bool](Get-PromptParleProp $st 'update_available' $false) } catch { $upd = $false }
+                        # Re-derive if remote present (defensive — UI depends on this flag)
+                        if ($remV -and -not $upd) {
+                            if ((Compare-PromptParleVersion -A $locV -B $remV) -lt 0) { $upd = $true }
+                        }
+                        # Force real JSON boolean (not string "True"/"False")
+                        $updJson = if ($upd) { 'true' } else { 'false' }
+                        $remJson = if ($remV) { '"' + ($remV -replace '\\', '\\\\' -replace '"', '\"') + '"' } else { 'null' }
+                        $errV = [string](Get-PromptParleProp $st 'check_error' '')
+                        $errJson = if ($errV) { '"' + ($errV -replace '\\', '\\\\' -replace '"', '\"' -replace "`n", ' ' -replace "`r", '') + '"' } else { 'null' }
+                        $rootV = [string](Get-PromptParleProp $st 'module_root' '')
+                        $payload = @"
+{"ok":true,"local_version":"$($locV -replace '"','')","remote_version":$remJson,"update_available":$updJson,"check_error":$errJson,"module_root":"$($rootV -replace '\\','\\\\' -replace '"','')","port":$Port}
+"@
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload.Trim()
                     } catch {
                         $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
