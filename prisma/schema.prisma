@@ -1,0 +1,117 @@
+// PromptParle — core data model for portal MVP
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String?
+  passwordHash    String    @map("password_hash")
+  plan            String    @default("free")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  retentionPolicy String  @default("7d") @map("retention_policy")
+  storePrompts    Boolean @default(false) @map("store_prompts")
+
+  providerCredentials  ProviderCredential[]
+  apiKeys              ApiKey[]
+  promptRequests       PromptRequest[]
+  sessions             Session[]
+  emailVerifications   EmailVerificationToken[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  userAgent String?  @map("user_agent")
+  ipAddress String?  @map("ip_address")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  usedAt    DateTime? @map("used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model ProviderCredential {
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  provider     String
+  label        String?
+  encryptedKey String    @map("encrypted_key")
+  keyLastFour  String    @map("key_last_four")
+  status       String    @default("active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("provider_credentials")
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id")
+  name       String
+  keyHash    String    @unique @map("key_hash")
+  keyPrefix  String    @map("key_prefix")
+  scope      String    @default("desktop")
+  status     String    @default("active")
+  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model PromptRequest {
+  id                  String   @id @default(cuid())
+  userId              String   @map("user_id")
+  provider            String
+  model               String?
+  optimizationProfile String   @default("general") @map("optimization_profile")
+  originalTokens      Int      @default(0) @map("original_tokens")
+  optimizedTokens     Int      @default(0) @map("optimized_tokens")
+  status              String   @default("completed")
+  promptPreview       String?  @map("prompt_preview")
+  errorMessage        String?  @map("error_message")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("prompt_requests")
+}

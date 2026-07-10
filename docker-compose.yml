@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16
+    container_name: promptparle-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+    environment:
+      POSTGRES_USER: promptparle
+      POSTGRES_PASSWORD: promptparle
+      POSTGRES_DB: promptparle
+    ports:
+      - "5433:5432"
+    volumes:
+      - promptparle_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promptparle"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  promptparle_pg:
