@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.12.4'
+    ModuleVersion     = '0.12.5'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -53,6 +53,8 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.12.5: Pop-out terminal fills window; docked panel closes on Pop out
+0.12.4: Update available = red label text (no glow/fill)
 0.12.3: Terminal Pop out — separate window for local/SSH shells
 0.12.2: Fix Update to install portal tarball first (not stale GitHub zip); push pipeline
 0.12.1: Compact portal Settings; SSH edit cwd; terminal panel under chat (local + SSH)

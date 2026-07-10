@@ -756,9 +756,10 @@
       overflow: hidden;
     }
     .term-panel.open { display: flex; }
-    /* Pop-out window: full-page terminal only */
+    /* Pop-out window: full-page terminal only (must reset .shell 2-col grid) */
     body.term-popout {
       overflow: hidden;
+      background: #070b12;
     }
     body.term-popout .sidebar,
     body.term-popout .main-top,
@@ -766,28 +767,42 @@
     body.term-popout #chat,
     body.term-popout .composer,
     body.term-popout .client-limit-banner,
-    body.term-popout .modal-backdrop {
+    body.term-popout .modal-backdrop,
+    body.term-popout .side-toggle {
       display: none !important;
     }
-    body.term-popout .layout {
-      grid-template-columns: 1fr;
-      height: 100vh;
-      height: 100dvh;
+    body.term-popout .shell {
+      display: block !important;
+      grid-template-columns: none !important;
+      max-width: none !important;
+      width: 100% !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      margin: 0 !important;
+      overflow: hidden;
     }
     body.term-popout .main {
-      padding: 0;
-      gap: 0;
-      height: 100vh;
-      height: 100dvh;
+      display: flex !important;
+      flex-direction: column !important;
+      padding: 0 !important;
+      gap: 0 !important;
+      width: 100% !important;
+      max-width: none !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      min-height: 0 !important;
+      min-width: 0 !important;
     }
     body.term-popout .term-panel,
     body.term-popout .term-panel.open {
       display: flex !important;
-      flex: 1 1 auto;
-      max-height: none;
-      height: 100%;
-      border-radius: 0;
-      border: 0;
+      flex: 1 1 auto !important;
+      max-height: none !important;
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
+      border-radius: 0 !important;
+      border: 0 !important;
     }
     body.term-popout .term-out {
       min-height: 0;
@@ -797,6 +812,10 @@
     body.term-popout .term-head {
       padding: .45rem .7rem;
       font-size: .78rem;
+      flex-wrap: wrap;
+    }
+    body.term-popout .term-head .term-cwd {
+      flex: 1 1 12rem;
     }
     body.term-popout .term-in-row {
       padding: .45rem .7rem;
@@ -2566,16 +2585,33 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (termInput) setTimeout(function () { termInput.focus(); }, 40);
     }
 
-    function closeTerminal() {
-      if (termPopoutMode) {
-        try { window.close(); } catch (e) { /* ignore */ }
-        // If browser blocks close, just blank the panel
-      }
+    function hideDockedTerminal() {
+      // Close only the under-chat panel (does not close a pop-out window)
+      if (termPopoutMode) return;
       termTarget = null;
       if (termPanel) {
         termPanel.classList.remove('open');
         termPanel.hidden = true;
       }
+      if (termOut) {
+        // Fresh output next time they open Term in chat
+        termOut.innerHTML = '';
+        delete termOut.dataset.booted;
+      }
+    }
+
+    function closeTerminal() {
+      if (termPopoutMode) {
+        try { window.close(); } catch (e) { /* ignore */ }
+        // If browser blocks close, blank the panel
+        termTarget = null;
+        if (termPanel) {
+          termPanel.classList.remove('open');
+          termPanel.hidden = true;
+        }
+        return;
+      }
+      hideDockedTerminal();
     }
 
     function popOutTerminal() {
@@ -2587,17 +2623,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const existing = termPopouts[target];
       if (existing && !existing.closed) {
         try { existing.focus(); } catch (e) { /* ignore */ }
+        hideDockedTerminal();
         return;
       }
 
       const url = location.origin + '/?term=' + encodeURIComponent(target);
       const name = 'pp-term-' + target;
+      // Size from screen when possible so it is not a tiny left strip
+      let w = 960, h = 580, left = 80, top = 60;
+      try {
+        w = Math.min(1100, Math.max(720, Math.floor((screen.availWidth || 1200) * 0.55)));
+        h = Math.min(720, Math.max(420, Math.floor((screen.availHeight || 800) * 0.62)));
+        left = Math.max(20, Math.floor(((screen.availWidth || 1200) - w) / 2));
+        top = Math.max(20, Math.floor(((screen.availHeight || 800) - h) / 4));
+      } catch (e) { /* ignore */ }
       const features = [
         'popup=yes',
-        'width=960',
-        'height=560',
-        'left=80',
-        'top=80',
+        'width=' + w,
+        'height=' + h,
+        'left=' + left,
+        'top=' + top,
         'menubar=no',
         'toolbar=no',
         'location=no',
@@ -2612,8 +2657,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       termPopouts[target] = win;
       try { win.focus(); } catch (e) { /* ignore */ }
-      // Docked panel can stay; user may want both. Leave a note.
-      termAppendMeta('Popped out to a separate window. This docked terminal still works.');
+      // Remove the under-chat terminal — pop-out is the only one
+      hideDockedTerminal();
       // Watch for close so Term can dock again cleanly
       const poll = setInterval(function () {
         if (!win || win.closed) {
