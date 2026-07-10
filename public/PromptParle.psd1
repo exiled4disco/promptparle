@@ -1,6 +1,6 @@
 ﻿@{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.8.2'
+    ModuleVersion     = '0.8.3'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -34,6 +34,8 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.8.3: Drop Extra text panel — one chat box for message + paste
+0.8.2: Fixed chat viewport (only replies scroll) + always-visible savings
 0.8.1: Update button in local UI (self-update + version check)
 0.8.0: Compression dial 1-5 + left tools rail in local/web chat
 0.7.0: Context fleet — CODE BRIEF, SHEET CARD, IMAGE SIGNAL + doc hybrid

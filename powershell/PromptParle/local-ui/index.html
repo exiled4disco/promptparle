@@ -106,7 +106,6 @@
       width: 100%; background: #0a0e16; color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; font: inherit;
     }
-    textarea.side-ctx { min-height: 52px; max-height: 90px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; }
     .dial-labels {
       display: flex; justify-content: space-between; font-size: .65rem; color: var(--dim); margin-bottom: .15rem;
     }
@@ -335,11 +334,6 @@
         </div>
 
         <div class="side-section">
-          <h2>Extra text</h2>
-          <textarea id="context" class="side-ctx" placeholder="Optional paste. Prefer Attach files under chat."></textarea>
-        </div>
-
-        <div class="side-section">
           <div class="tool-links">
             <a href="https://promptparle.com/app/providers" target="_blank" rel="noreferrer">Providers</a>
             <a href="https://promptparle.com/app/usage" target="_blank" rel="noreferrer">Usage</a>
@@ -348,7 +342,7 @@
           <button type="button" class="stop-btn" id="stopBtn" style="margin-top:.55rem">Stop server</button>
         </div>
 
-        <p class="side-foot">Dial = how hard to compress. Attach a doc/code file to see real token savings.</p>
+        <p class="side-foot">Dial = how hard to compress. Attach files or paste into the message box.</p>
       </div>
     </aside>
 
@@ -372,7 +366,7 @@
         </div>
         <div class="chips" id="chips"></div>
         <div class="row">
-          <textarea id="input" placeholder="Ask about the attached material… Enter to send, Shift+Enter for newline"></textarea>
+          <textarea id="input" placeholder="Message + optional paste (notes, snippets)… Attach files for large docs. Enter to send, Shift+Enter for newline"></textarea>
           <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
@@ -385,7 +379,6 @@
     const dialEl = document.getElementById('dial');
     const dialLabel = document.getElementById('dialLabel');
     const dialHint = document.getElementById('dialHint');
-    const contextEl = document.getElementById('context');
     const inputEl = document.getElementById('input');
     const form = document.getElementById('form');
     const sendBtn = document.getElementById('send');
@@ -770,8 +763,6 @@
 
     function buildContextFromAttachments() {
       const parts = [];
-      const free = contextEl.value.trim();
-      if (free) parts.push(free);
       attachments.filter(function (a) { return a.kind === 'text'; }).forEach(function (a) {
         parts.push('===== FILE: ' + a.name + ' =====\n' + a.text);
       });
@@ -783,7 +774,7 @@
       });
     }
 
-    addMsg('sys', 'Chat pane is fixed on screen — only replies scroll here. Attach a document to see token savings. Dial 3–4 for strong compression.');
+    addMsg('sys', 'One chat box: type your ask, paste notes if needed, attach files for large docs. Only this pane scrolls. Dial 3–4 for strong compression.');
 
     async function checkVersion() {
       try {
