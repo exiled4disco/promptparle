@@ -1153,8 +1153,9 @@ function Get-PromptParleChatSystemPrompt {
         'When the user wants work done (do it / implement / lets go / just get it done / stop asking): DO IT this turn. Zero clarifying questions unless a single secret fact is blocking and has no secure default.',
         'Default to the most secure reasonable choice yourself. Do not interview the user.',
         'Implement channel (client executes): (1) ```apply path=rel``` FULL file under source_root — client reads-before-write, *.pp-bak backup, refuses stubs/destructive shrinks, NEVER writes live /var/www. (2) ```run``` for allowlisted cmds the client can run (prisma migrate/generate, npm run build/test, git status/diff/log). (3) Client prefixes ## What changed. If migrate is needed after schema edits, emit ```run``` — do not tell the user to run npx.',
+        'Documents for the user (PDF/Word/Excel/CSV/MD/HTML/TXT): emit ```file name=Report.docx``` (or .pdf .xlsx .csv .md .html .txt .json) with FULL content body. Client builds a real file and shows a Download link in chat. Never dump homework to "save as" manually. For spreadsheets put CSV rows (header first) in the block body even when name ends .xlsx.',
         'Do not claim live-deployed/migrated/committed unless a run block succeeded or evidence shows it. local-ui is vanilla HTML/CSS/JS when in evidence.',
-        'Opaque outcomes are bugs: either land apply/run or say clearly what single fact blocked you.'
+        'Opaque outcomes are bugs: either land apply/run/file or say clearly what single fact blocked you.'
     ) -join ' '
 }
 
@@ -5423,6 +5424,498 @@ function Invoke-PromptParleApplyResponseBlocks {
     }
 }
 
+# ── Document deliverables (0.17): ```file name=…``` → real file + download URL ──
+
+function Get-PromptParleExportsRoot {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-exports'
+    if (-not (Test-Path -LiteralPath $root)) {
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+    }
+    return $root
+}
+
+function Get-PromptParleExportContentType {
+    param([string]$Name)
+    $ext = [System.IO.Path]::GetExtension($Name).ToLowerInvariant()
+    switch ($ext) {
+        '.pdf'  { return 'application/pdf' }
+        '.docx' { return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+        '.xlsx' { return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+        '.csv'  { return 'text/csv; charset=utf-8' }
+        '.json' { return 'application/json; charset=utf-8' }
+        '.html' { return 'text/html; charset=utf-8' }
+        '.htm'  { return 'text/html; charset=utf-8' }
+        '.md'   { return 'text/markdown; charset=utf-8' }
+        '.txt'  { return 'text/plain; charset=utf-8' }
+        '.xml'  { return 'application/xml; charset=utf-8' }
+        default { return 'application/octet-stream' }
+    }
+}
+
+function ConvertTo-PromptParleSafeFileName {
+    param([string]$Name)
+    $n = if ($Name) { $Name.Trim() } else { 'document.txt' }
+    $n = $n -replace '[\\/:*?"<>|]+', '_'
+    $n = $n.Trim('. ')
+    if (-not $n) { $n = 'document.txt' }
+    if ($n.Length -gt 120) {
+        $ext = [System.IO.Path]::GetExtension($n)
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($n)
+        if ($base.Length -gt 100) { $base = $base.Substring(0, 100) }
+        $n = $base + $ext
+    }
+    return $n
+}
+
+function New-PromptParleZipFromEntries {
+    <#
+    .SYNOPSIS
+      Build a zip (OOXML package) from name→UTF8 text or byte[] entries. Pure .NET.
+    #>
+    param([hashtable]$Entries)
+    try {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue | Out-Null
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue | Out-Null
+    } catch { }
+    $ms = New-Object System.IO.MemoryStream
+    $zip = New-Object System.IO.Compression.ZipArchive($ms, [System.IO.Compression.ZipArchiveMode]::Create, $true)
+    foreach ($key in $Entries.Keys) {
+        $entry = $zip.CreateEntry([string]$key, [System.IO.Compression.CompressionLevel]::Optimal)
+        $stream = $entry.Open()
+        try {
+            $val = $Entries[$key]
+            if ($val -is [byte[]]) {
+                $stream.Write($val, 0, $val.Length)
+            } else {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$val)
+                $stream.Write($bytes, 0, $bytes.Length)
+            }
+        } finally { $stream.Close() }
+    }
+    $zip.Dispose()
+    $ms.Position = 0
+    $out = $ms.ToArray()
+    $ms.Dispose()
+    return $out
+}
+
+function New-PromptParleDocxBytes {
+    param([Parameter(Mandatory)][string]$Text)
+    $bodyParas = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($Text -replace "`r`n", "`n" -replace "`r", "`n" -split "`n")) {
+        $esc = [System.Security.SecurityElement]::Escape($line)
+        if ($null -eq $esc) { $esc = '' }
+        if ($esc -eq '') {
+            $bodyParas.Add('<w:p><w:pPr/><w:r><w:t></w:t></w:r></w:p>')
+        } else {
+            $bodyParas.Add(('<w:p><w:r><w:t xml:space="preserve">{0}</w:t></w:r></w:p>' -f $esc))
+        }
+    }
+    if ($bodyParas.Count -eq 0) {
+        $bodyParas.Add('<w:p><w:r><w:t></w:t></w:r></w:p>')
+    }
+    $documentXml = @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    $($bodyParas -join "`n    ")
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
+  </w:body>
+</w:document>
+"@
+    $contentTypes = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+'@
+    $rels = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+'@
+    $docRels = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>
+'@
+    return (New-PromptParleZipFromEntries -Entries @{
+        '[Content_Types].xml' = $contentTypes
+        '_rels/.rels'         = $rels
+        'word/document.xml'   = $documentXml
+        'word/_rels/document.xml.rels' = $docRels
+    })
+}
+
+function ConvertFrom-PromptParleCsvRows {
+    param([string]$Text)
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($line in ($Text -replace "`r`n", "`n" -split "`n")) {
+        if ($line -match '^\s*$') { continue }
+        # simple CSV split (quoted fields)
+        $fields = New-Object System.Collections.Generic.List[string]
+        $cur = New-Object System.Text.StringBuilder
+        $inQ = $false
+        for ($i = 0; $i -lt $line.Length; $i++) {
+            $ch = $line[$i]
+            if ($ch -eq '"') {
+                if ($inQ -and ($i + 1) -lt $line.Length -and $line[$i + 1] -eq '"') {
+                    [void]$cur.Append('"'); $i++
+                } else { $inQ = -not $inQ }
+            } elseif ($ch -eq ',' -and -not $inQ) {
+                $fields.Add($cur.ToString()); [void]$cur.Clear()
+            } else {
+                [void]$cur.Append($ch)
+            }
+        }
+        $fields.Add($cur.ToString())
+        $rows.Add(@($fields.ToArray()))
+    }
+    if ($rows.Count -eq 0) { $rows.Add(@('Value')); $rows.Add(@($Text)) }
+    return @($rows.ToArray())
+}
+
+function New-PromptParleXlsxBytes {
+    param([Parameter(Mandatory)][string]$Text)
+    $table = ConvertFrom-PromptParleCsvRows -Text $Text
+    $sheetRows = New-Object System.Collections.Generic.List[string]
+    $rIdx = 1
+    foreach ($row in $table) {
+        $cells = New-Object System.Collections.Generic.List[string]
+        $cIdx = 0
+        foreach ($cell in @($row)) {
+            $col = ''
+            $n = $cIdx
+            do {
+                $col = [char]([int][char]'A' + ($n % 26)) + $col
+                $n = [Math]::Floor($n / 26) - 1
+            } while ($n -ge 0)
+            $ref = "$col$rIdx"
+            $esc = [System.Security.SecurityElement]::Escape([string]$cell)
+            if ($null -eq $esc) { $esc = '' }
+            # inline string
+            $cells.Add(('<c r="{0}" t="inlineStr"><is><t xml:space="preserve">{1}</t></is></c>' -f $ref, $esc))
+            $cIdx++
+        }
+        $sheetRows.Add(('<row r="{0}">{1}</row>' -f $rIdx, ($cells -join '')))
+        $rIdx++
+    }
+    $sheetXml = @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    $($sheetRows -join "`n    ")
+  </sheetData>
+</worksheet>
+"@
+    $workbook = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>
+'@
+    $contentTypes = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>
+'@
+    $rels = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+'@
+    $wbRels = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+'@
+    return (New-PromptParleZipFromEntries -Entries @{
+        '[Content_Types].xml' = $contentTypes
+        '_rels/.rels' = $rels
+        'xl/workbook.xml' = $workbook
+        'xl/_rels/workbook.xml.rels' = $wbRels
+        'xl/worksheets/sheet1.xml' = $sheetXml
+    })
+}
+
+function Escape-PromptParlePdfString {
+    param([string]$s)
+    if ($null -eq $s) { return '' }
+    $t = [string]$s
+    $t = $t.Replace('\', '\\')
+    $t = $t.Replace('(', '\(')
+    $t = $t.Replace(')', '\)')
+    # drop non-latin1 for simple Helvetica PDF
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $t.ToCharArray()) {
+        $code = [int]$ch
+        if ($code -ge 32 -and $code -le 126) { [void]$sb.Append($ch) }
+        elseif ($code -eq 9) { [void]$sb.Append(' ') }
+        else { [void]$sb.Append('?') }
+    }
+    return $sb.ToString()
+}
+
+function New-PromptParlePdfBytes {
+    <#
+    .SYNOPSIS
+      Minimal multi-page text PDF (Helvetica). No external deps.
+    #>
+    param([Parameter(Mandatory)][string]$Text)
+    $lines = @($Text -replace "`r`n", "`n" -replace "`r", "`n" -split "`n")
+    if ($lines.Count -eq 0) { $lines = @('') }
+    $maxLinesPerPage = 60
+    $pages = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $lines.Count; $i += $maxLinesPerPage) {
+        $end = [Math]::Min($i + $maxLinesPerPage - 1, $lines.Count - 1)
+        $chunk = $lines[$i..$end]
+        $y = 770
+        $ops = New-Object System.Collections.Generic.List[string]
+        [void]$ops.Add('BT')
+        [void]$ops.Add('/F1 11 Tf')
+        [void]$ops.Add('14 TL')
+        [void]$ops.Add("50 $y Td")
+        $first = $true
+        foreach ($ln in $chunk) {
+            $t = Escape-PromptParlePdfString -s ([string]$ln)
+            if ($t.Length -gt 95) { $t = $t.Substring(0, 92) + '...' }
+            if ($first) {
+                [void]$ops.Add("($t) Tj")
+                $first = $false
+            } else {
+                [void]$ops.Add('T*')
+                [void]$ops.Add("($t) Tj")
+            }
+        }
+        [void]$ops.Add('ET')
+        [void]$pages.Add(($ops -join "`n"))
+    }
+    if ($pages.Count -eq 0) { [void]$pages.Add("BT`n/F1 11 Tf`n50 770 Td`n() Tj`nET") }
+
+    $objs = New-Object System.Collections.Generic.List[string]
+    $pageCount = $pages.Count
+    $fontObj = 3
+    $firstPageObj = 4
+    $pageObjIds = New-Object System.Collections.Generic.List[int]
+    $contentObjIds = New-Object System.Collections.Generic.List[int]
+    for ($p = 0; $p -lt $pageCount; $p++) {
+        [void]$pageObjIds.Add($firstPageObj + $p * 2)
+        [void]$contentObjIds.Add($firstPageObj + $p * 2 + 1)
+    }
+    $kids = ($pageObjIds | ForEach-Object { "$_ 0 R" }) -join ' '
+    [void]$objs.Add('1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj')
+    [void]$objs.Add("2 0 obj<< /Type /Pages /Kids [$kids] /Count $pageCount >>endobj")
+    [void]$objs.Add('3 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj')
+    for ($p = 0; $p -lt $pageCount; $p++) {
+        $po = $pageObjIds[$p]
+        $co = $contentObjIds[$p]
+        $stream = $pages[$p]
+        $len = [System.Text.Encoding]::ASCII.GetByteCount($stream)
+        [void]$objs.Add("$po 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents $co 0 R /Resources << /Font << /F1 $fontObj 0 R >> >> >>endobj")
+        [void]$objs.Add("$co 0 obj<< /Length $len >>stream`n$stream`nendstream`nendobj")
+    }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("%PDF-1.4`n")
+    $offsets = New-Object System.Collections.Generic.List[int]
+    [void]$offsets.Add(0)
+    foreach ($o in $objs) {
+        [void]$offsets.Add($sb.Length)
+        [void]$sb.Append($o)
+        if (-not $o.EndsWith("`n")) { [void]$sb.Append("`n") }
+    }
+    $xrefPos = $sb.Length
+    $nObj = $offsets.Count
+    [void]$sb.Append("xref`n0 $nObj`n")
+    [void]$sb.Append("0000000000 65535 f `n")
+    for ($i = 1; $i -lt $nObj; $i++) {
+        [void]$sb.Append(('{0:D10} 00000 n `n' -f $offsets[$i]))
+    }
+    [void]$sb.Append("trailer<< /Size $nObj /Root 1 0 R >>`nstartxref`n$xrefPos`n%%EOF`n")
+    return [System.Text.Encoding]::ASCII.GetBytes($sb.ToString())
+}
+
+function New-PromptParleDocumentBytes {
+    param(
+        [Parameter(Mandatory)][string]$FileName,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content
+    )
+    $ext = [System.IO.Path]::GetExtension($FileName).ToLowerInvariant()
+    switch ($ext) {
+        '.docx' { return ,(New-PromptParleDocxBytes -Text $Content) }
+        '.xlsx' { return ,(New-PromptParleXlsxBytes -Text $Content) }
+        '.pdf'  { return ,(New-PromptParlePdfBytes -Text $Content) }
+        default {
+            # text-like
+            $utf8 = New-Object System.Text.UTF8Encoding $true # BOM helps Excel open CSV
+            if ($ext -eq '.csv') {
+                return ,($utf8.GetBytes($Content))
+            }
+            return ,([System.Text.Encoding]::UTF8.GetBytes($Content))
+        }
+    }
+}
+
+function Register-PromptParleExport {
+    param(
+        [Parameter(Mandatory)][string]$FileName,
+        [Parameter(Mandatory)][byte[]]$Bytes
+    )
+    $safe = ConvertTo-PromptParleSafeFileName -Name $FileName
+    $token = -join ((1..16) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+    $root = Get-PromptParleExportsRoot
+    $dir = Join-Path $root $token
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $path = Join-Path $dir $safe
+    [System.IO.File]::WriteAllBytes($path, $Bytes)
+    # StrictMode-safe: unset script var throws on bare read
+    $idx = $null
+    try {
+        $idx = Get-Variable -Name PromptParleExportIndex -Scope Script -ValueOnly -ErrorAction Stop
+    } catch { $idx = $null }
+    if ($null -eq $idx) {
+        $idx = @{}
+        Set-Variable -Name PromptParleExportIndex -Scope Script -Value $idx
+    }
+    $idx[$token] = [pscustomobject]@{
+        token        = $token
+        name         = $safe
+        path         = $path
+        bytes        = $Bytes.Length
+        content_type = (Get-PromptParleExportContentType -Name $safe)
+        created      = (Get-Date).ToUniversalTime()
+    }
+    return [pscustomobject]@{
+        token        = $token
+        name         = $safe
+        bytes        = $Bytes.Length
+        content_type = (Get-PromptParleExportContentType -Name $safe)
+        url          = ('/api/exports/' + $token)
+        download_url = ('/api/exports/' + $token + '?download=1')
+    }
+}
+
+function Get-PromptParleExport {
+    param([Parameter(Mandatory)][string]$Token)
+    $t = $Token.Trim() -replace '[^a-fA-F0-9]', ''
+    if (-not $t) { return $null }
+    $idx = $null
+    try {
+        $idx = Get-Variable -Name PromptParleExportIndex -Scope Script -ValueOnly -ErrorAction Stop
+    } catch { $idx = $null }
+    if (($null -ne $idx) -and $idx.ContainsKey($t)) {
+        $e = $idx[$t]
+        if (Test-Path -LiteralPath $e.path) { return $e }
+    }
+    # recover from disk if index lost (same process temp)
+    $pathDir = Join-Path (Get-PromptParleExportsRoot) $t
+    if (Test-Path -LiteralPath $pathDir) {
+        $file = Get-ChildItem -LiteralPath $pathDir -File | Select-Object -First 1
+        if ($file) {
+            return [pscustomobject]@{
+                token = $t
+                name = $file.Name
+                path = $file.FullName
+                bytes = $file.Length
+                content_type = (Get-PromptParleExportContentType -Name $file.Name)
+            }
+        }
+    }
+    return $null
+}
+
+function Invoke-PromptParleDeliverResponseBlocks {
+    <#
+    .SYNOPSIS
+      0.17: Parse ```file name=…``` / ```deliver name=…``` blocks, build real docs, download URLs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ResponseText
+    )
+    $text = if ($null -eq $ResponseText) { '' } else { [string]$ResponseText }
+    $delivered = New-Object System.Collections.Generic.List[object]
+    $errors = New-Object System.Collections.Generic.List[string]
+    if (-not $text) {
+        return [pscustomobject]@{ text = $text; exports = @(); count = 0; errors = @() }
+    }
+
+    $rx = [regex]::new('(?ms)```(?:file|deliver)\s+(?:name|path|filename)\s*[=:]\s*([^\s\r\n`]+)[ \t]*\r?\n(.*?)```')
+    $ms = $rx.Matches($text)
+    if ($ms.Count -eq 0) {
+        # also accept ```file report.docx
+        $rx2 = [regex]::new('(?ms)```(?:file|deliver)\s+([A-Za-z0-9._\- ]+\.(?:pdf|docx|xlsx|csv|md|txt|html|htm|json|xml))[ \t]*\r?\n(.*?)```')
+        $ms = $rx2.Matches($text)
+    }
+    if ($ms.Count -eq 0) {
+        return [pscustomobject]@{ text = $text; exports = @(); count = 0; errors = @() }
+    }
+
+    $allowed = @('.pdf', '.docx', '.xlsx', '.csv', '.md', '.txt', '.html', '.htm', '.json', '.xml')
+    foreach ($m in $ms) {
+        $name = ConvertTo-PromptParleSafeFileName -Name $m.Groups[1].Value
+        $body = $m.Groups[2].Value
+        # strip one trailing newline noise
+        if ($body.EndsWith("`n")) { $body = $body.Substring(0, $body.Length - 1) }
+        if ($body.EndsWith("`r")) { $body = $body.Substring(0, $body.Length - 1) }
+        $ext = [System.IO.Path]::GetExtension($name).ToLowerInvariant()
+        if ($allowed -notcontains $ext) {
+            $errors.Add("Unsupported type for deliverable: $name (use pdf/docx/xlsx/csv/md/txt/html/json)")
+            continue
+        }
+        if ($body.Length -lt 1) {
+            $errors.Add("Empty body for $name")
+            continue
+        }
+        if ($body.Length -gt 2MB) {
+            $errors.Add("Body too large for $name")
+            continue
+        }
+        try {
+            $bytes = New-PromptParleDocumentBytes -FileName $name -Content $body
+            $reg = Register-PromptParleExport -FileName $name -Bytes $bytes
+            $delivered.Add($reg)
+        } catch {
+            $errors.Add("$name : $_")
+        }
+    }
+
+    if ($delivered.Count -eq 0 -and $errors.Count -eq 0) {
+        return [pscustomobject]@{ text = $text; exports = @(); count = 0; errors = @() }
+    }
+
+    $hdr = New-Object System.Collections.Generic.List[string]
+    $hdr.Add('## Downloads ready')
+    $hdr.Add('_Client built real files from ```file name=…``` blocks — click to download._')
+    $hdr.Add('')
+    foreach ($d in $delivered) {
+        $kb = [Math]::Max(1, [int][Math]::Ceiling($d.bytes / 1024.0))
+        $hdr.Add(("- **[{0}]({1})** · {2} KB · ``{3}``" -f $d.name, $d.download_url, $kb, $d.content_type))
+    }
+    if ($errors.Count -gt 0) {
+        $hdr.Add('')
+        $hdr.Add('**Deliver errors:**')
+        foreach ($e in $errors) { $hdr.Add("- $e") }
+    }
+    $hdr.Add('')
+    $hdr.Add('---')
+    $hdr.Add('')
+    $out = ($hdr -join "`n") + $text
+    return [pscustomobject]@{
+        text    = $out
+        exports = @($delivered.ToArray())
+        count   = $delivered.Count
+        errors  = @($errors.ToArray())
+    }
+}
+
 function Test-PromptParleSsh {
     param([string]$Target, [int]$Port = 0)
     $r = Invoke-PromptParleSsh -Target $Target -Port $Port -RemoteCommand 'echo promptparle-ssh-ok && uname -a 2>/dev/null || ver' -TimeoutSec 15 -WorkingDirectory ''
@@ -7665,8 +8158,9 @@ function Write-PromptParleHttpResponse {
         [int]$StatusCode = 200,
         [string]$ContentType = 'text/plain; charset=utf-8',
         [string]$Body = '',
-        # Optional raw bytes (logo / static assets). When set, Body is ignored.
-        [byte[]]$Bytes = $null
+        # Optional raw bytes (logo / static assets / exports). When set, Body is ignored.
+        [byte[]]$Bytes = $null,
+        [string]$ContentDisposition = ''
     )
 
     if ($null -ne $Bytes) {
@@ -7678,6 +8172,11 @@ function Write-PromptParleHttpResponse {
     $Context.Response.ContentType = $ContentType
     $Context.Response.ContentLength64 = $buffer.Length
     $Context.Response.Headers.Add('Cache-Control', 'no-store')
+    if ($ContentDisposition) {
+        try { $Context.Response.Headers.Add('Content-Disposition', $ContentDisposition) } catch {
+            try { $Context.Response.AddHeader('Content-Disposition', $ContentDisposition) } catch { }
+        }
+    }
     if ($buffer.Length -gt 0) {
         $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
     }
@@ -8023,6 +8522,34 @@ function Start-PromptParleLocalServer {
                 }
 
                 # Static assets next to index.html (logo, etc.)
+                # 0.17 document downloads from chat ```file name=…``` deliverables
+                if ($req.HttpMethod -eq 'GET' -and $path -match '^/api/exports/([a-fA-F0-9]+)$') {
+                    try {
+                        $tok = $Matches[1]
+                        $exp = Get-PromptParleExport -Token $tok
+                        if (-not $exp) {
+                            Write-PromptParleHttpResponse -Context $ctx -StatusCode 404 -ContentType 'text/plain; charset=utf-8' -Body 'Export not found or expired'
+                        } else {
+                            $bytes = [System.IO.File]::ReadAllBytes([string]$exp.path)
+                            $dl = $true
+                            try {
+                                $qdl = [string]$req.QueryString['download']
+                                if ($qdl -eq '0' -or $qdl -eq 'false') { $dl = $false }
+                            } catch { $dl = $true }
+                            $dispName = [string]$exp.name
+                            $disp = if ($dl) {
+                                'attachment; filename="' + ($dispName -replace '"', '') + '"'
+                            } else {
+                                'inline; filename="' + ($dispName -replace '"', '') + '"'
+                            }
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType ([string]$exp.content_type) -Bytes $bytes -ContentDisposition $disp
+                        }
+                    } catch {
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'text/plain; charset=utf-8' -Body "$_"
+                    }
+                    continue
+                }
+
                 if ($req.HttpMethod -eq 'GET' -and ($path -eq '/logo.png' -or $path -eq '/local-ui/logo.png')) {
                     $logoPath = Join-Path $root 'local-ui\logo.png'
                     if (-not (Test-Path -LiteralPath $logoPath)) {
@@ -8904,6 +9431,35 @@ function Start-PromptParleLocalServer {
                             } catch {
                                 Write-Host ("  chat: implement pipeline failed: {0}" -f $_) -ForegroundColor Yellow
                                 $respText = $respText + "`n`n**Implement pipeline failed:** $_"
+                            }
+                        }
+                        # 0.17: document deliverables — ```file name=Report.docx``` → real file + download URL
+                        $deliverInfo = $null
+                        if ($respText -and ($respText -match '(?m)```(?:file|deliver)\s+')) {
+                            try {
+                                $deliverInfo = Invoke-PromptParleDeliverResponseBlocks -ResponseText $respText
+                                if ($deliverInfo -and $deliverInfo.text) { $respText = [string]$deliverInfo.text }
+                                if ($deliverInfo -and $deliverInfo.count -gt 0) {
+                                    Write-Host ("  chat: delivered {0} downloadable file(s)" -f $deliverInfo.count) -ForegroundColor Green
+                                    if ($metaOut) {
+                                        $metaOut.exports = @($deliverInfo.exports | ForEach-Object {
+                                            [ordered]@{
+                                                name         = $_.name
+                                                url          = $_.url
+                                                download_url = $_.download_url
+                                                bytes        = $_.bytes
+                                                content_type = $_.content_type
+                                            }
+                                        })
+                                        $metaOut.export_count = [int]$deliverInfo.count
+                                    }
+                                }
+                                if ($deliverInfo -and $deliverInfo.errors -and $deliverInfo.errors.Count -gt 0) {
+                                    Write-Host ("  chat: deliver errors: {0}" -f ($deliverInfo.errors -join '; ')) -ForegroundColor Yellow
+                                }
+                            } catch {
+                                Write-Host ("  chat: deliver pipeline failed: {0}" -f $_) -ForegroundColor Yellow
+                                $respText = $respText + "`n`n**Document deliver failed:** $_"
                             }
                         }
                         $payload = [ordered]@{

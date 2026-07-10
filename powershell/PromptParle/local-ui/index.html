@@ -1937,6 +1937,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const appliedFiles = metaGet(raw, 'applied_files') ?? metaGet(raw, 'appliedFiles') ?? [];
       const appliedList = Array.isArray(appliedFiles) ? appliedFiles : [];
       const appliedCount = Number(metaGet(raw, 'applied_count') ?? metaGet(raw, 'appliedCount') ?? appliedList.length ?? 0);
+      const exportsRaw = metaGet(raw, 'exports') || [];
+      const exportsList = Array.isArray(exportsRaw) ? exportsRaw : [];
+      const exportCount = Number(metaGet(raw, 'export_count') ?? metaGet(raw, 'exportCount') ?? exportsList.length ?? 0);
       return {
         original_tokens: orig,
         optimized_tokens: opt,
@@ -1951,7 +1954,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         signals: metaGet(raw, 'signals') || {},
         secrets_masked: metaGet(raw, 'secrets_masked') ?? metaGet(raw, 'secretsMasked'),
         applied_files: appliedList,
-        applied_count: appliedCount
+        applied_count: appliedCount,
+        exports: exportsList,
+        export_count: exportCount
       };
     }
 
@@ -2258,6 +2263,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return 'info';
     }
 
+    function linkifyChatText(text) {
+      // Escape HTML then turn markdown links + bare /api/exports/ URLs into anchors
+      var s = String(text == null ? '' : text);
+      s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      // [label](/api/exports/TOKEN?download=1) or [label](http…)
+      s = s.replace(
+        /\[([^\]]+)\]\((\/api\/exports\/[a-fA-F0-9]+(?:\?[^)]*)?|https?:\/\/[^)\s]+)\)/g,
+        function (_, label, url) {
+          var safeUrl = url.replace(/"/g, '');
+          var isDl = safeUrl.indexOf('/api/exports/') === 0;
+          return '<a href="' + safeUrl + '"' +
+            (isDl ? ' download' : ' target="_blank" rel="noopener"') +
+            ' style="color:var(--accent);text-decoration:underline;font-weight:600">' +
+            label + '</a>';
+        }
+      );
+      // bare /api/exports/hex
+      s = s.replace(
+        /(^|[\s(])(\/api\/exports\/[a-fA-F0-9]+(?:\?download=1)?)/g,
+        function (_, pre, url) {
+          return pre + '<a href="' + url + '" download style="color:var(--accent);text-decoration:underline">' + url + '</a>';
+        }
+      );
+      return s;
+    }
+
     function addMsg(role, text, meta, isError, thumbs) {
       // Operational sys → Activity log (keeps chat for conversation only)
       if ((role === 'sys' || role === 'system') && !shouldKeepSysInChat(text)) {
@@ -2266,7 +2297,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       const div = document.createElement('div');
       div.className = 'msg ' + role + (isError ? ' error' : '');
-      div.textContent = text;
+      // Assistant/user: preserve newlines + clickable download links
+      if (role === 'assistant' || role === 'user' || role === 'bot') {
+        div.style.whiteSpace = 'pre-wrap';
+        div.innerHTML = linkifyChatText(text);
+      } else {
+        div.textContent = text;
+      }
       if (thumbs && thumbs.length) {
         const row = document.createElement('div');
         row.className = 'thumbs';
@@ -2279,6 +2316,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         div.appendChild(row);
       }
       const nmeta = normalizeMeta(meta);
+      // Document deliverables — big download buttons
+      if (nmeta && (nmeta.export_count > 0 || (nmeta.exports && nmeta.exports.length))) {
+        const ex = document.createElement('div');
+        ex.className = 'meta';
+        ex.style.borderColor = 'rgba(96, 165, 250, 0.55)';
+        ex.style.background = 'rgba(59, 130, 246, 0.12)';
+        const list = nmeta.exports || [];
+        let html = '<span class="ok"><strong>Downloads ready</strong></span>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.45rem">';
+        list.forEach(function (e) {
+          if (!e) return;
+          const name = String(e.name || e.file || 'file');
+          const url = String(e.download_url || e.downloadUrl || e.url || '');
+          if (!url) return;
+          const kb = e.bytes ? Math.max(1, Math.ceil(Number(e.bytes) / 1024)) : null;
+          html += '<a href="' + url.replace(/"/g, '') + '" download class="btn" ' +
+            'style="display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .7rem;font-size:.82rem;' +
+            'background:var(--accent);color:#0b1220;border-radius:8px;text-decoration:none;font-weight:600">' +
+            '⬇ ' + name + (kb ? ' · ' + kb + ' KB' : '') + '</a>';
+        });
+        html += '</div>';
+        ex.innerHTML = html;
+        div.appendChild(ex);
+      }
       // Always-visible: what actually landed on the server (not buried in prose)
       if (nmeta && (nmeta.applied_count > 0 || (nmeta.applied_files && nmeta.applied_files.length))) {
         const ab = document.createElement('div');
