@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.15.3'
+    ModuleVersion     = '0.15.4'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -55,6 +55,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.15.4: Clear ## What changed header after apply; refuse stub/destructive overwrites (schema gutting)
 0.15.3: Natural-language implement (lets do it / leave it to you / stop asking) + history sticky — model already understands English; prep must not underrun
 0.15.2: Sticky implement + hard CLIENT DIRECTIVE on prompt — stop multi-turn ask loops that waste session tokens
 0.15.1: Apply path= blocks write via SSH; implement turns no permission theater; 'lets do it' = implement
