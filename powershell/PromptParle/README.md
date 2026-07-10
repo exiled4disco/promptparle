@@ -85,21 +85,22 @@ Environment overrides:
 ```powershell
 Import-Module PromptParle
 pp
-# aliases: Start-PromptParle   promptparle
 ```
 
-1. Lists providers you configured in the portal  
-2. You pick one  
-3. Type normally at `you>`  
+**`pp` opens the browser chat** at https://promptparle.com/app/chat  
 
-```text
-Which AI do you want to use?
-  [1] OpenAI
-provider # (or name)> 1
-you> Tell me about ExampleCorp
+1. Sign in (portal account)  
+2. Pick a configured AI provider  
+3. Type normally — savings show under each reply  
+
+No desktop API key required for browser chat (provider keys live in the portal).
+
+Terminal CLI (optional):
+
+```powershell
+Set-PromptParleApiKey -ApiKey 'pp_live_...'   # once
+Start-PromptParle -Cli
 ```
-
-In-session: `/help` `/provider` `/profile` `/file` `/context` `/usage` `/quit`
 
 Auto-load every PowerShell window:
 
@@ -113,8 +114,10 @@ Then just type `pp`.
 
 | Command | Description |
 |---------|-------------|
-| `Start-PromptParle` / `pp` / `promptparle` | **Interactive chat UI** |
-| `Set-PromptParleApiKey` | Save `pp_live_…` key |
+| `Start-PromptParle` / `pp` / `promptparle` | **Open browser chat** (default) |
+| `Start-PromptParle -Cli` | Terminal chat session |
+| `Open-PromptParleBrowser` | Open chat URL only |
+| `Set-PromptParleApiKey` | Save `pp_live_…` key (CLI/automation) |
 | `Get-PromptParleConfig` | Show config (key masked) |
 | `Get-PromptParleProvider` | List providers + which keys are set |
 | `Get-PromptParleUsage` | Token savings summary |

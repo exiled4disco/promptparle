@@ -609,25 +609,71 @@ function Invoke-PromptParleSecurityReview {
     }
 }
 
-function Start-PromptParle {
+function Open-PromptParleBrowser {
     <#
     .SYNOPSIS
-      Friendly interactive PromptParle session.
-
-    .DESCRIPTION
-      Starts PromptParle like a chat app:
-        1) Picks an AI provider you already configured in the portal
-        2) Gives you a normal prompt line (you> )
-        3) Optimizes + routes each message through PromptParle
-
-      Shortcuts: pp   and   promptparle
-
-    .EXAMPLE
-      Start-PromptParle
-      pp
+      Open the PromptParle browser chat in your default web browser.
     #>
     [CmdletBinding()]
     param(
+        [string]$Path = '/app/chat'
+    )
+
+    $config = Get-PromptParleConfigInternal
+    $base = if ($config.BaseUrl) { $config.BaseUrl.TrimEnd('/') } else { $script:DefaultBaseUrl }
+    if (-not $Path.StartsWith('/')) { $Path = "/$Path" }
+    $url = "$base$Path"
+
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host '  PromptParle' -ForegroundColor Cyan
+    Write-Host '  Opening browser chat…' -ForegroundColor DarkGray
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host $url -ForegroundColor Green
+    Write-Host ''
+    Write-Host 'Sign in if needed, pick a provider, and type normally.' -ForegroundColor DarkGray
+    Write-Host 'PowerShell CLI is still available:  Start-PromptParle -Cli' -ForegroundColor DarkGray
+    Write-Host ''
+
+    try {
+        if ($script:PromptParleIsWindows) {
+            Start-Process $url
+        } else {
+            if (Get-Command xdg-open -ErrorAction SilentlyContinue) {
+                Start-Process xdg-open $url
+            } elseif (Get-Command open -ErrorAction SilentlyContinue) {
+                Start-Process open $url
+            } else {
+                Write-Host "Open this URL manually: $url" -ForegroundColor Yellow
+            }
+        }
+    } catch {
+        Write-Host "Could not launch browser automatically. Open: $url" -ForegroundColor Yellow
+    }
+}
+
+function Start-PromptParle {
+    <#
+    .SYNOPSIS
+      Start PromptParle — browser chat by default.
+
+    .DESCRIPTION
+      Default: opens https://promptparle.com/app/chat in your browser.
+      That is the main product UI (providers, chat, savings, history).
+
+      -Cli starts the terminal chat session instead.
+
+    .EXAMPLE
+      pp
+      Start-PromptParle
+      Start-PromptParle -Cli
+    #>
+    [CmdletBinding()]
+    param(
+        # Terminal interactive session instead of browser
+        [switch]$Cli,
+
         [ValidateSet('openai', 'anthropic', 'gemini', 'grok')]
         [string]$Provider,
 
@@ -644,20 +690,26 @@ function Start-PromptParle {
         [string]$Model
     )
 
+    if (-not $Cli) {
+        Open-PromptParleBrowser -Path '/app/chat'
+        return
+    }
+
+    # --- CLI mode ---
     $config = Get-PromptParleConfigInternal
     if (-not $config.ApiKey) {
         Write-Host ''
-        Write-Host 'PromptParle is not configured yet.' -ForegroundColor Yellow
-        Write-Host '1) Create a desktop key: https://promptparle.com/app/api-keys' -ForegroundColor White
-        Write-Host "2) Run:  Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
-        Write-Host '3) Run:  Start-PromptParle   (or: pp)' -ForegroundColor White
+        Write-Host 'CLI mode needs a desktop API key.' -ForegroundColor Yellow
+        Write-Host '1) https://promptparle.com/app/api-keys' -ForegroundColor White
+        Write-Host "2) Set-PromptParleApiKey -ApiKey 'pp_live_...'" -ForegroundColor White
+        Write-Host 'Or use browser chat (no desktop key):  pp' -ForegroundColor Cyan
         Write-Host ''
         return
     }
 
     Write-Host ''
     Write-Host '========================================' -ForegroundColor Cyan
-    Write-Host '  PromptParle' -ForegroundColor Cyan
+    Write-Host '  PromptParle (CLI)' -ForegroundColor Cyan
     Write-Host '  Trim the prompt. Keep the signal.' -ForegroundColor DarkGray
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host ''
@@ -686,7 +738,6 @@ function Start-PromptParle {
     while ($true) {
         $line = Read-PromptParleLine -PromptText 'you> ' -Color Green
         if ($null -eq $line) {
-            # Ctrl+Z / EOF
             Write-Host ''
             Write-Host 'Bye.' -ForegroundColor DarkGray
             break
@@ -695,7 +746,6 @@ function Start-PromptParle {
         $trimmed = $line.Trim()
         if (-not $trimmed) { continue }
 
-        # Slash commands
         if ($trimmed.StartsWith('/')) {
             $parts = $trimmed -split '\s+', 2
             $cmd = $parts[0].ToLowerInvariant()
@@ -706,14 +756,9 @@ function Start-PromptParle {
                     Write-Host 'Bye.' -ForegroundColor DarkGray
                     return
                 }
-                '/help' {
-                    Show-PromptParleSessionHelp
-                    continue
-                }
-                '/clear' {
-                    Clear-Host
-                    continue
-                }
+                '/help' { Show-PromptParleSessionHelp; continue }
+                '/clear' { Clear-Host; continue }
+                '/browser' { Open-PromptParleBrowser -Path '/app/chat'; continue }
                 '/status' {
                     Write-Host ''
                     Write-Host ("  Provider : {0}" -f $sessionProvider)
@@ -842,7 +887,6 @@ function Start-PromptParle {
             }
         }
 
-        # Normal chat message
         Write-Host 'thinking...' -ForegroundColor DarkGray
         try {
             $params = @{
@@ -888,7 +932,8 @@ Export-ModuleMember -Function @(
     'Get-PromptParleUsage',
     'Invoke-PromptParle',
     'Invoke-PromptParleSecurityReview',
-    'Start-PromptParle'
+    'Start-PromptParle',
+    'Open-PromptParleBrowser'
 ) -Alias @(
     'pp',
     'promptparle'

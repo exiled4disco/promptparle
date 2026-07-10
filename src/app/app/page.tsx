@@ -26,19 +26,19 @@ export default async function DashboardPage() {
       done: activeProviders.length > 0,
       title: "Add an AI provider key",
       href: "/app/providers",
-      body: "OpenAI or Anthropic — stored encrypted.",
-    },
-    {
-      done: activeKeys.length > 0,
-      title: "Generate a desktop API key",
-      href: "/app/api-keys",
-      body: "Use pp_live_… in PowerShell or VS Code.",
+      body: "OpenAI, Claude, Gemini, or Grok — stored encrypted.",
     },
     {
       done: usage.requestCount > 0,
-      title: "Send your first optimized prompt",
-      href: "/app/usage",
-      body: "Clients will land here once the module ships.",
+      title: "Open Chat and send a message",
+      href: "/app/chat",
+      body: "Browser chat is the main experience — type normally.",
+    },
+    {
+      done: activeKeys.length > 0,
+      title: "Optional: desktop API key",
+      href: "/app/api-keys",
+      body: "Only needed for PowerShell automation / CLI.",
     },
   ];
 

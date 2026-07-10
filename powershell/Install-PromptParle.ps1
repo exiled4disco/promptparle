@@ -77,12 +77,23 @@ Import-Module PromptParle -Force
 $loaded = Get-Module PromptParle
 Write-Host "Imported PromptParle $($loaded.Version)" -ForegroundColor Green
 Write-Host ''
-Write-Host 'Start chatting:' -ForegroundColor Cyan
+Write-Host 'Start chatting (browser — main experience):' -ForegroundColor Cyan
 Write-Host '  pp'
-Write-Host '  # or:  Start-PromptParle   /   promptparle'
+Write-Host '  # opens https://promptparle.com/app/chat'
 Write-Host ''
-Write-Host 'First-time setup (once):' -ForegroundColor DarkGray
+Write-Host 'Portal setup (once):' -ForegroundColor DarkGray
+Write-Host '  1) Sign in at https://promptparle.com'
+Write-Host '  2) Add a provider key under Providers'
+Write-Host '  3) Chat in the browser'
+Write-Host ''
+Write-Host 'Optional CLI automation key:' -ForegroundColor DarkGray
 Write-Host "  Set-PromptParleApiKey -ApiKey 'pp_live_xxxxx'"
+Write-Host '  Start-PromptParle -Cli'
 Write-Host ''
 Write-Host 'Optional — auto-load in every PowerShell window:' -ForegroundColor DarkGray
 Write-Host "  Add-Content `$PROFILE `"Import-Module PromptParle`""
+
+# Offer to open chat now
+try {
+    Open-PromptParleBrowser -Path '/app/chat'
+} catch { }

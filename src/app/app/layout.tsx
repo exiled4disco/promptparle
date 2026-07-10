@@ -6,6 +6,7 @@ import { getSessionUser } from "@/lib/auth";
 
 const NAV = [
   { href: "/app", label: "Dashboard", exact: true },
+  { href: "/app/chat", label: "Chat" },
   { href: "/app/providers", label: "Providers" },
   { href: "/app/api-keys", label: "API Keys" },
   { href: "/app/usage", label: "Usage" },
