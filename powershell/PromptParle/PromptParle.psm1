@@ -676,29 +676,8 @@ function Write-PromptParleHttpResponse {
     $Context.Response.OutputStream.Close()
 }
 
-function Clear-PromptParleLocalPort {
-    <#
-    .SYNOPSIS
-      Free a local port used by PromptParle (HTTP stop, then PowerShell listeners).
-    #>
-    [CmdletBinding()]
-    param(
-        [int]$Port = 7788,
-        [switch]$Quiet
-    )
-
-    $stopUrl = "http://127.0.0.1:$Port/api/stop"
-    try {
-        if ($PSVersionTable.PSVersion.Major -le 5) {
-            Invoke-WebRequest -Uri $stopUrl -Method POST -UseBasicParsing -TimeoutSec 2 | Out-Null
-        } else {
-            Invoke-WebRequest -Uri $stopUrl -Method POST -TimeoutSec 2 | Out-Null
-        }
-        if (-not $Quiet) { Write-Host "Asked server on port $Port to stop." -ForegroundColor DarkGray }
-        Start-Sleep -Milliseconds 400
-    } catch { }
-
-    # Free leftover listeners held by other PowerShell processes (common after crash)
+function Get-PromptParleListenersOnPort {
+    param([int]$Port)
     $pids = @()
     try {
         if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
@@ -709,12 +688,13 @@ function Clear-PromptParleLocalPort {
         }
     } catch { }
 
-    # netstat fallback (Windows)
     if ($pids.Count -eq 0 -and $script:PromptParleIsWindows) {
         try {
-            $lines = netstat -ano -p tcp 2>$null | Select-String ":$Port\s+.*LISTENING"
+            $lines = netstat -ano -p tcp 2>$null | Select-String -Pattern (":$Port\s+") 
             foreach ($line in $lines) {
-                $parts = ($line.ToString() -split '\s+') | Where-Object { $_ }
+                $s = $line.ToString()
+                if ($s -notmatch 'LISTENING') { continue }
+                $parts = ($s -split '\s+') | Where-Object { $_ }
                 if ($parts.Count -ge 5) {
                     $procId = 0
                     if ([int]::TryParse($parts[-1], [ref]$procId) -and $procId -gt 0) {
@@ -724,8 +704,40 @@ function Clear-PromptParleLocalPort {
             }
         } catch { }
     }
+    return @($pids | Select-Object -Unique)
+}
 
-    foreach ($procId in ($pids | Select-Object -Unique)) {
+function Clear-PromptParleLocalPort {
+    <#
+    .SYNOPSIS
+      Free a local port used by PromptParle (fast: only acts if something is listening).
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$Port = 7788,
+        [switch]$Quiet
+    )
+
+    $pids = Get-PromptParleListenersOnPort -Port $Port
+    if ($pids.Count -eq 0) {
+        # Nothing listening - do not wait on HTTP timeout
+        return
+    }
+
+    # Quick polite stop (short timeout - only when something is actually listening)
+    $stopUrl = "http://127.0.0.1:$Port/api/stop"
+    try {
+        if ($PSVersionTable.PSVersion.Major -le 5) {
+            Invoke-WebRequest -Uri $stopUrl -Method POST -UseBasicParsing -TimeoutSec 1 | Out-Null
+        } else {
+            Invoke-WebRequest -Uri $stopUrl -Method POST -TimeoutSec 1 | Out-Null
+        }
+        if (-not $Quiet) { Write-Host "Asked server on port $Port to stop." -ForegroundColor DarkGray }
+        Start-Sleep -Milliseconds 200
+    } catch { }
+
+    $pids = Get-PromptParleListenersOnPort -Port $Port
+    foreach ($procId in $pids) {
         if ($procId -eq $PID) { continue }
         $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
         if (-not $proc) { continue }
@@ -747,7 +759,7 @@ function Clear-PromptParleLocalPort {
         }
     }
 
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 150
 }
 
 function Stop-PromptParleLocalServer {
@@ -757,7 +769,7 @@ function Stop-PromptParleLocalServer {
     .PARAMETER Port
       Port the server is on. Default 7788.
     .PARAMETER AllCommonPorts
-      Also clear 7788-7798.
+      Also clear 7788-7798 (only ports that are listening).
     #>
     [CmdletBinding()]
     param(
@@ -766,10 +778,19 @@ function Stop-PromptParleLocalServer {
     )
 
     if ($AllCommonPorts) {
+        $any = $false
         foreach ($p in 7788..7798) {
-            Clear-PromptParleLocalPort -Port $p -Quiet
+            $listeners = Get-PromptParleListenersOnPort -Port $p
+            if ($listeners.Count -gt 0) {
+                $any = $true
+                Clear-PromptParleLocalPort -Port $p
+            }
         }
-        Write-Host 'Cleared local PromptParle ports 7788-7798.' -ForegroundColor Green
+        if ($any) {
+            Write-Host 'Cleared busy PromptParle local ports.' -ForegroundColor Green
+        } else {
+            Write-Host 'No PromptParle listeners found on 7788-7798.' -ForegroundColor DarkGray
+        }
         return
     }
 
@@ -823,23 +844,29 @@ function Start-PromptParleLocalServer {
     }
     $html = Get-Content -LiteralPath $uiPath -Raw -Encoding UTF8
 
-    # Free preferred port, then bind (try a few ports if needed)
+    # Free preferred port only if busy, then bind. Try next ports only on failure.
     $listener = $null
     $boundPort = $null
     $tryPorts = @($Port) + @(7788..7798 | Where-Object { $_ -ne $Port })
 
     foreach ($tryPort in $tryPorts) {
-        Clear-PromptParleLocalPort -Port $tryPort -Quiet
+        # Fast path: only clear when something is actually listening
+        $busy = @(Get-PromptParleListenersOnPort -Port $tryPort)
+        if ($busy.Count -gt 0) {
+            Clear-PromptParleLocalPort -Port $tryPort -Quiet
+        }
+
         $prefix = "http://127.0.0.1:$tryPort/"
         $candidate = New-Object System.Net.HttpListener
-        $candidate.Prefixes.Add($prefix)
         try {
+            $candidate.Prefixes.Add($prefix)
             $candidate.Start()
             $listener = $candidate
             $boundPort = $tryPort
             $Port = $tryPort
             break
         } catch {
+            try { $candidate.Abort() } catch { }
             try { $candidate.Close() } catch { }
         }
     }

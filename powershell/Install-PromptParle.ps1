@@ -254,8 +254,7 @@ if ($keyOk) {
     if ($doStart) {
         Write-Host 'Starting local PromptParle...' -ForegroundColor Cyan
         Write-Host '(Stop: Ctrl+C, browser Stop server, or Stop-PromptParleLocalServer)' -ForegroundColor DarkGray
-        # Clear leftover server from earlier sessions before bind
-        try { Stop-PromptParleLocalServer -AllCommonPorts } catch { }
+        # pp clears busy ports itself (only if something is listening - fast)
         Start-PromptParle
     } else {
         Write-Host 'When ready:  pp' -ForegroundColor Cyan
