@@ -27,6 +27,9 @@ export type UsageRow = {
 type Props = {
   rows: UsageRow[];
   planLabel: string;
+  planId?: string;
+  /** Current plan max chars (for messaging) */
+  originalCharsLimit?: number;
   upgradeHint: string | null;
   storePrompts: boolean;
   retentionPolicy: string;
@@ -37,6 +40,8 @@ type Props = {
 export function UsageHistory({
   rows,
   planLabel,
+  planId = "free",
+  originalCharsLimit = 2000,
   upgradeHint,
   storePrompts,
   retentionPolicy,
@@ -142,6 +147,7 @@ export function UsageHistory({
                     subtitle={`${formatNumber(row.originalTokens)} tok`}
                     text={row.originalText ?? null}
                     truncated={Boolean(row.originalTruncated)}
+                    truncNote={truncNoteFor(planId, planLabel, originalCharsLimit)}
                     emptyHint="No original text stored for this request."
                     compact={compact}
                   />
@@ -150,6 +156,7 @@ export function UsageHistory({
                     subtitle={`${formatNumber(row.optimizedTokens)} tok · −${formatNumber(row.tokensSaved)}`}
                     text={row.optimizedText ?? null}
                     truncated={Boolean(row.optimizedTruncated)}
+                    truncNote={truncNoteFor(planId, planLabel, originalCharsLimit)}
                     emptyHint="No optimized text stored for this request."
                     accent
                     compact={compact}
@@ -169,11 +176,27 @@ export function UsageHistory({
   );
 }
 
+function truncNoteFor(
+  planId: string,
+  planLabel: string,
+  currentLimit: number
+): string {
+  // Rows clipped at store-time (e.g. Free 2k) cannot be restored after upgrade
+  if (planId === "team" || planId === "pro") {
+    return (
+      `Stored truncated under a lower plan limit (text is gone permanently). ` +
+      `Your ${planLabel} plan keeps up to ${currentLimit.toLocaleString()} characters on new requests.`
+    );
+  }
+  return `Truncated by Free plan (${currentLimit.toLocaleString()} chars). Upgrade to Pro/Team for longer before/after history on new requests.`;
+}
+
 function ComparePane({
   title,
   subtitle,
   text,
   truncated,
+  truncNote,
   emptyHint,
   accent,
   compact,
@@ -182,6 +205,7 @@ function ComparePane({
   subtitle: string;
   text: string | null;
   truncated: boolean;
+  truncNote?: string;
   emptyHint: string;
   accent?: boolean;
   compact?: boolean;
@@ -209,7 +233,8 @@ function ComparePane({
           </pre>
           {truncated && (
             <p className="mt-2 text-xs text-[var(--warning)]">
-              Truncated by your plan limit. Upgrade to see more of this prompt.
+              {truncNote ||
+                "Truncated by your plan limit. Upgrade to see more of this prompt."}
             </p>
           )}
         </>

@@ -117,7 +117,9 @@ export default async function UsagePage() {
                 : String(r.createdAt),
           }))}
           planLabel={usage.planLimits.label}
-          upgradeHint={isFree ? null : usage.upgradeHint}
+          planId={usage.planLimits.id}
+          originalCharsLimit={usage.planLimits.originalChars}
+          upgradeHint={isFree ? usage.upgradeHint : null}
           storePrompts={usage.storePrompts}
           retentionPolicy={usage.retentionPolicy}
           compact
