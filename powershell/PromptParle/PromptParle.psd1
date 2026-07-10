@@ -1,6 +1,6 @@
 ﻿@{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.6.0'
+    ModuleVersion     = '0.6.1'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -31,6 +31,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.6.1: SIGNAL BRIEF wow card in local UI (doc intelligence display)
 0.6.0: Attach files + paste images in local chat; vision to providers
 0.5.6: StrictMode-safe JSON props (optimizeOnly) on local chat
 0.5.5: Fix local chat Send hang (context char-unroll); loading UI feedback

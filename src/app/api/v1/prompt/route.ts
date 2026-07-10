@@ -174,6 +174,8 @@ export async function POST(req: NextRequest) {
               notes,
               optimize_only: true,
               image_count: images.length,
+              strategy: optimized.strategy,
+              signals: optimized.signals,
             }
           : undefined,
       });
@@ -280,6 +282,8 @@ export async function POST(req: NextRequest) {
             secret_findings: optimized.secretFindings,
             notes,
             image_count: images.length,
+            strategy: optimized.strategy,
+            signals: optimized.signals,
             provider_request_id: providerRequestId,
           }
         : undefined,

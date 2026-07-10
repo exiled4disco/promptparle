@@ -46,6 +46,8 @@ export type RunPromptSuccess = {
     notes: string[];
     optimize_only: boolean;
     image_count?: number;
+    strategy?: string;
+    signals?: Record<string, number | string | boolean>;
     provider_request_id?: string;
   };
 };
@@ -116,6 +118,8 @@ export async function runOptimizedPrompt(
     notes,
     optimize_only: optimizeOnly,
     image_count: images.length,
+    strategy: optimized.strategy,
+    signals: optimized.signals,
   };
 
   const recordBase = {

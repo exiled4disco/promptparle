@@ -1,13 +1,16 @@
 /**
- * Document-aware compression for well-formed prose (not log dedupe).
+ * SIGNAL BRIEF — document intelligence for well-formed prose.
  *
- * Strategies (stacked):
- *  1) Strip document chrome (TOC, page numbers, confidentiality banners)
- *  2) Protect fenced code blocks
- *  3) Split into outline sections + paragraphs
- *  4) Query-aware scoring vs the user prompt (keep what answers the ask)
- *  5) Densify prose (hedges, empty transitions, parenthetical filler)
- *  6) Emit: outline + high-signal excerpts (profile sets aggressiveness)
+ * Not "delete duplicate lines." We rebuild the document into a model-ready
+ * briefing packet:
+ *
+ *  1) Strip chrome (TOC, page #, confidential banners)
+ *  2) Parse outline + protect code fences
+ *  3) Score every section against the user's question
+ *  4) Mine hard requirements (must/shall/required…)
+ *  5) Mine numbers, deadlines, $ / % / SLAs
+ *  6) Keep query-matched evidence quotes
+ *  7) Emit a structured SIGNAL BRIEF (smaller + smarter than raw prose)
  */
 
 const STOP = new Set(
@@ -17,16 +20,13 @@ const STOP = new Set(
    each few more most other some such no nor not only own same so than too
    very can will just don should now you your we our they their i me my
    please review document attached material give most useful findings first
-   analyze summarize summary based following below above`.split(/\s+/)
+   analyze summarize summary based following below above what are the`.split(
+    /\s+/
+  )
 );
 
-const HEDGE =
-  /^(it is (important|worth|critical|essential) to (note|mention|remember) that\s+)/i;
 const HEDGE_INLINE =
-  /\b(it is important to note that|please note that|as mentioned (above|earlier|previously),?\s*|in order to\s+|the purpose of this (section|document|paper) is to\s+|needless to say,?\s*|as you (may|might) (know|be aware),?\s*|for (all intents and purposes|the most part),?\s*|at the end of the day,?\s*)/gi;
-
-const TRANSITION_ONLY =
-  /^(furthermore|moreover|additionally|in conclusion|to summarize|in summary|as such|therefore|however|nevertheless|that said|with that in mind|moving on|next,|first,|second,|third,|finally,)\s*$/i;
+  /\b(it is important to note that|please note that|as mentioned (above|earlier|previously),?\s*|in order to\s+|the purpose of this (section|document|paper) is to\s+|needless to say,?\s*|as you (may|might) (know|be aware),?\s*|for (all intents and purposes|the most part),?\s*|at the end of the day,?\s*|the following section describes\s+)/gi;
 
 const PAGE_LINE =
   /^(page\s+\d+(\s+of\s+\d+)?|\d+\s*\/\s*\d+|[-–—]\s*\d+\s*[-–—])$/i;
@@ -34,23 +34,33 @@ const CONFIDENTIAL =
   /^(confidential|internal use only|do not distribute|proprietary and confidential|all rights reserved|copyright\s+©?\s*\d{4}).*$/i;
 const TOC_HEADER = /^(table of contents|contents|index)$/i;
 
+/** Imperative / obligation language — gold for policy & contracts */
+const OBLIGATION =
+  /\b(shall|must|must not|shall not|required to|are required|is required|prohibited|may not|cannot|will ensure|is responsible for|are responsible for|obligated to|mandatory)\b/i;
+
+const NUMBERISH =
+  /\b(\d{1,3}(?:,\d{3})*(?:\.\d+)?%?|\d+\s*(?:minutes?|hours?|days?|weeks?|months?|years?|seconds?)|\$\s?\d[\d,]*(?:\.\d+)?[kmb]?|\bSOC\s*2\b|\bISO\s*\d+\b|\bNIST\b[^\n,.]{0,40}|\b(?:MFA|VPN|SLA|RTO|RPO|PII|PHI)\b)/gi;
+
 export type DocumentCompressOptions = {
   prompt: string;
   profile: string;
-  /** soft target fraction of original context chars to keep (0–1) */
   targetKeepRatio?: number;
 };
 
 export type DocumentCompressResult = {
   text: string;
   notes: string[];
-  /** true when we treated input as a document and applied doc pipeline */
   applied: boolean;
+  strategy: string;
   stats: {
     sections: number;
     paragraphsIn: number;
     paragraphsKept: number;
     outlineOnly: number;
+    obligations: number;
+    numbers: number;
+    evidenceQuotes: number;
+    skippedSections: number;
   };
 };
 
@@ -64,38 +74,17 @@ function keywordSet(text: string): Set<string> {
   return new Set(tokenize(text));
 }
 
-/** Heuristic: well-formed document vs log dump / code-only. */
 export function looksLikeDocument(text: string): boolean {
-  if (!text || text.length < 600) return false;
+  if (!text || text.length < 500) return false;
   const lines = text.split("\n");
-  if (lines.length < 8) {
-    // long single blob of prose
-    return text.length > 1200 && !/^(ERROR|WARN|INFO|DEBUG)\b/m.test(text);
-  }
-
   const nonEmpty = lines.filter((l) => l.trim());
-  if (nonEmpty.length < 5) return false;
+  if (nonEmpty.length < 4 && text.length < 1200) return false;
 
-  // Log-like: many short similar-prefix lines
   const logHits = nonEmpty.filter((l) =>
     /^(ERROR|WARN|INFO|DEBUG|TRACE|ALERT|\[?\d{4}-\d{2}-\d{2})/i.test(l.trim())
   ).length;
-  if (logHits / nonEmpty.length > 0.35) return false;
+  if (nonEmpty.length && logHits / nonEmpty.length > 0.4) return false;
 
-  // High exact-line duplication → log/noise path, not document path
-  const counts = new Map<string, number>();
-  for (const l of nonEmpty) {
-    const k = l.trim();
-    counts.set(k, (counts.get(k) || 0) + 1);
-  }
-  let dupes = 0;
-  for (const c of counts.values()) {
-    if (c > 1) dupes += c - 1;
-  }
-  if (dupes / nonEmpty.length > 0.25) return false;
-
-  const avgLen =
-    nonEmpty.reduce((s, l) => s + l.trim().length, 0) / nonEmpty.length;
   const hasHeadings = nonEmpty.some(
     (l) =>
       /^#{1,6}\s+\S/.test(l) ||
@@ -103,12 +92,21 @@ export function looksLikeDocument(text: string): boolean {
         l.trim().length < 80 &&
         !/[.!?]$/.test(l.trim()))
   );
-  const hasParagraphs = nonEmpty.some((l) => l.trim().length > 120);
+  const hasParagraphs = nonEmpty.some((l) => l.trim().length > 100);
+  const avgLen = nonEmpty.length
+    ? nonEmpty.reduce((s, l) => s + l.trim().length, 0) / nonEmpty.length
+    : 0;
 
-  return avgLen > 40 || hasHeadings || hasParagraphs;
+  // Structured docs with headings win even if some filler lines repeat
+  if (hasHeadings && text.length >= 500) return true;
+  if (hasParagraphs && avgLen > 50 && text.length >= 800) return true;
+  if (text.length > 2000 && avgLen > 40 && logHits / Math.max(1, nonEmpty.length) < 0.2)
+    return true;
+
+  return false;
 }
 
-function stripChrome(text: string, notes: string[]): string {
+function stripChrome(text: string): { text: string; removed: number } {
   const lines = text.split("\n");
   const out: string[] = [];
   let inToc = false;
@@ -124,7 +122,6 @@ function stripChrome(text: string, notes: string[]): string {
       continue;
     }
     if (inToc) {
-      // TOC entries: "1. Foo .... 12" or "Foo ........ 3"
       if (
         /^(\d+(\.\d+)*\.?\s+).{2,80}\s+\d{1,4}$/.test(t) ||
         /^.+\s+[\.·…]{2,}\s*\d{1,4}$/.test(t) ||
@@ -133,7 +130,6 @@ function stripChrome(text: string, notes: string[]): string {
         removed++;
         continue;
       }
-      // leave TOC when we hit a real heading/paragraph
       if (t.length > 90 || /^#{1,6}\s/.test(t) || /^[A-Z][a-z].+\.$/.test(t)) {
         inToc = false;
       } else if (!t) {
@@ -148,22 +144,19 @@ function stripChrome(text: string, notes: string[]): string {
       removed++;
       continue;
     }
-    // Running header/footer echoes (very short ALL CAPS repeated style)
-    if (/^[A-Z0-9][A-Z0-9 \-/]{6,40}$/.test(t) && t.length < 42) {
-      // keep if it looks like a real section title (handled later); drop pure banners
-      if (/CONFIDENTIAL|DRAFT|INTERNAL|COPYRIGHT|PROPRIETARY/.test(t)) {
-        removed++;
-        continue;
-      }
+    if (
+      /^[A-Z0-9][A-Z0-9 \-/]{6,40}$/.test(t) &&
+      t.length < 42 &&
+      /CONFIDENTIAL|DRAFT|INTERNAL|COPYRIGHT|PROPRIETARY/.test(t)
+    ) {
+      removed++;
+      continue;
     }
 
     out.push(raw);
   }
 
-  if (removed > 0) {
-    notes.push(`Removed ${removed} chrome/TOC/page-banner lines`);
-  }
-  return out.join("\n");
+  return { text: out.join("\n"), removed };
 }
 
 type Block =
@@ -186,7 +179,6 @@ function splitBlocks(text: string): Block[] {
   while (i < lines.length) {
     const line = lines[i];
 
-    // fenced code
     if (/^```/.test(line.trim())) {
       flushPara();
       const buf = [line];
@@ -208,7 +200,6 @@ function splitBlocks(text: string): Block[] {
       continue;
     }
 
-    // markdown heading
     const md = /^(#{1,6})\s+(.+)$/.exec(t);
     if (md) {
       flushPara();
@@ -217,7 +208,6 @@ function splitBlocks(text: string): Block[] {
       continue;
     }
 
-    // underline heading (Setext) - rare
     if (
       i + 1 < lines.length &&
       /^=+$/.test(lines[i + 1].trim()) &&
@@ -241,7 +231,6 @@ function splitBlocks(text: string): Block[] {
       continue;
     }
 
-    // ALL CAPS / Title Case short line as heading if next is body
     if (
       t.length >= 8 &&
       t.length <= 90 &&
@@ -271,22 +260,18 @@ function splitBlocks(text: string): Block[] {
 }
 
 function densifyProse(text: string): string {
-  let s = text;
-  s = s.replace(HEDGE_INLINE, "");
-  s = s.replace(HEDGE, "");
-  // parenthetical asides that are pure meta
+  let s = text.replace(HEDGE_INLINE, "");
   s = s.replace(/\s*\((see|refer to|as shown in|optional|if applicable)[^)]{0,80}\)/gi, "");
-  // multi-space / space before punct
-  s = s.replace(/[ \t]{2,}/g, " ");
-  s = s.replace(/\s+([,.;:!?])/g, "$1");
-
-  // Drop transition-only sentences
+  s = s.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1");
   const sentences = s.split(/(?<=[.!?])\s+/);
   const kept = sentences.filter((sent) => {
     const t = sent.trim();
     if (!t) return false;
-    if (TRANSITION_ONLY.test(t)) return false;
-    if (/^(this section (will|describes|provides)|the following (section|chapter))/i.test(t) && t.length < 100)
+    if (
+      /^(furthermore|moreover|additionally|in conclusion|to summarize|in summary|as such|therefore|however|nevertheless|that said)\s*[.,]?$/i.test(
+        t
+      )
+    )
       return false;
     return true;
   });
@@ -294,7 +279,7 @@ function densifyProse(text: string): string {
 }
 
 function scoreText(text: string, query: Set<string>): number {
-  if (query.size === 0) return 0.15; // mild base so structure still ranks
+  if (query.size === 0) return 0.2;
   const tokens = tokenize(text);
   if (tokens.length === 0) return 0;
   let hits = 0;
@@ -304,40 +289,157 @@ function scoreText(text: string, query: Set<string>): number {
       hits += 1;
       seen.add(t);
     } else if (query.has(t)) {
-      hits += 0.15;
+      hits += 0.12;
     }
   }
-  // density of unique query hits
   const coverage = hits / query.size;
   const density = hits / Math.sqrt(tokens.length);
-  // prefer medium paragraphs over tiny crumbs
-  const lengthBonus = Math.min(1, text.length / 400) * 0.1;
-  return coverage * 0.65 + density * 0.35 + lengthBonus;
+  return coverage * 0.7 + density * 0.3;
 }
 
-function profileTargetRatio(profile: string): number {
+function profileAggressiveness(profile: string): {
+  maxObligations: number;
+  maxEvidence: number;
+  maxNumbers: number;
+  evidenceSentences: number;
+  keepCode: boolean;
+} {
   switch (profile) {
     case "executive-summary":
-      return 0.28;
+      return {
+        maxObligations: 12,
+        maxEvidence: 4,
+        maxNumbers: 10,
+        evidenceSentences: 1,
+        keepCode: false,
+      };
     case "documentation":
-      return 0.42;
-    case "developer":
-      return 0.55;
+      return {
+        maxObligations: 20,
+        maxEvidence: 8,
+        maxNumbers: 16,
+        evidenceSentences: 2,
+        keepCode: true,
+      };
     case "security-review":
-      return 0.5;
+      return {
+        maxObligations: 24,
+        maxEvidence: 10,
+        maxNumbers: 18,
+        evidenceSentences: 2,
+        keepCode: true,
+      };
     default:
-      return 0.45;
+      return {
+        maxObligations: 16,
+        maxEvidence: 6,
+        maxNumbers: 14,
+        evidenceSentences: 2,
+        keepCode: true,
+      };
   }
 }
 
-function firstSentences(text: string, n: number): string {
-  const parts = text.split(/(?<=[.!?])\s+/).filter((s) => s.trim());
-  if (parts.length <= n) return text.trim();
-  return parts.slice(0, n).join(" ").trim();
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
+function extractObligations(
+  text: string,
+  query: Set<string>,
+  limit: number
+): string[] {
+  const sentences = splitSentences(text);
+  const scored = sentences
+    .filter((s) => OBLIGATION.test(s) && s.length > 20 && s.length < 420)
+    .map((s) => ({
+      s: densifyProse(s),
+      score: scoreText(s, query) + (OBLIGATION.test(s) ? 0.25 : 0),
+    }))
+    .filter((x) => x.s.length > 15)
+    .sort((a, b) => b.score - a.score);
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of scored) {
+    const key = x.s.toLowerCase().slice(0, 80);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(x.s);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function extractNumbers(text: string, limit: number): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  // Prefer concrete SLA-style phrases first
+  const preferred =
+    text.match(
+      /\b\d+\s*(?:minutes?|hours?|days?|weeks?|months?|years?|seconds?|characters?)\b|\b\$\s?\d[\d,]*(?:\.\d+)?[kmb]?\b|\b\d{1,3}%\b|\bSOC\s*2(?:\s*Type\s*II)?\b|\bNIST\s*SP\s*[\d-]+\b|\bISO\s*\d+\b|\b(?:MFA|VPN|RTO|RPO|PII|PHI|SOX)\b/gi
+    ) || [];
+  for (const raw of preferred) {
+    const v = raw.replace(/\s+/g, " ").trim();
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    found.push(v);
+    if (found.length >= limit) return found;
+  }
+  const re = new RegExp(NUMBERISH.source, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const v = m[0].replace(/\s+/g, " ").trim();
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    if (/^\d{1,2}$/.test(v)) continue;
+    if (/^\d{4}$/.test(v)) continue; // bare years
+    if (/^\d{3}$/.test(v)) continue;
+    seen.add(k);
+    found.push(v);
+    if (found.length >= limit) break;
+  }
+  return found;
+}
+
+function evidenceQuotes(
+  sectionTitle: string,
+  body: string,
+  query: Set<string>,
+  maxQuotes: number,
+  sentencesPer: number
+): { title: string; quotes: string[]; score: number } | null {
+  const sentences = splitSentences(body);
+  if (!sentences.length) return null;
+  const ranked = sentences
+    .map((s) => ({ s: densifyProse(s), score: scoreText(s, query) }))
+    .filter((x) => x.s.length > 30)
+    .sort((a, b) => b.score - a.score);
+
+  const quotes: string[] = [];
+  for (const x of ranked) {
+    if (x.score < 0.12 && quotes.length > 0) continue;
+    quotes.push(x.s);
+    if (quotes.length >= Math.max(1, Math.min(sentencesPer, maxQuotes))) break;
+  }
+  if (!quotes.length) return null;
+  const score = Math.max(...ranked.map((r) => r.score), 0);
+  return { title: sectionTitle, quotes, score };
+}
+
+type Section = {
+  heading?: { text: string; level: number };
+  body: Block[];
+  blob: string;
+  score: number;
+};
+
 /**
- * Compress a well-formed document relative to the user question.
+ * Rebuild a well-formed document as a SIGNAL BRIEF.
  */
 export function compressDocument(
   context: string,
@@ -345,61 +447,90 @@ export function compressDocument(
 ): DocumentCompressResult {
   const notes: string[] = [];
   const profile = opts.profile || "general";
-  const targetRatio = opts.targetKeepRatio ?? profileTargetRatio(profile);
+  const emptyStats = {
+    sections: 0,
+    paragraphsIn: 0,
+    paragraphsKept: 0,
+    outlineOnly: 0,
+    obligations: 0,
+    numbers: 0,
+    evidenceQuotes: 0,
+    skippedSections: 0,
+  };
 
-  if (!looksLikeDocument(context) && profile !== "documentation" && profile !== "executive-summary") {
+  const forceProfile =
+    profile === "documentation" || profile === "executive-summary";
+  if (!looksLikeDocument(context) && !forceProfile) {
     return {
       text: context,
       notes: [],
       applied: false,
-      stats: { sections: 0, paragraphsIn: 0, paragraphsKept: 0, outlineOnly: 0 },
+      strategy: "none",
+      stats: emptyStats,
+    };
+  }
+  if (context.length < 400) {
+    return {
+      text: context,
+      notes: [],
+      applied: false,
+      strategy: "none",
+      stats: emptyStats,
     };
   }
 
+  const aggro = profileAggressiveness(profile);
   let text = context.replace(/\r\n/g, "\n");
-  text = stripChrome(text, notes);
+  const chrome = stripChrome(text);
+  text = chrome.text;
+  if (chrome.removed > 0) {
+    notes.push(`Stripped ${chrome.removed} chrome/TOC/banner lines`);
+  }
 
   const query = keywordSet(opts.prompt || "");
   const blocks = splitBlocks(text);
+  const paragraphsIn = blocks.filter((b) => b.kind === "para").length;
 
-  // Group into sections: heading + following body blocks until next heading
-  type Section = {
-    heading?: { text: string; level: number };
-    body: Block[];
-    score: number;
-  };
+  // Sections
   const sections: Section[] = [];
-  let cur: Section = { body: [], score: 0 };
+  let cur: { heading?: { text: string; level: number }; body: Block[] } = {
+    body: [],
+  };
 
   const close = () => {
     if (!cur.heading && cur.body.length === 0) return;
     const blob = cur.body.map((b) => b.text).join("\n");
-    const hScore = cur.heading ? scoreText(cur.heading.text, query) * 1.2 : 0;
-    cur.score = Math.max(hScore, scoreText(blob, query));
-    sections.push(cur);
-    cur = { body: [], score: 0 };
+    const hScore = cur.heading ? scoreText(cur.heading.text, query) * 1.25 : 0;
+    const bScore = scoreText(blob, query);
+    sections.push({
+      heading: cur.heading,
+      body: cur.body,
+      blob,
+      score: Math.max(hScore, bScore),
+    });
+    cur = { body: [] };
   };
 
   for (const b of blocks) {
     if (b.kind === "heading") {
       close();
-      cur = { heading: { text: b.text, level: b.level }, body: [], score: 0 };
+      cur = { heading: { text: b.text, level: b.level }, body: [] };
     } else {
       cur.body.push(b);
     }
   }
   close();
 
-  // If no headings, treat each para as its own section
   if (sections.length === 1 && !sections[0].heading) {
     const only = sections[0];
     const expanded: Section[] = [];
     for (const b of only.body) {
       if (b.kind === "code") {
-        expanded.push({ body: [b], score: 0.5 });
+        expanded.push({ body: [b], blob: b.text, score: 0.45 });
       } else {
         expanded.push({
           body: [b],
+          blob: b.text,
           score: scoreText(b.text, query),
         });
       }
@@ -408,180 +539,181 @@ export function compressDocument(
     sections.push(...expanded);
   }
 
-  const paragraphsIn = blocks.filter((b) => b.kind === "para").length;
-  const origChars = text.length;
-  const budget = Math.max(400, Math.floor(origChars * targetRatio));
-
-  // Sort body content by score but emit in document order
-  const scored = sections.map((s, idx) => ({ s, idx, score: s.score }));
-  const rankOrder = [...scored].sort((a, b) => b.score - a.score);
-
-  // Always keep top section and any with code
-  const keepFull = new Set<number>();
-  const keepLead = new Set<number>(); // first sentence / short lead only
-  const outlineOnly = new Set<number>();
-
-  // Seed: best sections until budget roughly satisfied
-  let used = 0;
-  for (const { s, idx, score } of rankOrder) {
-    const bodyText = s.body.map((b) => b.text).join("\n");
-    const hasCode = s.body.some((b) => b.kind === "code");
-    const est = (s.heading?.text.length || 0) + bodyText.length;
-
-    if (hasCode || score >= 0.35 || keepFull.size < 2) {
-      keepFull.add(idx);
-      used += est;
-    } else if (score >= 0.18 && used < budget) {
-      keepFull.add(idx);
-      used += est;
-    } else if (s.heading && score >= 0.08) {
-      keepLead.add(idx);
-      used += (s.heading.text.length || 0) + 120;
-    } else if (s.heading) {
-      outlineOnly.add(idx);
-      used += s.heading.text.length + 4;
-    } else if (score >= 0.12 && used < budget) {
-      keepLead.add(idx);
-      used += Math.min(est, 200);
-    }
-  }
-
-  // Trim if still over budget: demote lowest full sections to lead/outline
-  const fullRanked = [...keepFull].sort(
-    (a, b) => sections[a].score - sections[b].score
+  // Full-doc mines
+  const allBlob = sections.map((s) => s.blob).join("\n");
+  const obligations = extractObligations(
+    allBlob,
+    query,
+    aggro.maxObligations
   );
-  while (used > budget * 1.15 && fullRanked.length > 2) {
-    const idx = fullRanked.shift()!;
-    keepFull.delete(idx);
-    const bodyText = sections[idx].body.map((b) => b.text).join("\n");
-    used -= bodyText.length * 0.7;
-    if (sections[idx].heading) keepLead.add(idx);
-    else outlineOnly.add(idx);
-  }
+  // Prefer obligations from high-score sections if we have many
+  const numbers = extractNumbers(allBlob, aggro.maxNumbers);
 
-  // Build output in original order
-  const outParts: string[] = [];
-  let paragraphsKept = 0;
-  let outlineOnlyCount = 0;
-
-  // Optional mini-outline at top when we drop a lot
-  const droppedBodies = sections.filter(
-    (_, i) => !keepFull.has(i) && (outlineOnly.has(i) || keepLead.has(i))
-  ).length;
-  if (droppedBodies >= 3) {
-    const outline = sections
-      .filter((s) => s.heading)
-      .map((s) => `${"#".repeat(Math.min(s.heading!.level, 4))} ${s.heading!.text}`)
-      .join("\n");
-    if (outline) {
-      outParts.push("## Document outline\n" + outline);
-      notes.push("Added compact section outline");
-    }
-  }
-
-  for (let idx = 0; idx < sections.length; idx++) {
-    const s = sections[idx];
-    const head = s.heading
-      ? `${"#".repeat(Math.min(s.heading.level, 4))} ${s.heading.text}`
-      : null;
-
-    if (keepFull.has(idx)) {
-      if (head) outParts.push(head);
-      for (const b of s.body) {
-        if (b.kind === "code") {
-          outParts.push(b.text);
-        } else {
-          const d = densifyProse(b.text);
-          if (d) {
-            outParts.push(d);
-            paragraphsKept++;
-          }
-        }
-      }
-    } else if (keepLead.has(idx)) {
-      if (head) outParts.push(head);
-      const paras = s.body.filter((b) => b.kind === "para");
-      const codes = s.body.filter((b) => b.kind === "code");
-      for (const c of codes) outParts.push(c.text);
-      if (paras.length) {
-        const lead = densifyProse(firstSentences(paras[0].text, 2));
-        if (lead) {
-          outParts.push(lead + (paras.length > 1 || paras[0].text.length > lead.length + 40 ? " …" : ""));
-          paragraphsKept++;
-        }
-      }
-    } else if (outlineOnly.has(idx) && head) {
-      // heading already in top outline; skip duplicate unless no top outline
-      if (droppedBodies < 3) {
-        outParts.push(head);
-        outlineOnlyCount++;
-      } else {
-        outlineOnlyCount++;
-      }
-    }
-  }
-
-  let compressed = outParts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
-
-  // Hard ceiling: if still huge, pack by score globally
-  if (compressed.length > budget * 1.25) {
-    const pieces = outParts.map((p, i) => ({
-      p,
-      i,
-      score: scoreText(p, query),
-    }));
-    pieces.sort((a, b) => b.score - a.score);
-    const kept: string[] = [];
-    let u = 0;
-    const chosen = new Set<number>();
-    for (const x of pieces) {
-      if (u >= budget && kept.length >= 4) break;
-      chosen.add(x.i);
-      u += x.p.length;
-    }
-    compressed = outParts
-      .filter((_, i) => chosen.has(i))
-      .join("\n\n")
-      .trim();
-    notes.push("Packed to target budget by relevance to your question");
-  }
-
-  const savedPct =
-    origChars > 0
-      ? Math.round((1 - compressed.length / origChars) * 100)
-      : 0;
-  if (savedPct > 0) {
-    notes.push(
-      `Document compress ~${savedPct}% (query-aware sections, densify, chrome strip)`
+  // Evidence from top sections
+  const evidence: { title: string; quotes: string[]; score: number }[] = [];
+  const rankedSections = [...sections].sort((a, b) => b.score - a.score);
+  for (const s of rankedSections) {
+    if (evidence.length >= aggro.maxEvidence) break;
+    if (s.score < 0.1 && evidence.length >= 2) continue;
+    const title = s.heading?.text || "Passage";
+    const paras = s.body
+      .filter((b) => b.kind === "para")
+      .map((b) => b.text)
+      .join(" ");
+    if (!paras.trim()) continue;
+    const ev = evidenceQuotes(
+      title,
+      paras,
+      query,
+      3,
+      aggro.evidenceSentences
     );
-  } else {
-    notes.push("Document pipeline ran but found little safe to drop");
+    if (ev) evidence.push(ev);
   }
 
-  // Never return larger than input
-  if (compressed.length >= context.length) {
+  // Code blocks from relevant sections
+  const codeKeep: string[] = [];
+  if (aggro.keepCode) {
+    for (const s of rankedSections.slice(0, 4)) {
+      for (const b of s.body) {
+        if (b.kind === "code" && b.text.length < 4000) {
+          codeKeep.push(b.text);
+        }
+      }
+      if (codeKeep.length >= 2) break;
+    }
+  }
+
+  // Map line
+  const mapParts = rankedSections.map((s) => {
+    const name = s.heading?.text || "body";
+    let tag = "skip";
+    if (s.score >= 0.35) tag = "keep";
+    else if (s.score >= 0.15) tag = "lead";
+    else if (s.heading) tag = "outline";
+    const icon = tag === "keep" ? "✓" : tag === "lead" ? "~" : "·";
+    return `${icon} ${name}`;
+  });
+
+  const skipped = sections.filter((s) => s.score < 0.15 && s.heading).length;
+  const keptHigh = sections.filter((s) => s.score >= 0.35).length;
+
+  // Build SIGNAL BRIEF
+  const ask = (opts.prompt || "").trim().replace(/\s+/g, " ").slice(0, 200);
+  const parts: string[] = [];
+
+  parts.push("# SIGNAL BRIEF");
+  parts.push(
+    [
+      `Ask: ${ask || "(general review)"}`,
+      `Profile: ${profile}`,
+      `Strategy: signal-brief (structure · obligations · numbers · evidence)`,
+    ].join("\n")
+  );
+
+  if (mapParts.length) {
+    parts.push(
+      "## Map\n" +
+        mapParts.slice(0, 24).join(" · ") +
+        (mapParts.length > 24 ? " · …" : "")
+    );
+  }
+
+  if (obligations.length) {
+    parts.push(
+      "## Hard requirements\n" +
+        obligations.map((o) => `- ${o}`).join("\n")
+    );
+  }
+
+  if (numbers.length) {
+    parts.push(
+      "## Numbers & deadlines\n" +
+        numbers.map((n) => `\`${n}\``).join(" · ")
+    );
+  }
+
+  if (evidence.length) {
+    const evLines: string[] = ["## Evidence (query-matched)"];
+    for (const e of evidence) {
+      evLines.push(`### ${e.title}`);
+      for (const q of e.quotes) {
+        evLines.push(`> ${q}`);
+      }
+    }
+    parts.push(evLines.join("\n"));
+  }
+
+  if (codeKeep.length) {
+    parts.push("## Code\n" + codeKeep.join("\n\n"));
+  }
+
+  // Low-relevance inventory (builds trust — show what we dropped)
+  const skippedNames = sections
+    .filter((s) => s.score < 0.15 && s.heading)
+    .map((s) => s.heading!.text);
+  if (skippedNames.length) {
+    parts.push(
+      "## Deferred (low relevance to ask)\n" +
+        skippedNames.slice(0, 16).map((n) => `- ${n}`).join("\n") +
+        (skippedNames.length > 16
+          ? `\n- …+${skippedNames.length - 16} more`
+          : "")
+    );
+  }
+
+  // Safety net: if almost no signal mined, fall back to densified top sections
+  if (obligations.length < 2 && evidence.length < 2) {
+    const fallback: string[] = ["## Key passages"];
+    for (const s of rankedSections.slice(0, 5)) {
+      if (s.heading) fallback.push(`### ${s.heading.text}`);
+      const para = s.body.find((b) => b.kind === "para");
+      if (para) {
+        const d = densifyProse(
+          splitSentences(para.text).slice(0, 3).join(" ")
+        );
+        if (d) fallback.push(d);
+      }
+    }
+    parts.push(fallback.join("\n"));
+    notes.push("Sparse obligation language — kept densified key passages");
+  }
+
+  let brief = parts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // Never expand
+  if (brief.length >= context.length) {
     return {
       text: context,
-      notes: ["Document compress skipped (no net savings)"],
+      notes: ["Signal brief skipped (no net savings on this text)"],
       applied: false,
-      stats: {
-        sections: sections.length,
-        paragraphsIn,
-        paragraphsKept: paragraphsIn,
-        outlineOnly: 0,
-      },
+      strategy: "none",
+      stats: { ...emptyStats, sections: sections.length, paragraphsIn },
     };
   }
 
+  const savedPct = Math.round((1 - brief.length / context.length) * 100);
+  notes.push(
+    `SIGNAL BRIEF −${savedPct}% chars · ${obligations.length} requirements · ${numbers.length} numbers · ${evidence.length} evidence blocks · ${skipped} sections deferred`
+  );
+  notes.push(
+    `Kept ${keptHigh} high-relevance sections; deferred low-relevance appendix/filler`
+  );
+
   return {
-    text: compressed,
+    text: brief,
     notes,
     applied: true,
+    strategy: "signal-brief",
     stats: {
       sections: sections.length,
       paragraphsIn,
-      paragraphsKept,
-      outlineOnly: outlineOnlyCount,
+      paragraphsKept: evidence.length,
+      outlineOnly: skipped,
+      obligations: obligations.length,
+      numbers: numbers.length,
+      evidenceQuotes: evidence.reduce((n, e) => n + e.quotes.length, 0),
+      skippedSections: skipped,
     },
   };
 }

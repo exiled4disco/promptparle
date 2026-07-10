@@ -22,6 +22,10 @@ export type OptimizeResult = {
   secretsMasked: boolean;
   secretFindings: string[];
   notes: string[];
+  /** e.g. signal-brief | log-dedupe | passthrough */
+  strategy?: string;
+  /** optional structured impress stats for UI */
+  signals?: Record<string, number | string | boolean>;
 };
 
 /**
@@ -102,7 +106,8 @@ function finalizeStats(
   originalTokens: number,
   profile: string,
   secretFindings: string[],
-  notes: string[]
+  notes: string[],
+  extra?: { strategy?: string; signals?: OptimizeResult["signals"] }
 ): OptimizeResult {
   const optimizedTokens = estimateTokens(optimizedPrompt);
   const expanded = optimizedTokens > originalTokens;
@@ -129,6 +134,8 @@ function finalizeStats(
     secretsMasked: secretFindings.length > 0,
     secretFindings,
     notes: finalNotes,
+    strategy: extra?.strategy,
+    signals: extra?.signals,
   };
 }
 
@@ -168,17 +175,18 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     context = collapseBlankLines(stripChattyFiller(context));
   }
 
-  // 3) Path selection: document compress vs log dedupe
-  const aggressiveLog =
-    profile === "log-analysis" || profile === "security-review";
+  // 3) Path selection: SIGNAL BRIEF (docs) vs log dedupe
+  const aggressiveLog = profile === "log-analysis";
+  let strategy = "lean";
+  let signals: OptimizeResult["signals"] | undefined;
 
   if (context) {
-    const docMode =
+    const preferSignalBrief =
       profile === "documentation" ||
       profile === "executive-summary" ||
-      looksLikeDocument(context);
+      (looksLikeDocument(context) && profile !== "log-analysis");
 
-    if (docMode && !aggressiveLog) {
+    if (preferSignalBrief && !aggressiveLog) {
       const doc = compressDocument(context, {
         prompt,
         profile,
@@ -186,27 +194,42 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
       if (doc.applied) {
         context = doc.text;
         notes.push(...doc.notes);
-      } else if (doc.notes.length) {
-        notes.push(...doc.notes);
+        strategy = doc.strategy || "signal-brief";
+        signals = {
+          ...doc.stats,
+          strategy: doc.strategy,
+        };
+      } else {
+        if (doc.notes.length) notes.push(...doc.notes);
+        // still try light dedupe
+        const before = context.length;
+        context = dedupeLines(context, false);
+        if (context.length < before) {
+          strategy = "log-dedupe";
+          notes.push("Removed consecutive duplicate lines");
+        }
       }
-      // light consecutive dedupe still helps after doc compress
-      context = dedupeLines(context, false);
     } else {
       const before = context.length;
-      context = dedupeLines(context, aggressiveLog);
+      context = dedupeLines(
+        context,
+        aggressiveLog || profile === "security-review"
+      );
       if (context.length < before) {
+        strategy = "log-dedupe";
         notes.push(
-          aggressiveLog
+          aggressiveLog || profile === "security-review"
             ? "Deduplicated repetitive log/context lines"
             : "Removed consecutive duplicate lines"
         );
       }
-      // If it still looks like a long unique doc after mild dedupe, run doc path
-      if (looksLikeDocument(context) && context.length > 1500) {
+      if (looksLikeDocument(context) && context.length > 1200) {
         const doc = compressDocument(context, { prompt, profile });
         if (doc.applied) {
           context = doc.text;
           notes.push(...doc.notes);
+          strategy = doc.strategy || "signal-brief";
+          signals = { ...doc.stats, strategy: doc.strategy };
         }
       }
     }
@@ -229,7 +252,8 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     originalTokens,
     profile,
     secretFindings,
-    notes
+    notes,
+    { strategy, signals }
   );
 
   // 6) NEVER expand vs the user's original input

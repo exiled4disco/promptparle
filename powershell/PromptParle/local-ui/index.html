@@ -59,6 +59,31 @@
     .meta { margin-top: .55rem; padding-top: .45rem; border-top: 1px solid var(--border); font-size: .75rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .5rem .85rem; }
     .meta .ok { color: var(--success); }
     .meta .warn { color: var(--warn); }
+    .wow {
+      margin-top: .65rem; padding: .75rem; border-radius: 12px;
+      background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.1));
+      border: 1px solid rgba(52,211,153,.35);
+    }
+    .wow .big {
+      font-size: 1.55rem; font-weight: 800; letter-spacing: -0.02em;
+      background: linear-gradient(90deg, #34d399, #5b8cff);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .wow .bar {
+      margin-top: .5rem; height: 8px; border-radius: 999px; background: #0a0e16; overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .wow .bar > i {
+      display: block; height: 100%; width: 0;
+      background: linear-gradient(90deg, #34d399, #5b8cff);
+      transition: width 700ms cubic-bezier(.2,.8,.2,1);
+    }
+    .wow .chips { margin-top: .55rem; display: flex; flex-wrap: wrap; gap: .35rem; }
+    .wow .chip2 {
+      font-size: .72rem; padding: .2rem .5rem; border-radius: 999px;
+      background: #0a0e16; border: 1px solid var(--border); color: var(--muted);
+    }
+    .wow .chip2 strong { color: var(--success); font-weight: 700; }
     .composer {
       display: flex; flex-direction: column; gap: .55rem;
       background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .9rem;
@@ -213,14 +238,42 @@
           ? '<span class="warn">expanded (bug — should not happen)</span>'
           : (pct > 0
             ? '<span class="ok">−' + pct + '% saved</span>'
-            : '<span title="Unique document text often has nothing to strip">0% compact</span>');
+            : '<span>0% compact</span>');
         const imgN = meta.image_count || 0;
         m.innerHTML =
           '<span>' + orig + ' → ' + opt + ' tokens</span>' + save +
+          (meta.strategy ? '<span>' + meta.strategy + '</span>' : '') +
           (imgN ? '<span>' + imgN + ' image(s)</span>' : '') +
           (meta.provider ? '<span>' + meta.provider + '</span>' : '') +
           (meta.model ? '<span>' + meta.model + '</span>' : '');
         div.appendChild(m);
+
+        // Impressive savings card for real compressions / signal-brief
+        if (!expanded && (pct >= 8 || meta.strategy === 'signal-brief')) {
+          const wow = document.createElement('div');
+          wow.className = 'wow';
+          const saved = Math.max(0, orig - opt);
+          const sig = meta.signals || {};
+          const chips = [];
+          if (meta.strategy) chips.push('<span class="chip2">strategy <strong>' + meta.strategy + '</strong></span>');
+          if (sig.obligations != null) chips.push('<span class="chip2">requirements <strong>' + sig.obligations + '</strong></span>');
+          if (sig.numbers != null) chips.push('<span class="chip2">numbers <strong>' + sig.numbers + '</strong></span>');
+          if (sig.evidenceQuotes != null) chips.push('<span class="chip2">evidence <strong>' + sig.evidenceQuotes + '</strong></span>');
+          if (sig.skippedSections != null) chips.push('<span class="chip2">deferred sections <strong>' + sig.skippedSections + '</strong></span>');
+          if (meta.notes && meta.notes[0]) chips.push('<span class="chip2">' + String(meta.notes[0]).slice(0, 90) + '</span>');
+          wow.innerHTML =
+            '<div class="big">−' + pct + '%</div>' +
+            '<div style="font-size:.85rem;color:var(--muted);margin-top:.15rem">' +
+              orig.toLocaleString() + ' → ' + opt.toLocaleString() + ' tokens · saved ' + saved.toLocaleString() +
+            '</div>' +
+            '<div class="bar"><i style="width:0%"></i></div>' +
+            (chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '');
+          div.appendChild(wow);
+          requestAnimationFrame(function () {
+            const bar = wow.querySelector('.bar > i');
+            if (bar) bar.style.width = Math.min(100, pct) + '%';
+          });
+        }
       }
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
