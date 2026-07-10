@@ -769,6 +769,54 @@
       overflow: hidden;
     }
     .term-panel.open { display: flex; }
+    /* Pop-out window: full-page terminal only */
+    body.term-popout {
+      overflow: hidden;
+    }
+    body.term-popout .sidebar,
+    body.term-popout .main-top,
+    body.term-popout .savings-strip,
+    body.term-popout #chat,
+    body.term-popout .composer,
+    body.term-popout .client-limit-banner,
+    body.term-popout .modal-backdrop {
+      display: none !important;
+    }
+    body.term-popout .layout {
+      grid-template-columns: 1fr;
+      height: 100vh;
+      height: 100dvh;
+    }
+    body.term-popout .main {
+      padding: 0;
+      gap: 0;
+      height: 100vh;
+      height: 100dvh;
+    }
+    body.term-popout .term-panel,
+    body.term-popout .term-panel.open {
+      display: flex !important;
+      flex: 1 1 auto;
+      max-height: none;
+      height: 100%;
+      border-radius: 0;
+      border: 0;
+    }
+    body.term-popout .term-out {
+      min-height: 0;
+      flex: 1 1 auto;
+      font-size: .82rem;
+    }
+    body.term-popout .term-head {
+      padding: .45rem .7rem;
+      font-size: .78rem;
+    }
+    body.term-popout .term-in-row {
+      padding: .45rem .7rem;
+    }
+    body.term-popout .term-in-row input {
+      font-size: .88rem;
+    }
     .term-head {
       flex: 0 0 auto;
       display: flex;
@@ -1002,6 +1050,7 @@
         <div class="term-head">
           <strong id="termTitle">Terminal</strong>
           <span class="term-cwd" id="termCwd" title=""></span>
+          <button type="button" class="secondary" id="termPopoutBtn" title="Open in a separate window">Pop out</button>
           <button type="button" class="secondary" id="termClearBtn" title="Clear output">Clear</button>
           <button type="button" class="secondary" id="termCloseBtn" title="Close terminal">Close</button>
         </div>
@@ -1306,6 +1355,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     let termBusy = false;
     const termHistory = [];
     let termHistIdx = -1;
+    /** True when this page is a popped-out terminal window (?term=local|ssh) */
+    let termPopoutMode = false;
+    /** @type {Record<string, Window|null>} */
+    const termPopouts = { local: null, ssh: null };
+    const termPopoutBtn = document.getElementById('termPopoutBtn');
     /** @type {{ project_pc?: boolean, project_ssh?: boolean, project_git?: boolean, max_desktop_clients?: number, plan?: string, allowed?: boolean, message?: string }|null} */
     let entitlements = null;
     const menuBtn = document.getElementById('menuBtn');
@@ -2442,47 +2496,72 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function refreshTermHeader() {
       if (!termPanel || !termTarget) return;
       if (termTarget === 'local') {
-        if (termTitle) termTitle.textContent = 'Local terminal';
+        if (termTitle) termTitle.textContent = termPopoutMode ? 'Local terminal (pop-out)' : 'Local terminal';
         if (termCwd) {
           termCwd.textContent = currentWorkspacePath || '(no folder)';
           termCwd.title = currentWorkspacePath || '';
         }
         if (termPrompt) termPrompt.textContent = '>';
+        try { document.title = 'Local · PromptParle terminal'; } catch (e) { /* ignore */ }
       } else {
-        if (termTitle) termTitle.textContent = 'SSH · ' + (currentSshTarget || '?');
+        if (termTitle) termTitle.textContent = (termPopoutMode ? 'SSH (pop-out) · ' : 'SSH · ') + (currentSshTarget || '?');
         const cwd = currentSshCwd || '~';
         if (termCwd) {
           termCwd.textContent = cwd;
           termCwd.title = (currentSshTarget || '') + ' · ' + cwd;
         }
         if (termPrompt) termPrompt.textContent = '$';
+        try { document.title = 'SSH · PromptParle terminal'; } catch (e) { /* ignore */ }
+      }
+      if (termPopoutBtn) {
+        termPopoutBtn.hidden = !!termPopoutMode;
+        termPopoutBtn.textContent = 'Pop out';
+      }
+      if (termPopoutMode && document.getElementById('termCloseBtn')) {
+        document.getElementById('termCloseBtn').textContent = 'Close window';
+        document.getElementById('termCloseBtn').title = 'Close this terminal window';
       }
     }
 
-    function openTerminal(target) {
+    function openTerminal(target, opts) {
+      opts = opts || {};
       if (target === 'local') {
         if (entitlements && entitlements.project_pc === false) {
-          addMsg('sys', 'This PC is disabled for your account in portal Settings.', null, true);
+          if (!termPopoutMode) addMsg('sys', 'This PC is disabled for your account in portal Settings.', null, true);
           return;
         }
-        if (!currentWorkspacePath) {
-          addMsg('sys', 'Attach a This PC folder first, then open Term.', null, true);
-          openFsModal();
+        if (!currentWorkspacePath && !opts.skipGate) {
+          if (!termPopoutMode) {
+            addMsg('sys', 'Attach a This PC folder first, then open Term.', null, true);
+            openFsModal();
+          }
           return;
         }
       } else if (target === 'ssh') {
         if (entitlements && entitlements.project_ssh === false) {
-          addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
+          if (!termPopoutMode) addMsg('sys', 'SSH is disabled for your account in portal Settings.', null, true);
           return;
         }
-        if (!currentSshTarget) {
-          addMsg('sys', 'Connect SSH first, then open Term.', null, true);
-          openSshModal('connect');
+        if (!currentSshTarget && !opts.skipGate) {
+          if (!termPopoutMode) {
+            addMsg('sys', 'Connect SSH first, then open Term.', null, true);
+            openSshModal('connect');
+          }
           return;
         }
       } else {
         return;
       }
+
+      // If a pop-out already exists for this target, focus it instead of docking again
+      if (!termPopoutMode && !opts.forceDock) {
+        const existing = termPopouts[target];
+        if (existing && !existing.closed) {
+          try { existing.focus(); } catch (e) { /* ignore */ }
+          return;
+        }
+      }
+
       termTarget = target;
       if (termPanel) {
         termPanel.hidden = false;
@@ -2491,17 +2570,115 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       refreshTermHeader();
       if (termOut && !termOut.dataset.booted) {
         termOut.dataset.booted = '1';
-        termAppendMeta('Terminal ready — ' + (target === 'ssh' ? 'remote shell via SSH' : 'local shell in project folder') + '.');
+        const kind = target === 'ssh' ? 'remote shell via SSH' : 'local shell in project folder';
+        termAppendMeta('Terminal ready — ' + kind + (termPopoutMode ? ' (pop-out window).' : '.'));
+        if (!termPopoutMode) {
+          termAppendMeta('Tip: Pop out opens a separate window you can drag to another monitor.');
+        }
       }
       if (termInput) setTimeout(function () { termInput.focus(); }, 40);
     }
 
     function closeTerminal() {
+      if (termPopoutMode) {
+        try { window.close(); } catch (e) { /* ignore */ }
+        // If browser blocks close, just blank the panel
+      }
       termTarget = null;
       if (termPanel) {
         termPanel.classList.remove('open');
         termPanel.hidden = true;
       }
+    }
+
+    function popOutTerminal() {
+      const target = termTarget || 'local';
+      if (termPopoutMode) return;
+      if (target !== 'local' && target !== 'ssh') return;
+
+      // Reuse existing pop-out if still open
+      const existing = termPopouts[target];
+      if (existing && !existing.closed) {
+        try { existing.focus(); } catch (e) { /* ignore */ }
+        return;
+      }
+
+      const url = location.origin + '/?term=' + encodeURIComponent(target);
+      const name = 'pp-term-' + target;
+      const features = [
+        'popup=yes',
+        'width=960',
+        'height=560',
+        'left=80',
+        'top=80',
+        'menubar=no',
+        'toolbar=no',
+        'location=no',
+        'status=no',
+        'resizable=yes',
+        'scrollbars=yes'
+      ].join(',');
+      const win = window.open(url, name, features);
+      if (!win) {
+        addMsg('sys', 'Pop-out blocked by the browser. Allow pop-ups for this site, then try again.', null, true);
+        return;
+      }
+      termPopouts[target] = win;
+      try { win.focus(); } catch (e) { /* ignore */ }
+      // Docked panel can stay; user may want both. Leave a note.
+      termAppendMeta('Popped out to a separate window. This docked terminal still works.');
+      // Watch for close so Term can dock again cleanly
+      const poll = setInterval(function () {
+        if (!win || win.closed) {
+          clearInterval(poll);
+          termPopouts[target] = null;
+        }
+      }, 800);
+    }
+
+    function enterTermPopoutMode(target) {
+      termPopoutMode = true;
+      document.body.classList.add('term-popout');
+      termTarget = target === 'ssh' ? 'ssh' : 'local';
+      if (termPanel) {
+        termPanel.hidden = false;
+        termPanel.classList.add('open');
+      }
+      // Lightweight session load for cwd / ssh labels
+      fetch('/api/session', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (!s) return;
+          currentWorkspacePath = s.workspace_path || s.workspacePath || '';
+          currentWorkspaceKind = (s.workspace_kind || s.workspaceKind || '').toLowerCase();
+          currentSshTarget = s.ssh_target || s.sshTarget || '';
+          currentSshCwd = s.ssh_cwd || s.sshCwd || '';
+          openTerminal(termTarget, { skipGate: true, forceDock: true });
+          if (termTarget === 'local' && !currentWorkspacePath) {
+            termAppendMeta('No This PC folder attached in the main window yet.');
+          }
+          if (termTarget === 'ssh' && !currentSshTarget) {
+            termAppendMeta('No SSH target connected in the main window yet.');
+          }
+        })
+        .catch(function () {
+          openTerminal(termTarget, { skipGate: true, forceDock: true });
+          termAppendMeta('Could not load session — commands may still work if already connected.');
+        });
+      // Refresh header periodically (cwd changes in main window)
+      setInterval(function () {
+        if (!termPopoutMode) return;
+        fetch('/api/session', { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (s) {
+            if (!s) return;
+            currentWorkspacePath = s.workspace_path || s.workspacePath || currentWorkspacePath;
+            currentSshTarget = s.ssh_target || s.sshTarget || currentSshTarget;
+            currentSshCwd = s.ssh_cwd || s.sshCwd || currentSshCwd;
+            refreshTermHeader();
+          })
+          .catch(function () { /* ignore */ });
+      }, 15000);
     }
 
     function termAppend(html) {
@@ -2528,6 +2705,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         return;
       }
       if (line === 'exit' || line === 'quit') {
+        if (termPopoutMode) {
+          try { window.close(); } catch (e) { /* ignore */ }
+        }
         closeTerminal();
         return;
       }
@@ -2783,6 +2963,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
     if (document.getElementById('termCloseBtn')) {
       document.getElementById('termCloseBtn').addEventListener('click', closeTerminal);
+    }
+    if (termPopoutBtn) {
+      termPopoutBtn.addEventListener('click', function () { popOutTerminal(); });
     }
     if (document.getElementById('termClearBtn')) {
       document.getElementById('termClearBtn').addEventListener('click', function () {
@@ -3601,11 +3784,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
     }
 
-    checkVersion();
-    loadEntitlements();
-    setInterval(function () { loadEntitlements(); }, 60000);
-    loadAgents().then(loadSession);
-    refreshAttachHint();
+    // Pop-out terminal window: /?term=local or /?term=ssh
+    (function initTermPopoutFromUrl() {
+      try {
+        const params = new URLSearchParams(location.search || '');
+        let t = (params.get('term') || '').toLowerCase();
+        if (!t && location.hash) {
+          const hm = location.hash.match(/term=(local|ssh)/i);
+          if (hm) t = hm[1].toLowerCase();
+        }
+        if (t === 'local' || t === 'ssh') {
+          enterTermPopoutMode(t);
+          return true;
+        }
+      } catch (e) { /* ignore */ }
+      return false;
+    })();
+
+    if (!termPopoutMode) {
+      checkVersion();
+      loadEntitlements();
+      setInterval(function () { loadEntitlements(); }, 60000);
+      loadAgents().then(loadSession);
+      refreshAttachHint();
+    }
 
     async function loadProviders() {
       const res = await fetch('/api/providers');
