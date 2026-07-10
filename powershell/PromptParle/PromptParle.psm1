@@ -5175,21 +5175,173 @@ function Get-PromptParleUpdateStatus {
     }
 }
 
-function Update-PromptParleClient {
+function Test-PromptParleModulePackage {
     <#
     .SYNOPSIS
-      Download latest PromptParle module from GitHub and install into the user Modules folder.
-
-    .DESCRIPTION
-      Used by the local chat "Update" button and can be run from PowerShell:
-        Update-PromptParleClient
-      Does not touch your API key. After update, restart local chat (pp) to load new code.
+      Validate a PromptParle module folder before/after install.
+      Doctrine: never promote a package that cannot parse/import.
     #>
     [CmdletBinding()]
     param(
-        # Skip version check and always reinstall from main
+        [Parameter(Mandatory)][string]$ModuleDir,
+        [switch]$TryImport
+    )
+    $psd1 = Join-Path $ModuleDir 'PromptParle.psd1'
+    $psm1 = Join-Path $ModuleDir 'PromptParle.psm1'
+    $ui   = Join-Path $ModuleDir 'local-ui\index.html'
+    if (-not (Test-Path -LiteralPath $ui)) { $ui = Join-Path $ModuleDir 'local-ui/index.html' }
+
+    if (-not (Test-Path -LiteralPath $psd1)) {
+        return [pscustomobject]@{ ok = $false; message = 'Package missing PromptParle.psd1' }
+    }
+    if (-not (Test-Path -LiteralPath $psm1)) {
+        return [pscustomobject]@{ ok = $false; message = 'Package missing PromptParle.psm1' }
+    }
+    if (-not (Test-Path -LiteralPath $ui)) {
+        return [pscustomobject]@{ ok = $false; message = 'Package missing local-ui/index.html' }
+    }
+
+    $ver = Read-PromptParleVersionFromManifest -ManifestPath $psd1
+    if (-not $ver) {
+        return [pscustomobject]@{ ok = $false; message = 'Package manifest has no ModuleVersion' }
+    }
+
+    try {
+        $parseErrs = $null
+        $parseTok = $null
+        $null = [System.Management.Automation.Language.Parser]::ParseFile(
+            $psm1,
+            [ref]$parseTok,
+            [ref]$parseErrs
+        )
+        if ($parseErrs -and $parseErrs.Count -gt 0) {
+            $first = $parseErrs[0]
+            $where = if ($first.Extent) {
+                "line $($first.Extent.StartLineNumber): $($first.Message)"
+            } else { [string]$first.Message }
+            return [pscustomobject]@{
+                ok      = $false
+                message = "Module parse failed ($where)"
+                version = $ver
+            }
+        }
+    } catch {
+        return [pscustomobject]@{
+            ok      = $false
+            message = "Module parse could not run: $_"
+            version = $ver
+        }
+    }
+
+    if ($TryImport) {
+        # Isolated process — never Import-Module into the live server session
+        $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+            (Get-Command pwsh).Source
+        } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
+            (Get-Command powershell).Source
+        } else {
+            $null
+        }
+        if ($psExe) {
+            $psd1Esc = $psd1 -replace "'", "''"
+            $probe = @"
+`$ErrorActionPreference = 'Stop'
+try {
+  Import-Module '$psd1Esc' -Force -ErrorAction Stop
+  if (-not (Get-Command Start-PromptParleLocalServer -ErrorAction SilentlyContinue)) { exit 3 }
+  if (-not (Get-Command Get-PromptParleClientVersion -ErrorAction SilentlyContinue)) { exit 4 }
+  exit 0
+} catch {
+  [Console]::Error.WriteLine(`$_.Exception.Message)
+  exit 2
+}
+"@
+            $outFile = Join-Path ([System.IO.Path]::GetTempPath()) ('pp-import-probe-' + [guid]::NewGuid().ToString('n') + '.out.txt')
+            $errFile = Join-Path ([System.IO.Path]::GetTempPath()) ('pp-import-probe-' + [guid]::NewGuid().ToString('n') + '.err.txt')
+            try {
+                $sp = @{
+                    FilePath               = $psExe
+                    ArgumentList           = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $probe)
+                    Wait                   = $true
+                    PassThru               = $true
+                    RedirectStandardOutput = $outFile
+                    RedirectStandardError  = $errFile
+                }
+                # -WindowStyle only on Windows Desktop PowerShell / Win-capable hosts
+                if ($script:PromptParleIsWindows) {
+                    $sp.WindowStyle = 'Hidden'
+                }
+                $p = Start-Process @sp
+                $code = 1
+                try { $code = [int]$p.ExitCode } catch { $code = 1 }
+                $errText = ''
+                foreach ($f in @($errFile, $outFile)) {
+                    if (Test-Path -LiteralPath $f) {
+                        try {
+                            $chunk = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
+                            if ($chunk) { $errText = ($errText + ' ' + $chunk).Trim() }
+                        } catch { }
+                    }
+                }
+                if ($code -ne 0) {
+                    $detail = if ($errText) { $errText.Trim() } else { "exit $code" }
+                    if ($detail.Length -gt 240) { $detail = $detail.Substring(0, 237) + '…' }
+                    return [pscustomobject]@{
+                        ok      = $false
+                        message = "Module import probe failed: $detail"
+                        version = $ver
+                    }
+                }
+            } catch {
+                return [pscustomobject]@{
+                    ok      = $false
+                    message = "Module import probe could not run: $_"
+                    version = $ver
+                }
+            } finally {
+                foreach ($f in @($outFile, $errFile)) {
+                    try { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } catch { }
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{ ok = $true; message = 'ok'; version = $ver }
+}
+
+function Restore-PromptParleModuleInstall {
+    <# Restore install directory from a full backup folder. #>
+    param(
+        [Parameter(Mandatory)][string]$BackupDir,
+        [Parameter(Mandatory)][string]$DestDir
+    )
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        throw "Backup not found: $BackupDir"
+    }
+    if (Test-Path -LiteralPath $DestDir) {
+        Remove-Item -LiteralPath $DestDir -Recurse -Force -ErrorAction Stop
+    }
+    $parent = Split-Path -Parent $DestDir
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $BackupDir -Destination $DestDir -Recurse -Force -ErrorAction Stop
+}
+
+function Update-PromptParleClient {
+    <#
+    .SYNOPSIS
+      Download latest PromptParle module and install into the user Modules folder.
+
+    .DESCRIPTION
+      Safe update: validate package → snapshot current → install → re-validate.
+      On ANY failure after install starts, restore previous install and do NOT restart.
+      Used by the local chat "Update" button and:
+        Update-PromptParleClient
+    #>
+    [CmdletBinding()]
+    param(
         [switch]$Force,
-        # After install, start local chat on this port (used by UI self-update)
         [int]$RestartPort = 0
     )
 
@@ -5218,6 +5370,7 @@ function Update-PromptParleClient {
             remote_version   = $remote
             message          = "Already up to date ($before)."
             restart_required = $false
+            rolled_back      = $false
         }
     }
 
@@ -5226,17 +5379,45 @@ function Update-PromptParleClient {
     $zipPath = Join-Path $temp 'promptparle-main.zip'
     $tgzPath = Join-Path $temp 'PromptParle-PowerShell.tgz'
     $extract = Join-Path $temp 'extract'
+    # Durable backup OUTSIDE $temp (temp is deleted in finally)
+    $backupRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-safe-update'
+    $backup = $null
+    $installed = $false
+    $userModules = Get-PromptParleUserModulesDir
+    $dest = Join-Path $userModules 'PromptParle'
+
+    function New-PromptParleUpdateFail {
+        param(
+            [string]$Message,
+            [string]$Version = $before,
+            [bool]$RolledBack = $false,
+            [string]$Stage = 'preflight'
+        )
+        Write-Host ("  update aborted: {0}" -f $Message) -ForegroundColor Red
+        return [pscustomobject]@{
+            ok               = $false
+            updated          = $false
+            previous_version = $before
+            version          = $Version
+            remote_version   = $remote
+            message          = $Message
+            restart_required = $false
+            rolled_back      = $RolledBack
+            kept_version     = $before
+            stage            = $Stage
+            module_path      = $dest
+        }
+    }
 
     try {
         Write-Host 'Downloading latest PromptParle client...' -ForegroundColor Cyan
-        # Portal tarball is what we deploy — prefer it so Update is not blocked on unpushed GitHub.
         $tgzUrl = 'https://promptparle.com/PromptParle-PowerShell.tgz'
         $zipUrl = 'https://github.com/exiled4disco/promptparle/archive/refs/heads/main.zip'
         $used = $null
         $source = $null
         New-Item -ItemType Directory -Path $extract -Force | Out-Null
 
-        # 1) Portal .tgz (PromptParle/ at root)
+        # 1) Portal .tgz
         try {
             Invoke-WebRequest -Uri $tgzUrl -OutFile $tgzPath -UseBasicParsing -TimeoutSec 120
             if ((Test-Path -LiteralPath $tgzPath) -and ((Get-Item -LiteralPath $tgzPath).Length -gt 1000)) {
@@ -5276,14 +5457,18 @@ function Update-PromptParleClient {
                 Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
                 $used = 'github-zip'
             } catch {
-                throw "Download failed (portal + GitHub): $_"
+                return (New-PromptParleUpdateFail -Message "Download failed (portal + GitHub): $_. Kept previous version ($before)." -Stage 'download')
             }
 
             Write-Host 'Extracting GitHub archive...' -ForegroundColor DarkGray
             if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
-                Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
+                try {
+                    Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
+                } catch {
+                    return (New-PromptParleUpdateFail -Message "Extract failed: $_. Kept previous version ($before)." -Stage 'extract')
+                }
             } else {
-                throw 'Expand-Archive not available. Update PowerShell or install manually from https://promptparle.com/PromptParle-PowerShell.tgz'
+                return (New-PromptParleUpdateFail -Message "Expand-Archive not available. Kept previous version ($before)." -Stage 'extract')
             }
 
             $candidates = @(
@@ -5303,108 +5488,141 @@ function Update-PromptParleClient {
         }
 
         if (-not $source) {
-            throw 'Downloaded archive did not contain powershell/PromptParle'
+            return (New-PromptParleUpdateFail -Message "Downloaded archive did not contain PromptParle module. Kept previous version ($before)." -Stage 'extract')
         }
         Write-Host ("Source: {0}" -f $used) -ForegroundColor DarkGray
 
-        $newVer = Read-PromptParleVersionFromManifest -ManifestPath (Join-Path $source 'PromptParle.psd1')
-        if (-not $newVer) { $newVer = $remote }
-        if (-not $newVer) { $newVer = 'unknown' }
-
-        # Parse-check BEFORE overwriting the install (prevents a bad package from bricking the client)
-        $psmCheck = Join-Path $source 'PromptParle.psm1'
-        if (-not (Test-Path -LiteralPath $psmCheck)) {
-            throw 'Package missing PromptParle.psm1 — aborting update (existing install left intact).'
+        # --- PREFLIGHT: never touch install until package is proven good ---
+        Write-Host 'Validating package (parse + import probe)...' -ForegroundColor DarkGray
+        $pre = Test-PromptParleModulePackage -ModuleDir $source -TryImport
+        if (-not $pre.ok) {
+            return (New-PromptParleUpdateFail -Message (
+                "Update blocked — package failed checks: $($pre.message). Kept previous version ($before)."
+            ) -Stage 'preflight')
         }
-        try {
-            $parseErrs = $null
-            $parseTok = $null
-            $null = [System.Management.Automation.Language.Parser]::ParseFile(
-                $psmCheck,
-                [ref]$parseTok,
-                [ref]$parseErrs
-            )
-            if ($parseErrs -and $parseErrs.Count -gt 0) {
-                $first = $parseErrs[0]
-                $where = if ($first.Extent) {
-                    "line $($first.Extent.StartLineNumber): $($first.Message)"
-                } else { [string]$first.Message }
-                throw "Downloaded module failed parse check ($where). Existing install left intact."
-            }
-        } catch {
-            if ("$_" -match 'parse check|missing PromptParle') { throw }
-            Write-Host ("  note: parse preflight skipped ({0})" -f $_) -ForegroundColor DarkYellow
-        }
+        $newVer = if ($pre.version) { [string]$pre.version } else { 'unknown' }
+        Write-Host ("  package ok · v{0}" -f $newVer) -ForegroundColor DarkGray
 
-        $userModules = Get-PromptParleUserModulesDir
-        $dest = Join-Path $userModules 'PromptParle'
         New-Item -ItemType Directory -Path $userModules -Force | Out-Null
+        New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
 
-        # Snapshot current install so we can roll back if copy/import fails
-        $backup = $null
+        # Snapshot current install (required if dest exists — refuse update without backup)
         if (Test-Path -LiteralPath $dest) {
-            $backup = Join-Path $temp 'PromptParle-backup'
+            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $backup = Join-Path $backupRoot ("PromptParle-v$before-$stamp")
             try {
+                if (Test-Path -LiteralPath $backup) {
+                    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+                }
                 Copy-Item -LiteralPath $dest -Destination $backup -Recurse -Force -ErrorAction Stop
+                Write-Host ("  backup: {0}" -f $backup) -ForegroundColor DarkGray
             } catch {
-                $backup = $null
-                Write-Host ("  note: could not snapshot current install ({0})" -f $_) -ForegroundColor DarkYellow
+                return (New-PromptParleUpdateFail -Message (
+                    "Could not back up current install — update aborted to protect v$before. ($_)"
+                ) -Stage 'backup')
             }
+            # Prune old backups (keep last 3)
+            try {
+                Get-ChildItem -LiteralPath $backupRoot -Directory -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -Skip 3 |
+                    ForEach-Object {
+                        try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                    }
+            } catch { }
         }
 
         Write-Host ("Installing PromptParle {0} -> {1}" -f $newVer, $dest) -ForegroundColor Cyan
 
-        # Copy into place (replace files; keep folder if locked bits fail partially)
+        # --- INSTALL (transactional) ---
         try {
             if (Test-Path -LiteralPath $dest) {
-                Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
-                    $target = Join-Path $dest $_.Name
-                    if ($_.PSIsContainer) {
-                        if (Test-Path -LiteralPath $target) {
-                            Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
-                        } else {
-                            Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force
-                        }
-                    } else {
-                        Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-                    }
+                # Replace whole tree from source for a clean install
+                $stagingDest = Join-Path $temp 'PromptParle-new'
+                if (Test-Path -LiteralPath $stagingDest) {
+                    Remove-Item -LiteralPath $stagingDest -Recurse -Force -ErrorAction SilentlyContinue
                 }
+                Copy-Item -LiteralPath $source -Destination $stagingDest -Recurse -Force -ErrorAction Stop
+                # Swap: remove old, move staging into place
+                Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction Stop
+                Copy-Item -LiteralPath $stagingDest -Destination $dest -Recurse -Force -ErrorAction Stop
             } else {
-                Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
+                Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force -ErrorAction Stop
             }
+            $installed = $true
         } catch {
+            $rolled = $false
             if ($backup -and (Test-Path -LiteralPath $backup)) {
-                Write-Host '  copy failed — restoring previous install...' -ForegroundColor Yellow
                 try {
-                    if (Test-Path -LiteralPath $dest) {
-                        Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
-                    }
-                    Copy-Item -LiteralPath $backup -Destination $dest -Recurse -Force
-                } catch { }
+                    Write-Host '  install failed — restoring previous version...' -ForegroundColor Yellow
+                    Restore-PromptParleModuleInstall -BackupDir $backup -DestDir $dest
+                    $rolled = $true
+                } catch {
+                    return (New-PromptParleUpdateFail -Message (
+                        "Install failed AND restore failed: $_. Manual recovery: copy backup from $backup to $dest"
+                    ) -Stage 'install' -RolledBack $false)
+                }
             }
-            throw
+            return (New-PromptParleUpdateFail -Message (
+                "Install failed: $_. Kept previous version ($before)."
+            ) -Stage 'install' -RolledBack $rolled)
         }
 
         Get-ChildItem -LiteralPath $dest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
             try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch { }
         }
 
-        # Version from files on disk — never call module cmdlets after a possible unload.
-        # (UI self-update runs inside the loaded module; Remove-Module would kill Get-PromptParleClientVersion mid-request.)
+        # --- POSTFLIGHT: must pass or roll back ---
+        Write-Host 'Validating installed module...' -ForegroundColor DarkGray
+        $post = Test-PromptParleModulePackage -ModuleDir $dest -TryImport
+        if (-not $post.ok) {
+            $rolled = $false
+            if ($backup -and (Test-Path -LiteralPath $backup)) {
+                try {
+                    Write-Host '  post-check failed — restoring previous version...' -ForegroundColor Yellow
+                    Restore-PromptParleModuleInstall -BackupDir $backup -DestDir $dest
+                    $rolled = $true
+                    $installed = $false
+                } catch {
+                    return (New-PromptParleUpdateFail -Message (
+                        "New version failed checks ($($post.message)) and restore failed: $_. Backup at $backup"
+                    ) -Version $newVer -Stage 'postflight' -RolledBack $false)
+                }
+            }
+            $keepMsg = if ($rolled) {
+                "Update failed validation ($($post.message)). Restored previous version ($before). App left running."
+            } else {
+                "Update failed validation ($($post.message)). No backup available — install may be broken. Re-run install from https://promptparle.com"
+            }
+            return (New-PromptParleUpdateFail -Message $keepMsg -Version $(if ($rolled) { $before } else { $newVer }) -Stage 'postflight' -RolledBack $rolled)
+        }
+
         $manifestPath = Join-Path $dest 'PromptParle.psd1'
-        $after = Read-PromptParleVersionFromManifest -ManifestPath $manifestPath
-        if (-not $after) { $after = $newVer }
+        $after = if ($post.version) { [string]$post.version } else { $newVer }
         if (-not $after) { $after = 'unknown' }
 
-        # Only re-import when updating from an interactive CLI (no live local-server restart).
-        # When -RestartPort is set, a NEW process loads the new module; this process must keep running
-        # until it returns the HTTP response and exits cleanly.
+        # CLI path only: re-import into this session (never mid-server when RestartPort set)
         if ($RestartPort -le 0) {
             try {
                 Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
                 Import-Module $manifestPath -Force -Global -ErrorAction Stop
             } catch {
-                Write-Host ("  note: module reloaded from disk after restart (import: {0})" -f $_) -ForegroundColor DarkGray
+                # Roll back — live session cannot load new module
+                if ($backup -and (Test-Path -LiteralPath $backup)) {
+                    try {
+                        Restore-PromptParleModuleInstall -BackupDir $backup -DestDir $dest
+                        try {
+                            Remove-Module PromptParle -Force -ErrorAction SilentlyContinue
+                            Import-Module (Join-Path $dest 'PromptParle.psd1') -Force -Global -ErrorAction SilentlyContinue
+                        } catch { }
+                        return (New-PromptParleUpdateFail -Message (
+                            "New module would not load into this session: $_. Restored previous version ($before)."
+                        ) -Stage 'session-import' -RolledBack $true)
+                    } catch { }
+                }
+                return (New-PromptParleUpdateFail -Message (
+                    "Updated files but session import failed: $_. Restart with: Import-Module PromptParle -Force; pp"
+                ) -Version $after -Stage 'session-import')
             }
         }
 
@@ -5412,6 +5630,7 @@ function Update-PromptParleClient {
         Write-Host $msg -ForegroundColor Green
         if ($used) { Write-Host ("  source: {0}" -f $used) -ForegroundColor DarkGray }
 
+        # Restart ONLY after full success
         if ($RestartPort -gt 0) {
             $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
                 (Get-Command pwsh).Source
@@ -5421,7 +5640,6 @@ function Update-PromptParleClient {
                 'powershell'
             }
             $destEsc = $manifestPath -replace "'", "''"
-            # Restart must surface import failures (log file) so a bad package does not leave UI "dead" silently
             $logEsc = (Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-restart.log') -replace "'", "''"
             $cmd = @"
 `$ErrorActionPreference = 'Continue'
@@ -5454,9 +5672,25 @@ try {
             version          = $after
             remote_version   = $remote
             message          = $msg
-            restart_required = $true
+            restart_required = ($RestartPort -gt 0)
+            rolled_back      = $false
+            kept_version     = $null
+            stage            = 'done'
             module_path      = $dest
+            backup_path      = $backup
         }
+    } catch {
+        # Last-resort safety net: if we wrote files, try restore
+        $rolled = $false
+        if ($installed -and $backup -and (Test-Path -LiteralPath $backup)) {
+            try {
+                Write-Host '  unexpected error — restoring previous version...' -ForegroundColor Yellow
+                Restore-PromptParleModuleInstall -BackupDir $backup -DestDir $dest
+                $rolled = $true
+            } catch { }
+        }
+        $keep = if ($rolled) { " Restored previous version ($before)." } else { " Kept previous version ($before)." }
+        return (New-PromptParleUpdateFail -Message ("Update error: $_.$keep") -Stage 'exception' -RolledBack $rolled)
     } finally {
         try { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue } catch { }
     }
@@ -5911,73 +6145,80 @@ function Start-PromptParleLocalServer {
 
                 if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/update') {
                     try {
-                        Write-Host '  update: downloading latest client...' -ForegroundColor Cyan
+                        Write-Host '  update: safe update (validate → backup → install → re-validate)...' -ForegroundColor Cyan
+                        # Pass RestartPort only after success path inside Update-PromptParleClient
                         $result = Update-PromptParleClient -Force -RestartPort $Port
+
+                        $ok = $true
+                        try { $ok = [bool](Get-PromptParleProp $result 'ok' $true) } catch { $ok = $true }
+                        $updated = $false
+                        try { $updated = [bool](Get-PromptParleProp $result 'updated' $false) } catch { $updated = $false }
+                        $restartReq = $false
+                        try { $restartReq = [bool](Get-PromptParleProp $result 'restart_required' $false) } catch { $restartReq = $false }
+                        $rolled = $false
+                        try { $rolled = [bool](Get-PromptParleProp $result 'rolled_back' $false) } catch { $rolled = $false }
+                        $msg = [string](Get-PromptParleProp $result 'message' '')
+                        $ver = [string](Get-PromptParleProp $result 'version' '')
+                        $prev = [string](Get-PromptParleProp $result 'previous_version' '')
+                        $kept = [string](Get-PromptParleProp $result 'kept_version' '')
+
+                        if (-not $ok) {
+                            # FAILURE: previous install restored (or never touched) — keep this server running
+                            Write-Host ("  update: FAILED — {0}" -f $msg) -ForegroundColor Red
+                            $payload = @{
+                                ok               = $false
+                                updated          = $false
+                                previous_version = $prev
+                                version          = if ($kept) { $kept } else { $prev }
+                                kept_version     = if ($kept) { $kept } else { $prev }
+                                remote_version   = Get-PromptParleProp $result 'remote_version' $null
+                                message          = if ($msg) { $msg } else { 'Update failed. Previous version kept.' }
+                                restart_required = $false
+                                rolled_back      = $rolled
+                                stage            = [string](Get-PromptParleProp $result 'stage' 'failed')
+                                error            = if ($msg) { $msg } else { 'Update failed' }
+                            } | ConvertTo-Json -Compress
+                            Write-PromptParleHttpResponse -Context $ctx -StatusCode 422 -ContentType 'application/json; charset=utf-8' -Body $payload
+                            continue
+                        }
+
                         $payload = @{
-                            ok               = [bool]$result.ok
-                            updated          = [bool]$result.updated
-                            previous_version = $result.previous_version
-                            version          = $result.version
-                            remote_version   = $result.remote_version
-                            message          = $result.message
-                            restart_required = $true
+                            ok               = $true
+                            updated          = $updated
+                            previous_version = $prev
+                            version          = $ver
+                            remote_version   = Get-PromptParleProp $result 'remote_version' $null
+                            message          = $msg
+                            restart_required = $restartReq
                             restart_port     = $Port
                             url              = "http://127.0.0.1:$Port/"
+                            rolled_back      = $false
                         } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
-                        Write-Host ("  update: {0} — restarting server..." -f $result.message) -ForegroundColor Green
-                        # Let the response flush, then stop this process (new one already spawned)
-                        Start-Sleep -Milliseconds 400
-                        $script:PromptParleShouldStop = $true
-                        $script:PromptParleStopAnnounced = $true
-                        try { $listener.Stop() } catch { }
-                        break
+
+                        if ($updated -and $restartReq) {
+                            Write-Host ("  update: {0} — restarting server..." -f $msg) -ForegroundColor Green
+                            # Let the response flush, then stop this process (new one already spawned)
+                            Start-Sleep -Milliseconds 400
+                            $script:PromptParleShouldStop = $true
+                            $script:PromptParleStopAnnounced = $true
+                            try { $listener.Stop() } catch { }
+                            break
+                        }
+
+                        # Success but no restart (e.g. already up to date)
+                        Write-Host ("  update: {0}" -f $msg) -ForegroundColor Green
                     } catch {
                         Write-Host ("  update: error - {0}" -f $_) -ForegroundColor Red
-                        # If files were written but post-install threw (old bug: Remove-Module mid-server),
-                        # still spawn a fresh process from the on-disk module so the user is not stuck.
-                        $recovered = $false
-                        try {
-                            $modDir = Join-Path (Get-PromptParleUserModulesDir) 'PromptParle'
-                            $psd1 = Join-Path $modDir 'PromptParle.psd1'
-                            if (Test-Path -LiteralPath $psd1) {
-                                $verOnDisk = Read-PromptParleVersionFromManifest -ManifestPath $psd1
-                                $psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-                                    (Get-Command pwsh).Source
-                                } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
-                                    (Get-Command powershell).Source
-                                } else { 'powershell' }
-                                $destEsc = $psd1 -replace "'", "''"
-                                $cmd = @"
-Start-Sleep -Seconds 2
-Import-Module '$destEsc' -Force -Global
-try { Start-PromptParleLocalServer -Port $Port } catch { Start-PromptParle }
-"@
-                                Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) | Out-Null
-                                $payload = @{
-                                    ok               = $true
-                                    updated          = $true
-                                    version          = $verOnDisk
-                                    message          = "Updated to $verOnDisk (recovered after reload glitch). Restarting…"
-                                    restart_required = $true
-                                    restart_port     = $Port
-                                    url              = "http://127.0.0.1:$Port/"
-                                    recovered        = $true
-                                    prior_error      = "$_"
-                                } | ConvertTo-Json -Compress
-                                Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
-                                Write-Host ("  update: recovered — restarting with on-disk v{0}" -f $verOnDisk) -ForegroundColor Yellow
-                                Start-Sleep -Milliseconds 400
-                                $script:PromptParleShouldStop = $true
-                                $script:PromptParleStopAnnounced = $true
-                                try { $listener.Stop() } catch { }
-                                $recovered = $true
-                            }
-                        } catch {
-                            Write-Host ("  update: recovery failed - {0}" -f $_) -ForegroundColor Red
-                        }
-                        if ($recovered) { break }
-                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        # Do NOT restart with unknown disk state — keep this process alive
+                        $err = @{
+                            ok               = $false
+                            updated          = $false
+                            restart_required = $false
+                            rolled_back      = $false
+                            error            = "$_"
+                            message          = "Update failed: $_. Previous version kept; local chat still running."
+                        } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
                     continue

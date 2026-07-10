@@ -2097,24 +2097,57 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     async function runUpdate() {
       closeMenu();
       closeHelp();
-      if (!confirm('Download latest PromptParle and restart local chat?')) return;
+      if (!confirm('Download latest PromptParle and restart local chat?\n\nIf the update fails, your current version is kept and this window stays open.')) return;
       setUpdateBusy(true);
-      addMsg('sys', 'Updating client…');
+      addMsg('sys', 'Updating client (safe mode: validate → backup → install → re-check)…');
       try {
         const res = await fetch('/api/update', { method: 'POST' });
         let data = {};
         try { data = await res.json(); } catch (e) { data = {}; }
-        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+        // Failure path: server kept previous install and stayed up — do NOT reload
+        if (!res.ok || data.ok === false) {
+          const kept = data.kept_version || data.previous_version || data.version || '';
+          const reason = data.message || data.error || ('HTTP ' + res.status);
+          addMsg('sys',
+            'Update failed — previous version kept' + (kept ? ' (v' + kept + ')' : '') + '. ' +
+            reason +
+            (data.rolled_back ? ' Files were rolled back from backup.' : '') +
+            ' You can keep working; try Update again later.',
+            null, true);
+          setUpdateBusy(false, 'Retry update');
+          // Refresh version badge without restarting
+          try { await checkVersion(); } catch (e2) { /* ignore */ }
+          return;
+        }
+
+        if (data.updated === false) {
+          addMsg('sys', data.message || 'Already up to date.');
+          setUpdateBusy(false, 'Update');
+          try { await checkVersion(); } catch (e2) { /* ignore */ }
+          return;
+        }
+
         addMsg('sys', (data.message || 'Updated') + ' — restarting…');
         const url = data.url || (window.location.origin + '/');
         const up = await waitForServer(url.endsWith('/') ? url : url + '/', 40);
         if (up) window.location.href = url;
-        else addMsg('sys', 'Updated. Run  pp  if the page does not reload.', null, true);
-      } catch (e) {
-        const up = await waitForServer(window.location.origin + '/', 40);
-        if (up) window.location.reload();
         else {
-          addMsg('sys', 'Update/restart issue: ' + (e.message || e) + ' — run pp', null, true);
+          addMsg('sys', 'Updated on disk. Run  pp  if the page does not reload.', null, true);
+          setUpdateBusy(false, 'Update');
+        }
+      } catch (e) {
+        // Network blip: check if local server still alive — do not force reload into a dead page
+        const up = await waitForServer(window.location.origin + '/', 8);
+        if (up) {
+          addMsg('sys',
+            'Update did not complete: ' + (e.message || e) +
+            ' — previous version kept; local chat still running.',
+            null, true);
+          setUpdateBusy(false, 'Retry update');
+          try { await checkVersion(); } catch (e2) { /* ignore */ }
+        } else {
+          addMsg('sys', 'Update/restart issue: ' + (e.message || e) + ' — run  pp  to start again.', null, true);
           setUpdateBusy(false, 'Retry update');
         }
       }
