@@ -1206,7 +1206,7 @@
         <div class="side-section">
           <h2>Chat</h2>
           <div class="field-compact">
-            <label for="agentSelect">Agent</label>
+            <label for="agentSelect" title="Sticky preference — each message can use a different lens if your question changes">Agent</label>
             <div class="agent-row">
               <select id="agentSelect"></select>
               <button type="button" class="secondary mini-primary" id="manageAgentsBtn" title="Create and optimize local agents">Manage</button>
@@ -5149,6 +5149,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         } else {
           const text = data.response || data.Response || '(empty response)';
           addMsg('bot', text, meta);
+          try {
+            var nm = meta ? normalizeMeta(meta) : null;
+            var tools = (nm && nm.local_tools) ? nm.local_tools : (meta && meta.local_tools) ? meta.local_tools : [];
+            if (tools && tools.length) {
+              var lens = null;
+              for (var ti = 0; ti < tools.length; ti++) {
+                var ts = String(tools[ti] || '');
+                if (ts.indexOf('turn-lens:') === 0) { lens = ts; break; }
+              }
+              if (lens) {
+                logOps('Agent lens this turn: ' + lens.replace('turn-lens:', ''), { level: 'ok' });
+              }
+            }
+          } catch (eLens) { /* ignore */ }
           if (!meta || !(normalizeMeta(meta).original_tokens > 0)) {
             addMsg('sys', 'Note: token savings metadata missing from response — check PowerShell window for PromptParle stats.', null, true);
           } else if (normalizeMeta(meta).token_reduction_percent === 0 && context && context.length > 2000) {

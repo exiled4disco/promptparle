@@ -484,8 +484,8 @@ function Initialize-PromptParleDefaultAgents {
         (New-PromptParleAgentObject -Id 'default' -Name 'Default' -Description 'General assistant' -Profile 'general' -Dial 3 `
             -System 'You are a helpful assistant. Respect [CONN] Project connections (local PC folder, Git, SSH). Prefer attached local evidence; use [WEB] briefs when present.' `
             -Tools @('files', 'workspace', 'secret_scan', 'connections', 'web_search')),
-        (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Hostile security review' -Profile 'security-review' -Dial 3 `
-            -System 'You are a hostile security reviewer. Prioritize risk, exploitability, and concrete fixes. When [CONN] shows SSH cwd, that remote tree is live session evidence — [SSH] blocks are real file contents auto-fetched from that cwd. Prefer [SSH]/[CONN]/attached material. Never claim a path under the SSH cwd is missing without a failed [SSH] fetch. Do not invent findings.' `
+        (New-PromptParleAgentObject -Id 'security' -Name 'Security reviewer' -Description 'Security review for the current ask (not a permanent lock)' -Profile 'security-review' -Dial 3 `
+            -System 'You are a security reviewer for THIS user message only. Prioritize real risk with evidence and concrete fixes. When [CONN] shows SSH cwd, [SSH] blocks are live remote file evidence — do not invent missing files. Prefer [SSH]/[CONN]/attachments. Do not invent ship-blockers. Do not refuse unrelated product/work questions if the user changed topics. PowerShell ExecutionPolicy is not a security boundary (Microsoft); do not treat -ExecutionPolicy Bypass alone as privilege escalation.' `
             -Commands @{ audit = 'Find the highest risk items and recommend actions with severity.'; threats = 'Map attack surface and threat scenarios from the material.' } `
             -Tools @('files', 'workspace', 'git', 'ssh', 'secret_scan', 'code_brief', 'git_diff', 'file_index', 'connections', 'web_search', 'relevant_slice')),
         (New-PromptParleAgentObject -Id 'docs' -Name 'Doc analyst' -Description 'Document coverage + obligations' -Profile 'documentation' -Dial 3 `
@@ -528,7 +528,9 @@ function Initialize-PromptParleDefaultAgents {
                     $upgradeSecuritySsh = (
                         $a.id -eq 'security' -and (
                             ($have -notcontains 'ssh') -or
-                            ([string]$existing.system -notmatch 'auto-fetched')
+                            ([string]$existing.system -notmatch 'auto-fetched') -or
+                            ([string]$existing.system -match 'hostile') -or
+                            ([string]$existing.system -notmatch 'THIS user message only')
                         )
                     )
                     if ($upgradeLegacy -or $upgradeSecuritySsh) {
@@ -886,15 +888,143 @@ function Set-PromptParleActiveAgent {
     return $agent
 }
 
+function Get-PromptParlePromptIntent {
+    <#
+    .SYNOPSIS
+      Classify THIS user message for turn-level agent routing.
+      Doctrine: sticky agent is a preference, not a prison.
+    #>
+    [CmdletBinding()]
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.ToLowerInvariant() }
+    if (-not $p.Trim()) { return 'general' }
+
+    # Meta / product / agent UX — always escape specialized corridors
+    if ($p -match '(?i)\b(agent|agents|stuck on|keep (saying|telling)|narrow corridor|wrong agent|switch agent|how (do|should) agents|agent use|not (working|correct) with agent|why does (my )?(pp|promptparle)|these agents)\b') {
+        return 'meta'
+    }
+    if ($p -match '(?i)\b(handoff|continue (from|the session)|session hand)\b') {
+        return 'product'
+    }
+    # Talking ABOUT a prior finding vs asking for a new security review
+    if ($p -match '(?i)\b(why (does|do|is|are)|keep (saying|telling)|is (this|that) (wrong|correct|accurate|true)|false positive|overblown|do you agree|not a (real )?risk)\b') {
+        return 'meta'
+    }
+
+    $secStrong = $p -match '(?i)\b(security review|secure code review|audit (this|the|for)|threat model|penetration test|owasp|find (vulnerabilit|cve|exploit)|is this (code |file )?(safe|vulnerable)|review .{0,40} for security)\b'
+    $secWeak = $p -match '(?i)\b(vulnerab|exploit|cve-|cve\b|injection|xss|csrf|rce\b|privilege.?escalat|eop\b)\b'
+    if ($secStrong) { return 'security' }
+    if ($secWeak -and $p -match '(?i)\b(review|audit|scan|check|assess)\b') { return 'security' }
+
+    if ($p -match '(?i)\b(implement|refactor|bug|fix|function|class|typescript|javascript|python|powershell|api endpoint|stack trace|compile error)\b') {
+        return 'code'
+    }
+    if ($p -match '(?i)\b(document|documentation|policy|obligation|compliance|summarize (the )?(doc|spec|manual)|readme)\b') {
+        return 'docs'
+    }
+    if ($p -match '(?i)\b(syslog|splunk|siem|trace log|log line|error log)\b') {
+        return 'logs'
+    }
+    if ($p -match '(?i)\b(ship|release|version|update client|product|feature|ux|ui)\b') {
+        return 'product'
+    }
+    return 'general'
+}
+
+function Resolve-PromptParleTurnLens {
+    <#
+    .SYNOPSIS
+      Pick agent + profile for THIS turn from user intent + sticky preference.
+    .DESCRIPTION
+      Sticky agent stays in session state, but a mismatched specialized lens
+      (especially security-review) must not trap unrelated questions.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [string]$StickyAgentId = 'default',
+        [string]$StickyProfile = 'general',
+        [switch]$AgentLocked
+    )
+    $intent = Get-PromptParlePromptIntent -Prompt $Prompt
+    $stickyId = if ($StickyAgentId) { $StickyAgentId } else { 'default' }
+    $sticky = $null
+    try { $sticky = Get-PromptParleAgent -Name $stickyId } catch { $sticky = $null }
+    $stickyProf = if ($sticky -and $sticky.profile) { [string]$sticky.profile } else { $StickyProfile }
+    if (-not $stickyProf) { $stickyProf = 'general' }
+
+    $agentId = $stickyId
+    $profile = $stickyProf
+    $override = $false
+    $reason = 'sticky agent'
+
+    $doctrine = 'Answer the CURRENT user message fully. Prior chat findings are optional context only — do not refuse unrelated work, restate old ship-blockers, or force a previous security conclusion unless the user asks about it this turn.'
+
+    $stickyIsSec = ($stickyProf -eq 'security-review') -or ($stickyId -eq 'security')
+    $stickyIsCode = ($stickyProf -eq 'developer') -or ($stickyId -eq 'code')
+    $stickyIsDocs = ($stickyProf -eq 'documentation') -or ($stickyId -eq 'docs')
+
+    if (-not $AgentLocked) {
+        if ($stickyIsSec -and $intent -ne 'security') {
+            if ($intent -eq 'code') {
+                $agentId = 'code'; $profile = 'developer'
+            } elseif ($intent -eq 'docs') {
+                $agentId = 'docs'; $profile = 'documentation'
+            } else {
+                $agentId = 'default'; $profile = 'general'
+            }
+            $override = $true
+            $reason = "topic shift: this turn is '$intent', not security (sticky was $stickyId)"
+        }
+        elseif ($stickyIsCode -and $intent -in @('meta', 'product', 'docs', 'logs')) {
+            $agentId = 'default'; $profile = 'general'
+            if ($intent -eq 'docs') { $agentId = 'docs'; $profile = 'documentation' }
+            $override = $true
+            $reason = "topic shift: this turn is '$intent', not code review (sticky was $stickyId)"
+        }
+        elseif ($stickyIsDocs -and $intent -in @('meta', 'code', 'security', 'product')) {
+            if ($intent -eq 'code') { $agentId = 'code'; $profile = 'developer' }
+            elseif ($intent -eq 'security') { $agentId = 'security'; $profile = 'security-review' }
+            else { $agentId = 'default'; $profile = 'general' }
+            $override = $true
+            $reason = "topic shift: this turn is '$intent' (sticky was $stickyId)"
+        }
+        elseif (($stickyId -eq 'default' -or $stickyProf -eq 'general') -and $intent -eq 'security') {
+            $agentId = 'security'; $profile = 'security-review'
+            $override = $true
+            $reason = 'this turn is an explicit security ask (sticky default)'
+        }
+        elseif (($stickyId -eq 'default' -or $stickyProf -eq 'general') -and $intent -eq 'code' -and ($Prompt -match '(?i)\b(review this code|code review|refactor this|fix this bug)\b')) {
+            $agentId = 'code'; $profile = 'developer'
+            $override = $true
+            $reason = 'this turn is an explicit code-review ask (sticky default)'
+        }
+    }
+
+    return [pscustomobject]@{
+        intent         = $intent
+        agent_id       = $agentId
+        profile        = $profile
+        sticky_agent   = $stickyId
+        sticky_profile = $stickyProf
+        override       = [bool]$override
+        reason         = $reason
+        doctrine       = $doctrine
+        locked         = [bool]$AgentLocked
+    }
+}
+
 function Format-PromptParleAgentPrompt {
     <#
     .SYNOPSIS
       Prepend agent system brief to the user prompt (local; free tier).
-      Reminds the model that Project connections context is in the attach block.
+      Uses turn lens when provided so sticky agents do not form a narrow corridor.
     #>
     param(
         [string]$Prompt,
-        [string]$AgentId
+        [string]$AgentId,
+        [string]$Doctrine = '',
+        [string]$TurnNote = ''
     )
     if (-not $AgentId) { $AgentId = Get-PromptParleActiveAgentId }
     $agent = Get-PromptParleAgent -Name $AgentId
@@ -908,11 +1038,17 @@ function Format-PromptParleAgentPrompt {
     if (-not $sys) {
         $sys = 'You are a helpful assistant. Prefer evidence from attached context.'
     }
-    # Always remind about session project connections (actual paths live in [CONN] context)
     if ($sys -notmatch '(?i)\[CONN\]|project connections') {
         $sys = $sys.TrimEnd('.') + '. Honor [CONN] Project connections (PC folder, Git, SSH) in context; do not invent paths. Use [WEB] briefs when present for external facts.'
     }
-    return ("[AGENT: {0}]`n{1}`n`n[USER]`n{2}" -f $name, $sys, $Prompt)
+    if ($Doctrine) {
+        $sys = $sys.TrimEnd('.') + '. ' + $Doctrine.Trim()
+    }
+    $header = "[AGENT: $name]"
+    if ($TurnNote) {
+        $header = $header + "`n[TURN: $TurnNote]"
+    }
+    return ("{0}`n{1}`n`n[USER]`n{2}" -f $header, $sys, $Prompt)
 }
 
 #region Local-first tools (run on this PC before AI tokens are spent)
@@ -2620,10 +2756,28 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($Dial -le 2) { $memMax = 3600 }
         if ($Dial -ge 4) { $memMax = 1600 }
         $mem = $null
-        if ($History -and $History.Count -gt 0) {
-            $mem = Invoke-PromptParleChatMemoryBrief -History $History -MaxChars $memMax -Dial $Dial
-        } elseif ($HistoryText -and $HistoryText.Trim().Length -gt 20) {
-            $mem = Invoke-PromptParleChatMemoryBrief -HistoryText $HistoryText -MaxChars $memMax -Dial $Dial
+        # Topic-shift: if this turn is not a security ask, compress prior security-corridor rants in memory
+        $histForMem = $History
+        $histTextForMem = $HistoryText
+        try {
+            $turnIntent = Get-PromptParlePromptIntent -Prompt $pr
+            if ($turnIntent -ne 'security' -and $History -and $History.Count -gt 0) {
+                $filtered = New-Object System.Collections.Generic.List[object]
+                foreach ($h in @($History)) {
+                    $hr = [string](Get-PromptParleProp $h 'role' 'user')
+                    $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
+                    if ($hr -match '(?i)assistant|bot|ai' -and $ht -match '(?i)do not build|ExecutionPolicy Bypass|ship.?blocker|blocked until|until that change is made') {
+                        $ht = '[prior security note compressed — not a work stoppage for other topics]'
+                    }
+                    $filtered.Add([pscustomobject]@{ role = $hr; text = $ht })
+                }
+                $histForMem = @($filtered.ToArray())
+            }
+        } catch { }
+        if ($histForMem -and $histForMem.Count -gt 0) {
+            $mem = Invoke-PromptParleChatMemoryBrief -History $histForMem -MaxChars $memMax -Dial $Dial
+        } elseif ($histTextForMem -and $histTextForMem.Trim().Length -gt 20) {
+            $mem = Invoke-PromptParleChatMemoryBrief -HistoryText $histTextForMem -MaxChars $memMax -Dial $Dial
         }
         if ($mem -and $mem.text) {
             if ($ctx -notmatch '(?m)^\[MEM\]') {
@@ -7311,7 +7465,31 @@ function Start-PromptParleLocalServer {
                         } catch { }
 
                         $skipAgent = Get-PromptParleProp $body 'skip_agent' $false
+                        $turnLens = $null
+                        $turnAgentNote = $null
                         if ($skipAgent -ne $true) {
+                            # Turn lens: sticky agent is preference; this message picks the real lens
+                            try {
+                                $stickyAgentId = 'default'
+                                try {
+                                    $stickyAgentId = Get-PromptParleActiveAgentId
+                                } catch { $stickyAgentId = 'default' }
+                                $agentLock = $false
+                                $lockFlag = Get-PromptParleProp $body 'agent_locked' (Get-PromptParleProp $body 'agentLocked' $null)
+                                if ($null -ne $lockFlag) { $agentLock = [bool]$lockFlag }
+                                $turnLens = Resolve-PromptParleTurnLens -Prompt $prompt -StickyAgentId $stickyAgentId -StickyProfile $profile -AgentLocked:$agentLock
+                                if ($turnLens.override) {
+                                    $profile = [string]$turnLens.profile
+                                    $turnAgentNote = [string]$turnLens.reason
+                                    $localNotes = @($localNotes) + @("turn-lens:$($turnLens.sticky_agent)→$($turnLens.agent_id) ($($turnLens.intent))")
+                                    Write-Host ("  chat: turn-lens {0} → {1} ({2})" -f $turnLens.sticky_agent, $turnLens.agent_id, $turnLens.intent) -ForegroundColor DarkCyan
+                                } elseif ($turnLens) {
+                                    $profile = [string]$turnLens.profile
+                                }
+                            } catch {
+                                Write-Host ("  chat: turn-lens skip - {0}" -f $_) -ForegroundColor DarkYellow
+                                $turnLens = $null
+                            }
                             try {
                                 $prepParams = @{
                                     Prompt       = $prompt
@@ -7322,14 +7500,26 @@ function Start-PromptParleLocalServer {
                                 }
                                 if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
                                 elseif ($histText) { $prepParams.HistoryText = $histText }
+                                # Prefer turn agent for LocalPrep agent-aware bits
+                                if ($turnLens -and $turnLens.agent_id) {
+                                    $prepParams.AgentId = [string]$turnLens.agent_id
+                                }
                                 $prep = Invoke-PromptParleAgentLocalPrep @prepParams
                                 $prompt = [string]$prep.prompt
                                 if ($null -ne $prep.context) { $context = [string]$prep.context }
-                                if ($prep.notes) { $localNotes = @($prep.notes) }
+                                if ($prep.notes) { $localNotes = @($localNotes) + @($prep.notes) }
                             } catch {
                                 Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
                             }
-                            $prompt = Format-PromptParleAgentPrompt -Prompt $prompt
+                            $fmtParams = @{ Prompt = $prompt }
+                            if ($turnLens -and $turnLens.agent_id) {
+                                $fmtParams.AgentId = [string]$turnLens.agent_id
+                                $fmtParams.Doctrine = [string]$turnLens.doctrine
+                                if ($turnLens.override) {
+                                    $fmtParams.TurnNote = ("using {0} this turn — {1}" -f $turnLens.agent_id, $turnLens.reason)
+                                }
+                            }
+                            $prompt = Format-PromptParleAgentPrompt @fmtParams
                         }
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
@@ -7632,8 +7822,28 @@ function Start-PromptParle {
         Write-Host 'thinking...' -ForegroundColor DarkGray
         try {
             $cliCtx = if ($sessionContext) { [string]$sessionContext } else { '' }
+            $cliLens = $null
             try {
-                $cliPrep = Invoke-PromptParleAgentLocalPrep -Prompt $trimmed -Context $cliCtx -Dial $sessionDial -Profile $sessionProfile -ToolsEnabled $true
+                $cliSticky = 'default'
+                try { $cliSticky = Get-PromptParleActiveAgentId } catch { $cliSticky = 'default' }
+                $cliLens = Resolve-PromptParleTurnLens -Prompt $trimmed -StickyAgentId $cliSticky -StickyProfile $sessionProfile
+                if ($cliLens.override) {
+                    $sessionProfile = [string]$cliLens.profile
+                    Write-Host ("  turn-lens: {0} → {1} ({2})" -f $cliLens.sticky_agent, $cliLens.agent_id, $cliLens.intent) -ForegroundColor DarkCyan
+                }
+            } catch {
+                Write-Host ("  turn-lens skip: {0}" -f $_) -ForegroundColor DarkYellow
+            }
+            try {
+                $cliPrepParams = @{
+                    Prompt       = $trimmed
+                    Context      = $cliCtx
+                    Dial         = $sessionDial
+                    Profile      = $sessionProfile
+                    ToolsEnabled = $true
+                }
+                if ($cliLens -and $cliLens.agent_id) { $cliPrepParams.AgentId = [string]$cliLens.agent_id }
+                $cliPrep = Invoke-PromptParleAgentLocalPrep @cliPrepParams
                 $trimmed = [string]$cliPrep.prompt
                 if ($null -ne $cliPrep.context) { $cliCtx = [string]$cliPrep.context }
                 if ($cliPrep.notes) {
@@ -7642,7 +7852,15 @@ function Start-PromptParle {
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
             }
-            $sendPrompt = Format-PromptParleAgentPrompt -Prompt $trimmed
+            $cliFmt = @{ Prompt = $trimmed }
+            if ($cliLens -and $cliLens.agent_id) {
+                $cliFmt.AgentId = [string]$cliLens.agent_id
+                $cliFmt.Doctrine = [string]$cliLens.doctrine
+                if ($cliLens.override) {
+                    $cliFmt.TurnNote = ("using {0} this turn — {1}" -f $cliLens.agent_id, $cliLens.reason)
+                }
+            }
+            $sendPrompt = Format-PromptParleAgentPrompt @cliFmt
             $params = @{
                 Prompt           = $sendPrompt
                 Provider         = $sessionProvider
@@ -7813,6 +8031,8 @@ Export-ModuleMember -Function @(
     'Get-PromptParleToolCatalog',
     'Invoke-PromptParleLocalTool',
     'Invoke-PromptParleAgentLocalPrep',
+    'Resolve-PromptParleTurnLens',
+    'Get-PromptParlePromptIntent',
     'Optimize-PromptParleAgent',
     'Invoke-PromptParleSlashCommand',
     'Get-PromptParleWorkspace',
