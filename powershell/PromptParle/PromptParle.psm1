@@ -1161,7 +1161,7 @@ function Get-PromptParleSelfCard {
       0.22.4: compact self-knowledge — what PromptParle is, desktop hands, portal, help.
       Always-on so the model does not invent a wrong host or hardcode foreign paths.
     #>
-    $ver = '0.23.1'
+    $ver = '0.23.2'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -9313,10 +9313,14 @@ Commands (type in chat instead of a normal message):
   /search <query>       Brief web search (local; injects results into next chat)
   /dial [1-5]           Shrink aggressiveness (always optimizes; 1 fidelity … 5 savings)
   /provider [id]        openai | anthropic | gemini | grok
+  /model [id]           Preferred model for current provider (UI)
+  /mode terminal|chat   Terminal AI layout vs bubble chat (local UI)
   /optimize             Toggle optimize-only (no model call — debug shrink)
   /usage                Cloud token savings summary
   /clear                Clear chat (UI) / screen (CLI)
   /quit                 Stop (CLI)
+
+  Tip: In the local UI, type / to open the command list (works in bubble + terminal chat).
 
 Product (0.14+): continuous chat like a normal assistant, with an optimizer
   between you and the model. Dial is the only shrink knob. Agents retired.

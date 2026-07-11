@@ -551,12 +551,194 @@
       display: flex; flex-direction: column; gap: .45rem;
       background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: .7rem .8rem;
       transition: border-color .15s, box-shadow .15s;
+      position: relative; /* slash menu anchors here */
     }
     .composer.dragover {
       border-color: var(--accent);
       box-shadow: 0 0 0 2px rgba(91,140,255,.25);
     }
     .row { display: flex; gap: .55rem; align-items: flex-end; }
+    .composer-prompt {
+      display: none;
+      flex: 0 0 auto;
+      align-self: flex-end;
+      padding-bottom: .55rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .95rem;
+      font-weight: 700;
+      color: var(--accent);
+      user-select: none;
+    }
+
+    /* —— Terminal AI chat experience —— */
+    body.chat-style-term .chat {
+      background: #05070c;
+      border-color: #152033;
+      border-radius: 8px;
+      padding: 0.55rem 0.65rem;
+      gap: 0.15rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .84rem;
+      line-height: 1.4;
+    }
+    body.chat-style-term .msg {
+      max-width: 100%;
+      align-self: stretch !important;
+      background: transparent !important;
+      border: 0 !important;
+      border-radius: 0;
+      padding: .2rem .15rem;
+      font-size: inherit;
+      line-height: 1.4;
+    }
+    body.chat-style-term .msg.user {
+      color: #dbe7ff;
+    }
+    body.chat-style-term .msg.bot,
+    body.chat-style-term .msg.assistant {
+      color: #d7f5e8;
+    }
+    body.chat-style-term .msg.sys {
+      color: var(--muted);
+      border: 0 !important;
+      font-size: .8rem;
+    }
+    body.chat-style-term .msg.error { color: #fecaca; }
+    body.chat-style-term .msg.user::before {
+      content: 'you › ';
+      color: #7aa2ff;
+      font-weight: 700;
+    }
+    body.chat-style-term .msg.bot::before,
+    body.chat-style-term .msg.assistant::before {
+      content: 'ai  › ';
+      color: #34d399;
+      font-weight: 700;
+    }
+    body.chat-style-term .msg.sys::before {
+      content: 'sys · ';
+      color: #8b9bb8;
+      font-weight: 600;
+    }
+    body.chat-style-term .msg .meta,
+    body.chat-style-term .msg .wow {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      margin-left: 3.2rem;
+    }
+    body.chat-style-term .composer {
+      background: #05070c;
+      border-color: #152033;
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    body.chat-style-term .composer-prompt { display: block; }
+    body.chat-style-term #input {
+      font-family: inherit;
+      background: #080b12;
+      min-height: 2.4rem;
+      border-color: #1c2a40;
+    }
+    body.chat-style-term .attach-bar .hint,
+    body.chat-style-term .attach-bar .secondary {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+    body.chat-style-term .savings-strip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .75rem;
+    }
+
+    /* —— Slash command palette (works in bubble + terminal) —— */
+    .slash-menu {
+      position: absolute;
+      left: .55rem;
+      right: .55rem;
+      bottom: calc(100% + 4px);
+      z-index: 40;
+      max-height: min(42vh, 22rem);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: #0c111b;
+      border: 1px solid rgba(91, 140, 255, 0.45);
+      border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(91,140,255,.08);
+    }
+    .slash-menu[hidden] { display: none !important; }
+    .slash-menu-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .5rem;
+      padding: .4rem .65rem;
+      border-bottom: 1px solid var(--border);
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+    .slash-menu-head span.slash-filter {
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 600;
+      color: var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .slash-menu-list {
+      overflow-y: auto;
+      padding: .25rem;
+      scrollbar-width: thin;
+    }
+    .slash-item {
+      display: grid;
+      grid-template-columns: minmax(7.5rem, auto) 1fr;
+      gap: .15rem .65rem;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      border-radius: 7px;
+      color: var(--text);
+      font: inherit;
+      padding: .4rem .5rem;
+      cursor: pointer;
+    }
+    .slash-item:hover,
+    .slash-item.active {
+      background: var(--accent-soft);
+    }
+    .slash-item .slash-cmd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .8rem;
+      font-weight: 700;
+      color: #93b4ff;
+      white-space: nowrap;
+    }
+    .slash-item .slash-args {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .72rem;
+      color: var(--dim);
+      font-weight: 500;
+    }
+    .slash-item .slash-desc {
+      grid-column: 2;
+      font-size: .74rem;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+    .slash-item .slash-cmd-row {
+      grid-column: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: .25rem;
+      align-items: baseline;
+    }
+    .slash-empty {
+      padding: .65rem .75rem;
+      font-size: .8rem;
+      color: var(--dim);
+    }
     .row textarea {
       /* ~10 rows at default line-height — more room to think/type */
       min-height: 11.5rem; max-height: 22rem; flex: 1; resize: vertical;
@@ -1387,6 +1569,12 @@
                 Optimize only
               </label>
             </div>
+            <div class="checks dial-tools" style="margin-top:.3rem">
+              <label title="Terminal-style AI chat: monospace, you› / ai› lines, denser layout. Slash / still works.">
+                <input type="checkbox" id="termChatMode" />
+                <strong>Terminal chat</strong>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -1451,6 +1639,7 @@
           <button type="button" class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">⋯</button>
           <div class="menu" id="appMenu" role="menu">
             <button type="button" id="menuNewChat">New chat</button>
+            <button type="button" id="menuTermChat" title="Toggle terminal-style AI chat">Terminal chat</button>
             <button type="button" id="menuHelp">Help &amp; slash commands</button>
             <button type="button" id="menuActivityLog" title="Operational messages (updates, SSH, workspace) — not chat">Activity log</button>
             <button type="button" id="menuProviders" data-info="providers">Providers</button>
@@ -1504,15 +1693,23 @@
       </div>
 
       <form class="composer" id="form">
+        <div class="slash-menu" id="slashMenu" hidden role="listbox" aria-label="Slash commands">
+          <div class="slash-menu-head">
+            <span>Commands</span>
+            <span class="slash-filter" id="slashFilterLabel">/</span>
+          </div>
+          <div class="slash-menu-list" id="slashMenuList"></div>
+        </div>
         <div class="attach-bar">
           <button type="button" class="secondary" id="attachBtn">Attach files</button>
           <input type="file" id="fileInput" multiple
             accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
-          <span class="hint">Docs · code · CSV · paste screenshot</span>
+          <span class="hint">Docs · code · CSV · paste screenshot · type / for commands</span>
         </div>
         <div class="chips" id="chips"></div>
         <div class="row">
-          <textarea id="input" rows="10" placeholder="Message or /command — try /help · Enter to send"></textarea>
+          <span class="composer-prompt" id="composerPrompt" aria-hidden="true">›</span>
+          <textarea id="input" rows="10" placeholder="Message or /command — type / for list · Enter to send"></textarea>
           <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
@@ -1532,8 +1729,10 @@
 /tools [on|off]       session local tools (default on)
 /tool file_index|deps|git_diff|code_brief
 /dial 1-5             shrink aggressiveness (always optimizes)
-/provider · /optimize · /usage · /clear
-Sidebar: Provider + Dial + Tools — no agents</pre>
+/provider · /model · /optimize · /usage · /clear
+/mode terminal|chat   terminal AI layout vs bubble chat
+Type / in the composer for live command list (both layouts)
+Sidebar: Provider + Model + Dial + Tools + Terminal chat</pre>
       </div>
       <div>
       <h3>Chat history</h3>
@@ -1745,11 +1944,172 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const toolsEnabledEl = document.getElementById('toolsEnabled');
     const refreshModelsBtn = document.getElementById('refreshModelsBtn');
     const syncSettingsBtn = document.getElementById('syncSettingsBtn');
+    const termChatModeEl = document.getElementById('termChatMode');
+    const slashMenu = document.getElementById('slashMenu');
+    const slashMenuList = document.getElementById('slashMenuList');
+    const slashFilterLabel = document.getElementById('slashFilterLabel');
+    const CHAT_STYLE_KEY = 'pp_chat_style'; // 'bubble' | 'term'
     /** providerId → { models:[{id,label}], preferred, default, live } */
     let providerModelCache = {};
     let preferredModelsMap = {};
     let preferredProviderId = null;
     let settingsSyncQuiet = false;
+    let slashActiveIndex = 0;
+    let slashVisible = [];
+
+    /**
+     * Slash command catalog — shown as autocomplete when typing / in chat
+     * (bubble layout and terminal chat). Keep in sync with PowerShell help.
+     */
+    const SLASH_COMMANDS = [
+      { cmd: '/help', args: '', desc: 'Show help & command list' },
+      { cmd: '/status', args: '', desc: 'Provider, dial, tools, workspace, SSH' },
+      { cmd: '/tools', args: '[on|off]', desc: 'Local tools before AI tokens (default on)' },
+      { cmd: '/tool', args: '<id> [arg]', desc: 'Run a local tool now (file_index, web_search, …)' },
+      { cmd: '/search', args: '<query>', desc: 'Web search (local; injects into next chat)' },
+      { cmd: '/dial', args: '[1-5]', desc: 'Shrink aggressiveness (always optimizes)' },
+      { cmd: '/provider', args: '[openai|anthropic|gemini|grok]', desc: 'Set AI provider' },
+      { cmd: '/model', args: '[id]', desc: 'Show or set preferred model for current provider' },
+      { cmd: '/optimize', args: '', desc: 'Toggle optimize-only (no model call)' },
+      { cmd: '/usage', args: '', desc: 'Cloud token savings summary' },
+      { cmd: '/clear', args: '', desc: 'Clear this chat' },
+      { cmd: '/mode', args: '[terminal|chat]', desc: 'Terminal AI layout or bubble chat' },
+      { cmd: '/workspace', args: '[path|clear|ls|tree|…]', desc: 'Attach / browse local folder' },
+      { cmd: '/ws', args: '[…]', desc: 'Alias for /workspace' },
+      { cmd: '/git', args: 'status|diff|log|branch', desc: 'Git in attached workspace' },
+      { cmd: '/github', args: '[clone|prs]', desc: 'GitHub tooling + clone' },
+      { cmd: '/gh', args: '[…]', desc: 'Alias for /github' },
+      { cmd: '/ssh', args: '[user@host|ls|run|cwd|…]', desc: 'SSH target, list, run, fetch' }
+    ];
+
+    function getChatStyle() {
+      try {
+        var s = localStorage.getItem(CHAT_STYLE_KEY);
+        return s === 'term' ? 'term' : 'bubble';
+      } catch (e) {
+        return 'bubble';
+      }
+    }
+
+    function applyChatStyle(style, opts) {
+      opts = opts || {};
+      var term = style === 'term';
+      document.body.classList.toggle('chat-style-term', term);
+      if (termChatModeEl) termChatModeEl.checked = term;
+      try { localStorage.setItem(CHAT_STYLE_KEY, term ? 'term' : 'bubble'); } catch (e) { /* ignore */ }
+      var menuTerm = document.getElementById('menuTermChat');
+      if (menuTerm) menuTerm.textContent = term ? '✓ Terminal chat' : 'Terminal chat';
+      if (inputEl) {
+        inputEl.placeholder = term
+          ? '› message or /command — type / for list · Enter to send'
+          : 'Message or /command — type / for list · Enter to send';
+        if (term) {
+          // denser terminal input
+          if (parseInt(inputEl.getAttribute('rows') || '10', 10) > 4) inputEl.setAttribute('rows', '3');
+        } else {
+          inputEl.setAttribute('rows', '10');
+        }
+      }
+      if (opts.announce) {
+        addMsg('sys', term
+          ? 'Terminal chat ON — monospace you› / ai› layout. Type / for commands. /mode chat to switch back.'
+          : 'Bubble chat ON — card layout. Type / for commands. /mode terminal for terminal AI style.', null, false);
+      }
+    }
+
+    function hideSlashMenu() {
+      if (slashMenu) slashMenu.hidden = true;
+      slashVisible = [];
+      slashActiveIndex = 0;
+    }
+
+    function filterSlashCommands(query) {
+      // query is full input starting with /
+      var q = String(query || '').trim();
+      if (!q.startsWith('/')) return [];
+      // Only show while still on the command token (no multi-arg deep completion yet)
+      var space = q.indexOf(' ');
+      var token = space >= 0 ? q.slice(0, space) : q;
+      var rest = space >= 0 ? q.slice(space + 1) : '';
+      // If user already typed args after a full command, hide palette
+      if (rest.length > 0 && space >= 0) {
+        // still allow if token is incomplete unique prefix? hide for cleanliness
+        var exact = SLASH_COMMANDS.some(function (c) { return c.cmd === token.toLowerCase(); });
+        if (exact) return [];
+      }
+      var needle = token.toLowerCase();
+      return SLASH_COMMANDS.filter(function (c) {
+        if (c.cmd.indexOf(needle) === 0) return true;
+        if (c.desc.toLowerCase().indexOf(needle.replace(/^\//, '')) >= 0) return true;
+        if (c.args && c.args.toLowerCase().indexOf(needle.replace(/^\//, '')) >= 0) return true;
+        return false;
+      });
+    }
+
+    function renderSlashMenu(items, filterText) {
+      if (!slashMenu || !slashMenuList) return;
+      slashVisible = items || [];
+      if (slashFilterLabel) slashFilterLabel.textContent = filterText || '/';
+      if (!slashVisible.length) {
+        slashMenuList.innerHTML = '<div class="slash-empty">No matching commands</div>';
+        slashMenu.hidden = false;
+        return;
+      }
+      if (slashActiveIndex >= slashVisible.length) slashActiveIndex = 0;
+      if (slashActiveIndex < 0) slashActiveIndex = slashVisible.length - 1;
+      var html = '';
+      slashVisible.forEach(function (c, i) {
+        html += '<button type="button" class="slash-item' + (i === slashActiveIndex ? ' active' : '') +
+          '" role="option" data-idx="' + i + '" data-cmd="' + c.cmd.replace(/"/g, '') + '">' +
+          '<span class="slash-cmd-row"><span class="slash-cmd">' + c.cmd + '</span>' +
+          (c.args ? '<span class="slash-args">' + c.args + '</span>' : '') + '</span>' +
+          '<span class="slash-desc">' + c.desc + '</span></button>';
+      });
+      slashMenuList.innerHTML = html;
+      slashMenu.hidden = false;
+      // Keep active item visible
+      var active = slashMenuList.querySelector('.slash-item.active');
+      if (active && active.scrollIntoView) {
+        try { active.scrollIntoView({ block: 'nearest' }); } catch (e) { /* ignore */ }
+      }
+    }
+
+    function updateSlashMenuFromInput() {
+      if (!inputEl) return;
+      var v = inputEl.value;
+      // Show when line starts with / and cursor is still in the command region
+      if (!v.startsWith('/') || v.indexOf('\n') >= 0) {
+        hideSlashMenu();
+        return;
+      }
+      var items = filterSlashCommands(v);
+      if (!items.length && v === '/') {
+        items = SLASH_COMMANDS.slice();
+      }
+      if (!items.length) {
+        hideSlashMenu();
+        return;
+      }
+      // Reset active index when filter set changes size drastically
+      if (slashActiveIndex >= items.length) slashActiveIndex = 0;
+      renderSlashMenu(items, v.split(/\s/)[0] || '/');
+    }
+
+    function applySlashSelection(item) {
+      if (!item || !inputEl) return;
+      var needsArgs = item.args && String(item.args).trim().length > 0;
+      inputEl.value = item.cmd + (needsArgs ? ' ' : '');
+      hideSlashMenu();
+      inputEl.focus();
+      try {
+        var len = inputEl.value.length;
+        inputEl.setSelectionRange(len, len);
+      } catch (e) { /* ignore */ }
+    }
+
+    function isSlashMenuOpen() {
+      return slashMenu && !slashMenu.hidden && slashVisible.length > 0;
+    }
     const fileInput = document.getElementById('fileInput');
     const chipsEl = document.getElementById('chips');
     const attachBtn = document.getElementById('attachBtn');
@@ -5923,19 +6283,147 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
     }
 
+    // Apply saved chat layout (bubble vs terminal AI)
+    applyChatStyle(getChatStyle());
+
+    if (termChatModeEl) {
+      termChatModeEl.addEventListener('change', function () {
+        applyChatStyle(termChatModeEl.checked ? 'term' : 'bubble', { announce: true });
+      });
+    }
+    var menuTermChat = document.getElementById('menuTermChat');
+    if (menuTermChat) {
+      menuTermChat.addEventListener('click', function () {
+        var next = getChatStyle() === 'term' ? 'bubble' : 'term';
+        applyChatStyle(next, { announce: true });
+        try { document.getElementById('appMenu').classList.remove('open'); } catch (e) { /* ignore */ }
+      });
+    }
+
+    // Slash command palette — works in bubble and terminal chat
+    if (inputEl) {
+      inputEl.addEventListener('input', function () {
+        updateSlashMenuFromInput();
+      });
+      inputEl.addEventListener('click', function () {
+        updateSlashMenuFromInput();
+      });
+      inputEl.addEventListener('blur', function () {
+        // Delay so slash item click can fire first
+        setTimeout(function () { hideSlashMenu(); }, 180);
+      });
+    }
+    if (slashMenuList) {
+      slashMenuList.addEventListener('mousedown', function (e) {
+        // prevent blur before click
+        e.preventDefault();
+      });
+      slashMenuList.addEventListener('click', function (e) {
+        var btn = e.target.closest('.slash-item');
+        if (!btn) return;
+        var idx = parseInt(btn.getAttribute('data-idx'), 10);
+        if (!isNaN(idx) && slashVisible[idx]) applySlashSelection(slashVisible[idx]);
+      });
+    }
+
     inputEl.addEventListener('keydown', function (e) {
+      // Slash palette navigation (both chat styles)
+      if (isSlashMenuOpen()) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          slashActiveIndex = (slashActiveIndex + 1) % slashVisible.length;
+          renderSlashMenu(slashVisible, (inputEl.value || '/').split(/\s/)[0]);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          slashActiveIndex = (slashActiveIndex - 1 + slashVisible.length) % slashVisible.length;
+          renderSlashMenu(slashVisible, (inputEl.value || '/').split(/\s/)[0]);
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)) {
+          var item = slashVisible[slashActiveIndex];
+          if (item) {
+            var cur = (inputEl.value || '').trim();
+            var curLow = cur.toLowerCase();
+            // Exact command already typed → run it (Enter). Tab still expands args space.
+            if (e.key === 'Enter' && (curLow === item.cmd || curLow.indexOf(item.cmd + ' ') === 0)) {
+              hideSlashMenu();
+              // fall through to submit below
+            } else if (e.key === 'Tab' || (e.key === 'Enter' && cur.indexOf(' ') < 0)) {
+              // Partial command token → complete selection
+              e.preventDefault();
+              applySlashSelection(item);
+              return;
+            } else {
+              hideSlashMenu();
+            }
+          }
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          hideSlashMenu();
+          return;
+        }
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        hideSlashMenu();
         form.requestSubmit();
       }
     });
 
     form.addEventListener('submit', async function (e) {
       e.preventDefault();
+      hideSlashMenu();
       let prompt = inputEl.value.trim();
       const context = buildContextFromAttachments();
       const images = buildImagesPayload();
       const dial = parseInt(dialEl.value, 10) || 3;
+
+      // Local /mode terminal|chat — no server round-trip
+      if (/^\/mode(\s|$)/i.test(prompt)) {
+        inputEl.value = '';
+        addMsg('user', prompt);
+        var modeArg = prompt.replace(/^\/mode\s*/i, '').trim().toLowerCase();
+        if (!modeArg || modeArg === 'status') {
+          addMsg('sys', 'Chat layout: ' + (getChatStyle() === 'term' ? 'terminal' : 'bubble') +
+            '. Use /mode terminal or /mode chat (or the Terminal chat checkbox).', null, false);
+        } else if (/^(term|terminal|cli|shell)$/.test(modeArg)) {
+          applyChatStyle('term', { announce: true });
+        } else if (/^(chat|bubble|ui|card)$/.test(modeArg)) {
+          applyChatStyle('bubble', { announce: true });
+        } else {
+          addMsg('sys', 'Usage: /mode terminal · /mode chat', null, true);
+        }
+        inputEl.focus();
+        return;
+      }
+
+      // Local /model [id] — set preferred model for current provider
+      if (/^\/model(\s|$)/i.test(prompt)) {
+        inputEl.value = '';
+        addMsg('user', prompt);
+        var mArg = prompt.replace(/^\/model\s*/i, '').trim();
+        var pid = providerEl ? providerEl.value : '';
+        if (!mArg) {
+          addMsg('sys', 'Model for ' + (pid || '?') + ': ' +
+            ((modelEl && modelEl.value) ? modelEl.value : '(provider default)') +
+            '. Set with /model <id> or the Model dropdown.', null, false);
+        } else if (pid && modelBelongsToProvider(pid, mArg)) {
+          ensureModelOption(mArg, mArg);
+          if (modelEl) modelEl.value = mArg;
+          preferredModelsMap[pid] = mArg;
+          pushLocalSettingsToPortal().catch(function () {});
+          addMsg('sys', 'Model set to ' + mArg + ' (' + pid + ').', null, false);
+        } else {
+          addMsg('sys', 'Model "' + mArg + '" does not look like a ' + pid +
+            ' model id. Pick from the Model list or use a matching id.', null, true);
+        }
+        inputEl.focus();
+        return;
+      }
 
       // Slash commands — never sent to the model unless agent shortcut expands to a prompt
       if (prompt.startsWith('/')) {
