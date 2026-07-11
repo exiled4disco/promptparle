@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.22.3'
+    ModuleVersion     = '0.22.4'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -56,6 +56,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.22.4: Local dir list on this PC (C:\); no hardcoded /home/ubuntu product root; [SELF] capabilities + portal/help; local_list tool
 0.22.3: Stop Grounding 0.20 near-quote spam after clean quality gate; high-severity-only grounding; AMTD expansion not flagged when AMTD in evidence
 0.22.2: Quality gate scores product bullets (not markdown-skip / grounding theater); silent when research is source-backed; package always includes local-ui
 0.22.1: Research hands — HTML DDG fallback + domain page auto-fetch into [WEB]/[OBSERVE]; quality gate skips no-evidence meta / thin shells (no 0% spam)

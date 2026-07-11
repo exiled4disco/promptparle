@@ -1155,22 +1155,53 @@ function Resolve-PromptParleTurnLens {
     }
 }
 
+function Get-PromptParleSelfCard {
+    <#
+    .SYNOPSIS
+      0.22.4: compact self-knowledge — what PromptParle is, desktop hands, portal, help.
+      Always-on so the model does not invent a wrong host or hardcode foreign paths.
+    #>
+    $ver = '0.22.4'
+    try {
+        $v = Get-PromptParleClientVersion
+        if ($v) { $ver = [string]$v }
+    } catch {
+        try {
+            if ($MyInvocation.MyCommand.Module -and $MyInvocation.MyCommand.Module.Version) {
+                $ver = [string]$MyInvocation.MyCommand.Module.Version
+            }
+        } catch { }
+    }
+    $os = if ($script:PromptParleIsWindows) { 'Windows' } else { 'Linux/macOS' }
+    $lines = @(
+        "[SELF] PromptParle desktop client v$ver on $os (this PC is the hands)",
+        'Identity: multi-AI eng client — portal optimizes/routes; THIS machine runs tools and holds keys/paths.',
+        'Local (this PC): local_list any path (C:\, /home, …), workspace attach, git, file_index, tree_pack, terminal. Paths never leave the PC for listing.',
+        'Remote (only if SSH connected AND user means remote): ssh_list, ssh_read, ssh_run.',
+        'Web: web_search, web_page. Docs: ```file name=…``` deliverables. Mutate: ```apply path=``` under bound source only.',
+        'Portal: https://promptparle.com — Providers, API keys, Usage (before/after context), Settings, plan.',
+        'Help: /help · /status · /workspace · /ssh · /search · /dial · UI Browse folders + Activity log.',
+        'Routing: "on this PC" / drive letters (C:\) = LOCAL tools. Do not list a remote product root unless asked. Never invent directory listings — use [OBSERVE] results.'
+    )
+    return ($lines -join "`n")
+}
+
 function Get-PromptParleChatSystemPrompt {
     <#
     .SYNOPSIS
-      0.22: multi-AI eng client — native tools on the provider API; desktop is the hands.
-      Pass-through first; optimization is deferred.
+      0.22/0.22.4: multi-AI eng client — native tools; desktop is the hands.
+      Pass-through first; optimization is deferred. Know yourself (see [SELF]).
     #>
     return @(
-        'You are a capable engineering assistant in a continuous connected session (same feel as Grok Build / Claude / Cursor). Natural language only — no modes for the user.',
-        'BRAIN + HANDS: You are the brain (this API call). PromptParle on the user PC executes tools: local workspace, SSH/remote product bind, web fetch, apply/run, document deliver.',
-        'NATIVE TOOLS: Use the provider tool/function calling API for web_search, web_page, ssh_list, ssh_read, ssh_run, workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. The client runs them and returns results. Prefer tools over guessing.',
+        'You are PromptParle''s engineering assistant in a continuous connected session (same feel as Grok Build / Claude / Cursor). Natural language only — no modes for the user.',
+        'BRAIN + HANDS: You are the brain (this API call). PromptParle desktop on the user''s PC executes tools: local filesystem, optional SSH, web fetch, apply/run, document deliver.',
+        'NATIVE TOOLS: web_search, web_page, local_list (THIS PC directories), ssh_list/ssh_read/ssh_run (remote only), workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Prefer tools over guessing.',
+        'HOST ROUTING: "on this PC" / Windows paths (C:\) / local folders → local_list or workspace tools. SSH/product host only when the user means remote or [CONN] shows an SSH target they asked about. Never substitute a hardcoded server path for a local request.',
         'FORBIDDEN: never emit toolcall/tool_call/function_call XML, HTML tool tags, markdown hands fences, or fake tool theater as the user-visible answer. Only real tool calls or a final prose answer.',
-        'When evidence is enough: answer clearly. NEVER answer with the method (no run-ls homework, no search-yourself). NEVER Generating-now without a file fence body for user documents.',
-        'MUTATE: apply path=rel full files under source_root (client writes, backups, never live /var/www). run allowlisted pipeline only. Client reports What changed.',
+        'When evidence is enough: answer clearly. NEVER answer with the method (no run-ls homework). NEVER Generating-now without a file fence body for user documents.',
+        'MUTATE: apply path=rel full files under source_root when a product bind exists (client writes, backups). Never invent a product root. run allowlisted pipeline only.',
         'DELIVER: user docs need ```file name=Report.md``` (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
-        'PLAN: for non-trivial mutate, brief plan + blast radius; on clear go-ahead implement same turn. Connection context may include [CONN][PROJECT][SSH] — trust live evidence over invention.',
-        'Do not invent product capabilities not supported by tool results or user attachments. Opaque outcomes are bugs: tool result, apply/run/file, or one hard blocker.'
+        'Trust [SELF][CONN][PROJECT][OBSERVE][WEB][SSH] live evidence over invention. Opaque outcomes are bugs: tool result, apply/run/file, or one hard blocker.'
     ) -join ' '
 }
 
@@ -1238,15 +1269,28 @@ function Resolve-PromptParleProductBind {
     <#
     .SYNOPSIS
       Durable product roots for this session. Prefer saved bind; else infer from SSH/workspace.
-      Mapping handoff cwd is NOT product root — monorepo is.
+      0.22.4: NEVER invent /home/ubuntu/... on machines where it does not exist.
     #>
     [CmdletBinding()]
     param()
-    $defaultRoot = '/home/ubuntu/projects/promptparle'
-    $defaultLive = '/var/www/promptparle'
+    # Only use path defaults that exist on THIS host (dev box), never hardcode for end users
+    $devRootCandidates = @(
+        '/home/ubuntu/projects/promptparle',
+        '/var/www/promptparle'
+    )
+    $defaultRoot = ''
+    $defaultLive = ''
+    foreach ($c in $devRootCandidates) {
+        if ($c -match '/projects/promptparle' -and (Test-Path -LiteralPath $c -PathType Container -ErrorAction SilentlyContinue)) {
+            $defaultRoot = $c
+        }
+        if ($c -match '/var/www/promptparle' -and (Test-Path -LiteralPath $c -PathType Container -ErrorAction SilentlyContinue)) {
+            $defaultLive = $c
+        }
+    }
     $root = ''
     $live = ''
-    $src = 'default'
+    $src = 'unbound'
     try {
         $st = Get-PromptParleSessionState
         $root = [string](Get-PromptParleProp $st 'product_root' '')
@@ -1255,25 +1299,26 @@ function Resolve-PromptParleProductBind {
         $sshCwd = [string](Get-PromptParleProp $st 'ssh_cwd' '')
         $wsPath = [string](Get-PromptParleProp $st 'workspace_path' '')
         if (-not $root) {
-            if ($sshCwd -match '(?i)/promptparle/?$') {
+            if ($sshCwd -match '(?i)/promptparle' -and $sshCwd.Trim()) {
                 $root = $sshCwd.TrimEnd('/\')
                 $src = 'ssh_cwd'
-            } elseif ($sshCwd -match '(?i)ExampleCorp-Mapping') {
-                # Handoff mirror only — bind monorepo
+            } elseif ($wsPath -and (Test-Path -LiteralPath $wsPath -PathType Container -ErrorAction SilentlyContinue)) {
+                # Workspace is a real local folder the user attached — not a fake server root
+                if ($wsPath -match '(?i)promptparle') {
+                    $root = $wsPath
+                    $src = 'workspace'
+                }
+            } elseif ($defaultRoot) {
+                # Dev host only (path exists here)
                 $root = $defaultRoot
-                $src = 'handoff_mirror→monorepo'
-            } elseif ($wsPath -match '(?i)promptparle') {
-                $root = $wsPath
-                $src = 'workspace'
-            } elseif ([string](Get-PromptParleProp $st 'ssh_target' '')) {
-                # SSH up, no better signal — product host default
-                $root = $defaultRoot
-                $src = 'ssh_host_default'
+                $src = 'local_dev_default'
             }
         }
         if (-not $live) {
-            if ($root -eq $defaultRoot -or $root -match '(?i)/promptparle') {
+            if ($defaultLive -and ($root -eq $defaultRoot -or $root -match '(?i)/promptparle')) {
                 $live = $defaultLive
+            } elseif ($root -match '(?i)/promptparle' -and (Test-Path -LiteralPath '/var/www/promptparle' -ErrorAction SilentlyContinue)) {
+                $live = '/var/www/promptparle'
             }
         }
     } catch {
@@ -1281,47 +1326,65 @@ function Resolve-PromptParleProductBind {
         $live = $defaultLive
         $src = 'fallback'
     }
-    if (-not $root) { $root = $defaultRoot; if ($src -eq 'default') { $src = 'product_default' } }
-    if (-not $live) { $live = $defaultLive }
-    # Persist bind so next turns don't re-infer from bad cwd
-    try {
-        $st2 = Get-PromptParleSessionState
-        $needSave = $false
-        if (-not [string](Get-PromptParleProp $st2 'product_root' '')) {
-            $st2 = New-PromptParleSessionSnapshot -Base $st2 -ProductRoot $root -ProductLive $live
-            $needSave = $true
-        } elseif (-not [string](Get-PromptParleProp $st2 'product_live' '')) {
-            $st2 = New-PromptParleSessionSnapshot -Base $st2 -ProductLive $live
-            $needSave = $true
+    # Do NOT invent roots — unbound is honest for desktop users
+    if ($root -and -not (Test-Path -LiteralPath $root -ErrorAction SilentlyContinue)) {
+        # Session remembered a foreign path (e.g. shipped hardcode) — drop it
+        if ($root -match '(?i)/home/ubuntu/projects/promptparle' -and -not $defaultRoot) {
+            $root = ''
+            $src = 'cleared_foreign_default'
         }
-        if ($needSave) { Save-PromptParleSessionState -State $st2 }
-    } catch { }
+    }
+    # Persist only real binds
+    if ($root) {
+        try {
+            $st2 = Get-PromptParleSessionState
+            $needSave = $false
+            if (-not [string](Get-PromptParleProp $st2 'product_root' '')) {
+                $st2 = New-PromptParleSessionSnapshot -Base $st2 -ProductRoot $root -ProductLive $live
+                $needSave = $true
+            } elseif ($live -and -not [string](Get-PromptParleProp $st2 'product_live' '')) {
+                $st2 = New-PromptParleSessionSnapshot -Base $st2 -ProductLive $live
+                $needSave = $true
+            }
+            if ($needSave) { Save-PromptParleSessionState -State $st2 }
+        } catch { }
+    }
+    $public = if ($live) { ($live.TrimEnd('/\') + '/public') } else { '' }
     return [pscustomobject]@{
         root   = $root
         live   = $live
-        public = ($live.TrimEnd('/\') + '/public')
+        public = $public
         source = $src
+        bound  = [bool]$root
     }
 }
 
 function Get-PromptParleProjectCard {
     <#
     .SYNOPSIS
-      Always-on tiny project map (~150-250 tokens). Architecture layer — not a one-off pack.
+      Always-on tiny project map. Unbound when no real product root on this PC.
     #>
     [CmdletBinding()]
     param(
         [string]$TurnKind = 'chat'
     )
     $b = Resolve-PromptParleProductBind
+    if (-not $b.bound) {
+        return @(
+            '[PROJECT] no product source_root bound on this PC',
+            'Desktop can still list local paths, use workspace/SSH/web tools.',
+            'Bind: attach /workspace <repo> or /ssh user@host with product cwd when implementing a product tree.',
+            "turn: $TurnKind · do not invent /home/ubuntu or /var/www paths"
+        ) -join "`n"
+    }
     $lines = @(
-        '[PROJECT] product bind (always — handoff/docs are maps into these roots)',
+        '[PROJECT] product bind (handoff/docs map into these roots when present)',
         "source_root: $($b.root)",
         "live_app: $($b.live)",
         "live_public: $($b.public)",
         'layout: portal=src/app + prisma + src/lib · desktop=powershell/PromptParle (+ local-ui) · ship=public/ + live_public',
         "bind: $($b.source) · turn: $TurnKind",
-        'rule: answer from [PROJECT]/evidence; implement under source_root; deploy to live_*; do not claim portal missing because only a handoff mirror was in SSH cwd'
+        'rule: answer from [PROJECT]/evidence; implement under source_root; deploy to live_* only when that host is real'
     )
     return ($lines -join "`n")
 }
@@ -3156,6 +3219,18 @@ function Invoke-PromptParleLocalTool {
             $q = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
             return Invoke-PromptParleWebSearchLocal -Query $q
         }
+        { $_ -in @('local_list', 'dir_list', 'listdir', 'local_dir') } {
+            $path = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
+            $listing = Invoke-PromptParleLocalDirListing -LocalPath $path -MaxChars 7000
+            return [pscustomobject]@{
+                ok    = [bool]$listing.ok
+                tool  = 'local_list'
+                local = $true
+                text  = if ($listing.text) { $listing.text } else { "Could not list local path: $path" }
+                notes = @($listing.notes)
+                path  = $listing.path
+            }
+        }
         'error_brief' {
             $r = Invoke-PromptParleErrorBriefLocal -Text $Text -Prompt $Arg
             return [pscustomobject]@{
@@ -3180,7 +3255,35 @@ function Invoke-PromptParleLocalTool {
                 chars_in = $r.chars_in; chars_out = $r.chars_out
             }
         }
-        { $_ -in @('ssh_list', 'list', 'ls') } {
+        { $_ -in @('list', 'ls', 'dir') } {
+            # Smart route: Windows / no SSH → local; else SSH
+            $path = if ($Arg) { $Arg } else { '' }
+            $useLocal = $true
+            if ($path -match '^[A-Za-z]:') { $useLocal = $true }
+            elseif ($path -match '(?i)^(/home|/var|/opt|/usr|/tmp|/etc|~)') {
+                $hasSsh = $false
+                try {
+                    $st = Get-PromptParleSessionState
+                    $hasSsh = [bool][string](Get-PromptParleProp $st 'ssh_target' '')
+                } catch { }
+                $useLocal = -not $hasSsh
+            }
+            if ($useLocal) {
+                $r = Invoke-PromptParleLocalDirListing -LocalPath $path -MaxChars 6000
+                return [pscustomobject]@{
+                    ok = [bool]$r.ok; tool = 'local_list'; local = $true
+                    text = $(if ($r.text) { $r.text } else { "local_list failed: $($r.notes -join ', ')" })
+                    notes = @($r.notes); path = $r.path
+                }
+            }
+            $r = Invoke-PromptParleSshDirListing -RemotePath $path -MaxChars 6000
+            return [pscustomobject]@{
+                ok = [bool]$r.ok; tool = 'ssh_list'; local = $true
+                text = $(if ($r.text) { $r.text } else { "ssh_list failed: $($r.notes -join ', ')" })
+                notes = @($r.notes); path = $r.path
+            }
+        }
+        'ssh_list' {
             $path = if ($Arg) { $Arg } else { '' }
             $r = Invoke-PromptParleSshDirListing -RemotePath $path -MaxChars 6000
             return [pscustomobject]@{
@@ -3373,7 +3476,7 @@ function Invoke-PromptParleWorkspaceFind {
 function Get-PromptParleHandsCatalogBrief {
     return @(
         '[HANDS] client tools (0 AI tokens). Request with a hands fence: lines tool: arg',
-        'web_search: q | web_page: url|domain | ssh_list: path | ssh_read: path | ssh_run: allowlisted-cmd',
+        'web_search: q | web_page: url|domain | local_list: C:\path | ssh_list: path | ssh_read: path | ssh_run: allowlisted-cmd',
         'workspace_find: *.md,*.pdf | query | relevant_slice: q | file_index | git_diff | git | connections | tree_pack: depth',
         'After [HANDS] results: answer or apply/run/file. Never teach the user the method.'
     ) -join "`n"
@@ -3549,8 +3652,9 @@ function Invoke-PromptParleHandsRequest {
     )
     $id = $Tool.ToLowerInvariant().Trim()
     switch ($id) {
-        'ls' { $id = 'ssh_list' }
-        'list' { $id = 'ssh_list' }
+        'ls' { $id = 'list' }       # smart local/ssh router in LocalTool
+        'dir' { $id = 'list' }
+        'local_list' { $id = 'local_list' }
         'search' { $id = 'web_search' }
         'web' { $id = 'web_search' }
         'fetch' { $id = 'web_page' }
@@ -3674,7 +3778,8 @@ function Get-PromptParleNativeToolDefinitions {
     return @(
         (& $mk 'web_search' 'Search the web for public information. Returns brief results.')
         (& $mk 'web_page' 'Fetch a URL or domain homepage as plain text.')
-        (& $mk 'ssh_list' 'List a directory on the connected SSH/product host.')
+        (& $mk 'local_list' 'List a directory on THIS PC (Windows C:\ or local paths). Use for "on this PC" requests — not SSH.')
+        (& $mk 'ssh_list' 'List a directory on the connected SSH/product host (remote only).')
         (& $mk 'ssh_read' 'Read a file on the connected SSH host.')
         (& $mk 'ssh_run' 'Run an allowlisted pipeline command on SSH (build/test/git status-class).')
         (& $mk 'workspace_find' 'Find files in the local workspace by glob/query.')
@@ -4676,20 +4781,33 @@ function Get-PromptParleDomainsFromText {
 }
 
 function Get-PromptParlePathsFromText {
-    <# Absolute or project-looking paths for observe list/read. #>
+    <# Absolute or project-looking paths for observe list/read (Windows + Unix). #>
     param([string]$Text = '')
     $out = New-Object System.Collections.Generic.List[string]
     $seen = @{}
     if (-not $Text) { return @() }
-    foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9_])((?:/home|/var|/opt|/usr|/tmp|/etc|~)[A-Za-z0-9_./+\-]{2,220})')) {
-        $p = $m.Groups[1].Value.Trim().TrimEnd('.,);:')
+    $add = {
+        param([string]$p)
+        if (-not $p) { return }
+        $p = $p.Trim().TrimEnd('.,);:''"')
+        if (-not $p) { return }
         $k = $p.ToLowerInvariant()
         if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($p) }
     }
+    # Windows drive paths: C:\  C:\Users\me  C:/Windows
+    foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9])([A-Za-z]:\\[^\s"''<>|?]{0,220}|[A-Za-z]:/[^\s"''<>|?]{0,220}|[A-Za-z]:\\|[A-Za-z]:/)')) {
+        & $add $m.Groups[1].Value
+    }
+    # Bare drive mention: "of C:" / "drive C"
+    foreach ($m in [regex]::Matches($Text, '(?i)\b(?:of|on|drive|path)\s+([A-Za-z]):(?:\b|\\|/|\s|$)')) {
+        & $add ($m.Groups[1].Value.ToUpperInvariant() + ':\')
+    }
+    # Unix absolute
+    foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9_])((?:/home|/var|/opt|/usr|/tmp|/etc|~)[A-Za-z0-9_./+\-]{0,220})')) {
+        & $add $m.Groups[1].Value
+    }
     foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9_])((?:\./|\.\./)[A-Za-z0-9_./+\-]{1,200})')) {
-        $p = $m.Groups[1].Value.Trim().TrimEnd('.,);:')
-        $k = $p.ToLowerInvariant()
-        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; [void]$out.Add($p) }
+        & $add $m.Groups[1].Value
     }
     return @($out.ToArray())
 }
@@ -4740,6 +4858,31 @@ function Resolve-PromptParleTurnObligation {
         $wantList = $true
     }
 
+    # Local vs SSH list routing (0.22.4) — never send "on this PC / C:\" to product SSH root
+    $wantLocalList = $false
+    $wantSshList = $false
+    $thisPc = [bool]($p -match '(?i)\b(on this (pc|computer|machine|box)|this (pc|computer|machine)|local(ly)?\b|my (pc|computer|machine)|windows (pc|machine|drive))\b')
+    $remoteLang = [bool]($p -match '(?i)\b(remote|over ssh|via ssh|on the (server|host|box|node|unit|appliance)|product (root|host)|ssh (host|target))\b')
+    $winPaths = @($paths | Where-Object { $_ -match '^[A-Za-z]:' })
+    $unixPaths = @($paths | Where-Object { $_ -match '^(?:/|~)' })
+    $hasSsh = $false
+    try {
+        $st0 = Get-PromptParleSessionState
+        $hasSsh = [bool][string](Get-PromptParleProp $st0 'ssh_target' '')
+    } catch { }
+    if ($wantList) {
+        if ($thisPc -or $winPaths.Count -gt 0) {
+            $wantLocalList = $true
+        } elseif ($remoteLang -or ($hasSsh -and $unixPaths.Count -gt 0 -and -not $thisPc)) {
+            $wantSshList = $true
+        } else {
+            # Default desktop: local listing (not a foreign product root)
+            $wantLocalList = $true
+        }
+    }
+    # Keep want_list as any list for mode=observe
+    if ($wantLocalList -or $wantSshList) { $wantList = $true }
+
     $wantDeliver = [bool]($p -match '(?i)\b(one[\s-]?page|one[\s-]?pager|executive summary|write me (a |an )?(article|summary|brief|report|pdf|docx|document)|deliverable|download(able)?|as (a )?(pdf|docx|markdown|md)\b)')
     if ($open.kind -eq 'document' -and $p -match '(?i)\b(from the website|from (their|the) site|do it|generate|again|now|updated|strictly)\b') {
         $wantDeliver = $true
@@ -4779,7 +4922,8 @@ function Resolve-PromptParleTurnObligation {
 
     $observe = New-Object System.Collections.Generic.List[string]
     if ($wantWeb) { [void]$observe.Add('web') }
-    if ($wantList) { [void]$observe.Add('ssh_list') }
+    if ($wantLocalList) { [void]$observe.Add('local_list') }
+    if ($wantSshList) { [void]$observe.Add('ssh_list') }
     if ($wantRead) { [void]$observe.Add('ssh_read') }
 
     return [pscustomobject]@{
@@ -4787,6 +4931,8 @@ function Resolve-PromptParleTurnObligation {
         observe    = @($observe.ToArray())
         want_web   = $wantWeb
         want_list  = $wantList
+        want_local_list = $wantLocalList
+        want_ssh_list   = $wantSshList
         want_read  = $wantRead
         want_deliver = $wantDeliver
         want_mutate  = $wantMutate
@@ -4839,6 +4985,78 @@ function Invoke-PromptParleWebPageFetch {
         return [pscustomobject]@{ ok = $true; text = $t; url = $url; notes = @('page-fetch'); bytes = $t.Length }
     } catch {
         return [pscustomobject]@{ ok = $false; text = ''; url = $url; notes = @("page-fail: $_") }
+    }
+}
+
+function Invoke-PromptParleLocalDirListing {
+    <#
+    .SYNOPSIS
+      0.22.4: list a directory on THIS PC (not SSH). Used for "on this PC" / C:\ / local paths.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$LocalPath = '',
+        [int]$MaxChars = 7000
+    )
+    $target = if ($null -eq $LocalPath) { '' } else { $LocalPath.Trim() }
+    # Normalize bare drive "C:" → "C:\"
+    if ($target -match '^[A-Za-z]:$') { $target = $target + '\' }
+    if ($target -match '^[A-Za-z]:/$') { $target = $target.Substring(0, 2) + '\' }
+
+    if (-not $target) {
+        $ws = $null
+        try { $ws = Get-PromptParleWorkspace } catch { }
+        if ($ws -and $ws.exists -and $ws.path) { $target = [string]$ws.path }
+        else {
+            try { $target = [string](Get-PromptParleHomePath) } catch { $target = '' }
+        }
+    }
+    if (-not $target) {
+        return [pscustomobject]@{
+            ok = $false; text = ''; path = ''; notes = @('local-list: no path')
+        }
+    }
+
+    try {
+        if (-not (Test-Path -LiteralPath $target)) {
+            return [pscustomobject]@{
+                ok = $false; text = "Path not found on this PC: $target"; path = $target
+                notes = @('local-list: missing')
+            }
+        }
+        $item = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer) {
+            return [pscustomobject]@{
+                ok = $false; text = "Not a directory: $target"; path = $target
+                notes = @('local-list: not-dir')
+            }
+        }
+        $full = $item.FullName
+        $list = Get-PromptParleFsList -Path $full -Max 200
+        $lines = New-Object System.Collections.Generic.List[string]
+        [void]$lines.Add("PATH $full")
+        [void]$lines.Add('TYPE directory')
+        [void]$lines.Add('HOST This PC (local)')
+        foreach ($e in @($list.entries)) {
+            if ($e.is_dir) {
+                $mark = if ($e.is_git) { ' [git]' } else { '' }
+                [void]$lines.Add(("d  {0}/{1}" -f $e.name, $mark))
+            } else {
+                $sz = if ($null -ne $e.size) { [string]$e.size } else { '' }
+                [void]$lines.Add(("f  {0}  {1}" -f $e.name, $sz))
+            }
+        }
+        if (-not $list.entries -or $list.entries.Count -eq 0) { [void]$lines.Add('(empty)') }
+        [void]$lines.Add('EXIT 0')
+        $text = ($lines -join "`n")
+        if ($text.Length -gt $MaxChars) { $text = $text.Substring(0, $MaxChars) + "`n…[list budget]" }
+        return [pscustomobject]@{
+            ok = $true; text = $text; path = $full; notes = @('local-list')
+        }
+    } catch {
+        return [pscustomobject]@{
+            ok = $false; text = "$_"; path = $target; notes = @("local-list-fail: $_")
+        }
     }
 }
 
@@ -4985,15 +5203,59 @@ function Invoke-PromptParleObservePrep {
         }
     }
 
-    # --- SSH directory listing ---
-    if ($Obligation.want_list) {
+    # --- Local directory listing (this PC) ---
+    $doLocalList = $false
+    try { $doLocalList = [bool]$Obligation.want_local_list } catch { }
+    if (-not $doLocalList) {
+        # Back-compat: want_list without ssh flag → local on desktop
+        try {
+            if ($Obligation.want_list -and -not $Obligation.want_ssh_list) { $doLocalList = $true }
+        } catch {
+            if ($Obligation.want_list) { $doLocalList = $true }
+        }
+    }
+    if ($doLocalList) {
+        $listPaths = New-Object System.Collections.Generic.List[string]
+        foreach ($p in @($Obligation.paths)) {
+            if ($p -match '\.[A-Za-z0-9]{1,8}$' -and $p -notmatch '[/\\]$' -and $p -notmatch '^[A-Za-z]:\\?$') { continue }
+            # Prefer Windows / local-looking paths for local list
+            if ($p -match '^[A-Za-z]:' -or $p -match '^(?:/|~|\./)') { [void]$listPaths.Add($p) }
+            elseif ($p) { [void]$listPaths.Add($p) }
+        }
+        if ($listPaths.Count -eq 0) { [void]$listPaths.Add('') }  # workspace or home — NOT product SSH root
+
+        $anyList = $false
+        foreach ($lp in @($listPaths | Select-Object -First 2)) {
+            $listing = Invoke-PromptParleLocalDirListing -LocalPath $lp -MaxChars $listBudget
+            if ($listing.ok -and $listing.text) {
+                $blocks.Add("[OBSERVE] kind=local_list client-first (0.22.4)`npath: $($listing.path)`nhost: This PC`nrule: Present this listing as the answer for the LOCAL path the user asked about. NEVER substitute a remote/product path. NEVER reply with homework commands.`n---`n$($listing.text)")
+                [void]$fulfilled.Add("local_list:$($listing.path)")
+                [void]$notes.Add('observe-local-list')
+                [void]$tools.Add('local_list')
+                $anyList = $true
+            } else {
+                foreach ($n in @($listing.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+                [void]$failed.Add("local_list:$($listing.path)")
+            }
+        }
+        if (-not $anyList) {
+            $blocks.Add("[OBSERVE] kind=local_list_failed client-first (0.22.4)`nrule: Client could not list the local path on this PC. State the hard blocker (path missing / access). Do not invent a directory listing or show a remote product tree.")
+            [void]$notes.Add('observe-local-list-empty')
+        }
+    }
+
+    # --- SSH directory listing (remote only) ---
+    $doSshList = $false
+    try { $doSshList = [bool]$Obligation.want_ssh_list } catch { }
+    if ($doSshList) {
         $listPaths = New-Object System.Collections.Generic.List[string]
         foreach ($p in @($Obligation.paths)) {
             # Prefer directories over file-looking paths for list
             if ($p -match '\.[A-Za-z0-9]{1,8}$' -and $p -notmatch '/$') { continue }
+            if ($p -match '^[A-Za-z]:') { continue }  # Windows paths are local
             [void]$listPaths.Add($p)
         }
-        if ($listPaths.Count -eq 0) { [void]$listPaths.Add('') }  # default product root / ssh_cwd
+        if ($listPaths.Count -eq 0) { [void]$listPaths.Add('') }  # ssh_cwd / product root when remote intended
 
         $anyList = $false
         foreach ($lp in @($listPaths | Select-Object -First 2)) {
@@ -6175,11 +6437,24 @@ function Invoke-PromptParleAgentLocalPrep {
         $notes.Add('conn-skip')
     }
 
-    # 0a) Always-on [PROJECT] bind card — structural map (not keyword pack)
+    # 0a) Always-on [SELF] — identity, capabilities, portal, help (0.22.4)
+    try {
+        $selfCard = Get-PromptParleSelfCard
+        if ($selfCard -and $ctx -notmatch '(?m)^\[SELF\]') {
+            if ($ctx) { $ctx = $selfCard + "`n`n" + $ctx } else { $ctx = $selfCard }
+            $notes.Add('self-card')
+        }
+    } catch {
+        $notes.Add('self-card-skip')
+    }
+
+    # 0a2) Always-on [PROJECT] bind card — only when a real bind exists (or unbound notice)
     try {
         $projCard = Get-PromptParleProjectCard -TurnKind $turnKind
         if ($projCard -and $ctx -notmatch '(?m)^\[PROJECT\]') {
-            if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+            if ($ctx -match '(?s)^(\[SELF\][\s\S]*?)(\n\n|$)(.*)$') {
+                $ctx = $Matches[1] + "`n`n" + $projCard + $(if ($Matches[3]) { "`n`n" + $Matches[3] } else { '' })
+            } elseif ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
                 $ctx = $Matches[1] + "`n`n" + $projCard + "`n`n" + $Matches[2]
             } elseif ($ctx) {
                 $ctx = $projCard + "`n`n" + $ctx
