@@ -4802,13 +4802,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       if (profileEl) profileEl.value = 'general';
       if (agentSelect) agentSelect.value = 'none';
-      // Model after provider options exist
-      if (s.model && modelEl) {
-        ensureModelOption(s.model, s.model);
-        modelEl.value = s.model;
-      } else {
-        fillModelsForProvider(providerEl.value, { preferred: s.model || null });
-      }
+      // Model list is always scoped to the selected provider only
+      fillModelsForProvider(providerEl.value, {
+        preferred: modelBelongsToProvider(providerEl.value, s.model) ? s.model : null
+      });
       updateAgentMeta(s);
       applyWorkspaceUi(s);
     }
@@ -5517,17 +5514,19 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         // Portal chat prefs (heartbeat/entitlements carry preferred_* + dial/tools)
         if (data) {
           if (data.preferred_models && typeof data.preferred_models === 'object') {
-            preferredModelsMap = Object.assign({}, preferredModelsMap, data.preferred_models);
+            // Only accept per-provider models that belong to that provider
+            Object.keys(data.preferred_models).forEach(function (pid) {
+              var mid = data.preferred_models[pid];
+              if (modelBelongsToProvider(pid, mid)) preferredModelsMap[pid] = mid;
+            });
           }
           if (data.preferred_provider) preferredProviderId = data.preferred_provider;
           if (!settingsSyncQuiet) {
             if (data.preferred_provider && providerEl.querySelector('option[value="' + data.preferred_provider + '"]')) {
               if (!providerEl.value || providerEl.value === data.preferred_provider) {
                 providerEl.value = data.preferred_provider;
+                fillModelsForProvider(providerEl.value);
               }
-            }
-            if (typeof data.default_dial === 'number' && data.default_dial >= 1 && data.default_dial <= 5) {
-              // Only seed dial if still at default-ish on first load; session apply wins after
             }
             if (typeof data.default_tools_enabled === 'boolean' && toolsEnabledEl && !window.__ppToolsUserTouched) {
               toolsEnabledEl.checked = !!data.default_tools_enabled;
@@ -5547,8 +5546,25 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
     }
 
+    /** Keep model ids isolated per provider (never show gpt-* under Grok, etc.). */
+    function modelBelongsToProvider(providerId, modelId) {
+      if (!modelId || !providerId) return false;
+      var id = String(modelId).trim().toLowerCase();
+      if (!id) return false;
+      var p = String(providerId).toLowerCase();
+      if (p === 'openai') return /^(gpt-|o[1-9]|chatgpt-|ft:gpt-)/i.test(id);
+      if (p === 'anthropic') return /claude/i.test(id);
+      if (p === 'gemini') return /gemini/i.test(id);
+      if (p === 'grok') return /grok/i.test(id);
+      return false;
+    }
+
     function ensureModelOption(id, label) {
       if (!modelEl || !id) return;
+      // Never inject a foreign model into the current provider's list
+      if (providerEl && providerEl.value && !modelBelongsToProvider(providerEl.value, id)) {
+        return;
+      }
       var exists = false;
       for (var i = 0; i < modelEl.options.length; i++) {
         if (modelEl.options[i].value === id) { exists = true; break; }
@@ -5563,15 +5579,27 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     function fillModelsForProvider(providerId, opts) {
       opts = opts || {};
-      if (!modelEl) return;
+      if (!modelEl || !providerId) return;
+      // Never repaint for a provider that is no longer selected (async race guard)
+      if (providerEl && providerEl.value && providerEl.value !== providerId) {
+        return;
+      }
       var cache = providerModelCache[providerId] || {};
-      var models = cache.models || [];
-      var preferred = opts.preferred || preferredModelsMap[providerId] || cache.preferred || cache.default || '';
+      // Strict filter: only this provider's models
+      var models = (cache.models || []).filter(function (m) {
+        return m && m.id && modelBelongsToProvider(providerId, m.id);
+      });
+      var preferredRaw = opts.preferred || preferredModelsMap[providerId] || cache.preferred || cache.default || '';
+      var preferred = modelBelongsToProvider(providerId, preferredRaw) ? preferredRaw : '';
+      if (!preferred && cache.default && modelBelongsToProvider(providerId, cache.default)) {
+        preferred = cache.default;
+      }
       modelEl.innerHTML = '';
+      modelEl.setAttribute('data-provider', providerId);
       if (!models.length) {
-        var fallback = preferred || cache.default || '';
+        var fallback = preferred || (modelBelongsToProvider(providerId, cache.default) ? cache.default : '');
         if (fallback) {
-          ensureModelOption(fallback, fallback + ' (preferred)');
+          ensureModelOption(fallback, fallback + (preferred === fallback ? ' (preferred)' : ''));
           modelEl.value = fallback;
         } else {
           var empty = document.createElement('option');
@@ -5584,9 +5612,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       models.forEach(function (m) {
         var opt = document.createElement('option');
         opt.value = m.id;
-        var src = m.source === 'live' ? '' : (m.source === 'curated' ? '' : '');
         opt.textContent = m.label || m.id;
         if (m.source === 'live') opt.title = 'From provider API';
+        else if (m.source === 'curated') opt.title = 'Curated catalog';
         modelEl.appendChild(opt);
       });
       if (preferred) {
@@ -5599,25 +5627,42 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     async function loadModelsForProvider(providerId, refresh) {
       if (!providerId) return;
+      var reqProvider = providerId;
       try {
         var url = '/api/models?provider=' + encodeURIComponent(providerId);
         if (refresh) url += '&refresh=1';
         const res = await fetch(url, { cache: 'no-store' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'models failed');
-        providerModelCache[providerId] = {
-          models: data.models || [],
-          preferred: data.preferred_model || null,
+        // Ignore stale responses if user switched provider mid-flight
+        if (providerEl && providerEl.value && providerEl.value !== reqProvider) {
+          // still cache for when they switch back
+          providerModelCache[reqProvider] = {
+            models: (data.models || []).filter(function (m) {
+              return m && m.id && modelBelongsToProvider(reqProvider, m.id);
+            }),
+            preferred: modelBelongsToProvider(reqProvider, data.preferred_model) ? data.preferred_model : null,
+            default: data.default_model || null,
+            live: !!data.live
+          };
+          return;
+        }
+        providerModelCache[reqProvider] = {
+          models: (data.models || []).filter(function (m) {
+            return m && m.id && modelBelongsToProvider(reqProvider, m.id);
+          }),
+          preferred: modelBelongsToProvider(reqProvider, data.preferred_model) ? data.preferred_model : null,
           default: data.default_model || null,
           live: !!data.live
         };
-        if (data.preferred_model) {
-          preferredModelsMap[providerId] = data.preferred_model;
+        if (data.preferred_model && modelBelongsToProvider(reqProvider, data.preferred_model)) {
+          preferredModelsMap[reqProvider] = data.preferred_model;
         }
-        fillModelsForProvider(providerId);
+        fillModelsForProvider(reqProvider);
       } catch (e) {
-        // keep curated cache from providers payload if present
-        fillModelsForProvider(providerId);
+        if (!providerEl || !providerEl.value || providerEl.value === reqProvider) {
+          fillModelsForProvider(reqProvider);
+        }
       }
     }
 
@@ -5768,31 +5813,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (!res.ok) throw new Error(data.error || 'Failed to load providers');
       providerEl.innerHTML = '';
       if (data.preferred_models && typeof data.preferred_models === 'object') {
-        preferredModelsMap = Object.assign({}, preferredModelsMap, data.preferred_models);
+        Object.keys(data.preferred_models).forEach(function (pid) {
+          var mid = data.preferred_models[pid];
+          if (modelBelongsToProvider(pid, mid)) preferredModelsMap[pid] = mid;
+        });
       }
       if (data.preferred_provider) preferredProviderId = data.preferred_provider;
       (data.providers || []).forEach(function (p) {
+        if (!p || !p.id) return;
         const opt = document.createElement('option');
         opt.value = p.id;
         opt.textContent = p.name + (p.configured ? '' : ' (not configured)');
         opt.disabled = !p.configured;
         if (p.configured) providerEl.appendChild(opt);
-        // Cache model catalogs from providers payload (curated + live when available)
-        if (p.models && p.models.length) {
-          providerModelCache[p.id] = {
-            models: p.models,
-            preferred: p.preferred_model || preferredModelsMap[p.id] || p.default_model,
-            default: p.default_model,
-            live: !!p.models_live
-          };
-        } else {
-          providerModelCache[p.id] = {
-            models: [],
-            preferred: p.preferred_model || preferredModelsMap[p.id] || p.default_model,
-            default: p.default_model,
-            live: false
-          };
-        }
+        // Cache model catalogs per provider — strict filter so lists never cross-contaminate
+        var rawModels = Array.isArray(p.models) ? p.models : [];
+        var ownModels = rawModels.filter(function (m) {
+          return m && m.id && modelBelongsToProvider(p.id, m.id);
+        });
+        var pref = p.preferred_model || preferredModelsMap[p.id] || p.default_model;
+        if (!modelBelongsToProvider(p.id, pref)) pref = p.default_model;
+        providerModelCache[p.id] = {
+          models: ownModels,
+          preferred: modelBelongsToProvider(p.id, pref) ? pref : null,
+          default: p.default_model,
+          live: !!p.models_live
+        };
       });
       if (!providerEl.options.length) {
         (data.providers || []).forEach(function (p) {
@@ -5815,16 +5861,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     if (providerEl) {
       providerEl.addEventListener('change', function () {
-        fillModelsForProvider(providerEl.value);
-        loadModelsForProvider(providerEl.value, false).catch(function () {});
-        // Persist preferred provider to portal (best-effort)
+        var pid = providerEl.value;
+        // Immediately show only this provider's models (never leave previous list visible)
+        fillModelsForProvider(pid);
+        loadModelsForProvider(pid, false).catch(function () {});
+        // Persist preferred provider + its model to portal (best-effort)
         pushLocalSettingsToPortal().catch(function () {});
       });
     }
     if (modelEl) {
       modelEl.addEventListener('change', function () {
         if (providerEl && providerEl.value && modelEl.value) {
-          preferredModelsMap[providerEl.value] = modelEl.value;
+          if (modelBelongsToProvider(providerEl.value, modelEl.value)) {
+            preferredModelsMap[providerEl.value] = modelEl.value;
+          }
         }
         pushLocalSettingsToPortal().catch(function () {});
       });
@@ -6038,7 +6088,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           optimize_only: optOnly,
           tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         };
-        if (modelEl && modelEl.value) {
+        if (modelEl && modelEl.value && modelBelongsToProvider(providerEl.value, modelEl.value)) {
           payload.model = modelEl.value;
         }
         if (hist.length) {

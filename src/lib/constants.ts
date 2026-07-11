@@ -17,7 +17,7 @@ export const PROVIDERS = [
   {
     id: "openai",
     name: "OpenAI",
-    description: "GPT-4.1, GPT-4o, o-series, and other OpenAI models",
+    description: "GPT-5, GPT-4.1, GPT-4o, o-series, and other OpenAI models",
     docsUrl: "https://platform.openai.com/api-keys",
     placeholder: "sk-...",
     enabled: true,
@@ -27,7 +27,7 @@ export const PROVIDERS = [
   {
     id: "anthropic",
     name: "Anthropic Claude",
-    description: "Claude Sonnet, Opus, Haiku and other Anthropic models",
+    description: "Claude Opus/Sonnet/Haiku 4.x and 3.x models",
     docsUrl: "https://console.anthropic.com/settings/keys",
     placeholder: "sk-ant-...",
     enabled: true,
@@ -37,17 +37,17 @@ export const PROVIDERS = [
   {
     id: "gemini",
     name: "Google Gemini",
-    description: "Gemini models via Google AI Studio / Generative Language API",
+    description: "Gemini 2.5 / 2.0 models via Google AI Studio",
     docsUrl: "https://aistudio.google.com/apikey",
     placeholder: "AIza...",
     enabled: true,
     routing: true,
-    defaultModel: "gemini-2.0-flash",
+    defaultModel: "gemini-2.5-flash",
   },
   {
     id: "grok",
     name: "xAI Grok",
-    description: "Grok models via the xAI API",
+    description: "Grok 4 / 3 / 2 models via the xAI API",
     docsUrl: "https://console.x.ai/",
     placeholder: "xai-...",
     enabled: true,

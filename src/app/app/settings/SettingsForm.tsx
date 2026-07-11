@@ -76,7 +76,12 @@ export function SettingsForm({
   const [loading, setLoading] = useState(false);
 
   const enabledProviders = useMemo(
-    () => PROVIDERS.filter((p) => p.enabled),
+    () =>
+      PROVIDERS.filter((p) => p.enabled).map((p) => ({
+        id: p.id as string,
+        name: p.name,
+        defaultModel: p.defaultModel,
+      })),
     []
   );
 
@@ -247,40 +252,57 @@ export function SettingsForm({
           </div>
         </div>
 
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {enabledProviders.map((p) => {
             const catalog = modelCatalog[p.id] || [
               { id: p.defaultModel, label: p.defaultModel },
             ];
             const current = preferredModels[p.id] || p.defaultModel;
             const inList = catalog.some((m) => m.id === current);
+            const selectValue = inList ? current : "__custom__";
             return (
               <div key={p.id} className="field !mb-0">
                 <label className="label !mb-1 text-xs" htmlFor={`model-${p.id}`}>
                   {p.name} model
+                  <span className="ml-1 font-normal text-[var(--text-muted)]">
+                    ({catalog.length} listed)
+                  </span>
                 </label>
-                <input
+                <select
                   id={`model-${p.id}`}
-                  className="input !py-2 font-mono text-xs"
-                  list={`model-list-${p.id}`}
-                  value={current}
-                  onChange={(e) => setModelForProvider(p.id, e.target.value)}
-                  placeholder={p.defaultModel}
-                  spellCheck={false}
-                />
-                <datalist id={`model-list-${p.id}`}>
+                  className="select !py-2 font-mono text-xs"
+                  value={selectValue}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__custom__") {
+                      // keep current custom; focus sibling input via state
+                      if (!inList && current) return;
+                      setModelForProvider(p.id, current || p.defaultModel);
+                      return;
+                    }
+                    setModelForProvider(p.id, v);
+                  }}
+                >
                   {catalog.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.label}
+                      {m.label} ({m.id})
                     </option>
                   ))}
-                  {!inList && current ? (
-                    <option value={current}>{current}</option>
-                  ) : null}
-                </datalist>
+                  <option value="__custom__">Custom model id…</option>
+                </select>
+                {(selectValue === "__custom__" || !inList) && (
+                  <input
+                    className="input mt-1.5 !py-2 font-mono text-xs"
+                    value={current}
+                    onChange={(e) => setModelForProvider(p.id, e.target.value)}
+                    placeholder={p.defaultModel}
+                    spellCheck={false}
+                    aria-label={`${p.name} custom model id`}
+                  />
+                )}
                 <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                  Type any model id — curated suggestions above; desktop also
-                  refreshes live lists from your provider key.
+                  Only {p.name} models. Desktop refreshes live lists from your
+                  API key when available.
                 </p>
               </div>
             );
