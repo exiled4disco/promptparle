@@ -1,6 +1,5 @@
 import { optimizePrompt } from "./optimizer";
 import {
-  defaultModelFor,
   getActiveProviderKey,
   isProviderRoutable,
   isValidProvider,
@@ -13,6 +12,10 @@ import { recordPromptRequest } from "./prompt-request";
 import type { ProviderId } from "./constants";
 import { normalizeCompressionLevel } from "./compression-level";
 import { resolveSystemAndUser } from "./system-framing";
+import {
+  parsePreferredModelsJson,
+  resolveModelForRequest,
+} from "./models";
 
 export type RunPromptInput = {
   userId: string;
@@ -21,6 +24,8 @@ export type RunPromptInput = {
   storePrompts: boolean;
   provider: string;
   model?: string;
+  /** JSON map or object of provider→preferred model (portal user prefs) */
+  preferredModels?: string | Record<string, string> | null;
   prompt: string;
   context?: string;
   /** Native system brief (0.14.12+). Not optimized; not stored in Before/After. */
@@ -97,7 +102,15 @@ export async function runOptimizedPrompt(
   }
 
   const providerId = provider as ProviderId;
-  const model = input.model || defaultModelFor(providerId);
+  const preferredMap =
+    typeof input.preferredModels === "string"
+      ? parsePreferredModelsJson(input.preferredModels)
+      : input.preferredModels || null;
+  const model = resolveModelForRequest({
+    provider: providerId,
+    requested: input.model,
+    preferredModels: preferredMap,
+  });
   const images = normalizeAdapterImages(input.images);
 
   // Separate product framing from user content (native system or baked [SYS] tags)

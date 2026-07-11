@@ -3,7 +3,6 @@ import { z } from "zod";
 import { requireApiKey, V1AuthError } from "@/lib/v1-auth";
 import { optimizePrompt } from "@/lib/optimizer";
 import {
-  defaultModelFor,
   getActiveProviderKey,
   isProviderRoutable,
   isValidProvider,
@@ -21,6 +20,10 @@ import {
   formatZodDetails,
 } from "@/lib/coerce-prompt-body";
 import { resolveSystemAndUser } from "@/lib/system-framing";
+import {
+  parsePreferredModelsJson,
+  resolveModelForRequest,
+} from "@/lib/models";
 
 const imageSchema = z.object({
   media_type: z.string().optional(),
@@ -139,7 +142,11 @@ export async function POST(req: NextRequest) {
     }
 
     const providerId = provider as ProviderId;
-    model = data.model || defaultModelFor(providerId);
+    model = resolveModelForRequest({
+      provider: providerId,
+      requested: data.model,
+      preferredModels: parsePreferredModelsJson(auth.user.preferredModels),
+    });
     const images = parseImages(data.images);
 
     const framed = resolveSystemAndUser({

@@ -1161,7 +1161,7 @@ function Get-PromptParleSelfCard {
       0.22.4: compact self-knowledge — what PromptParle is, desktop hands, portal, help.
       Always-on so the model does not invent a wrong host or hardcode foreign paths.
     #>
-    $ver = '0.22.4'
+    $ver = '0.23.0'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -9942,6 +9942,72 @@ function Show-PromptParleSessionHelp {
 
 #region Public commands
 
+function Sync-PromptParlePortalSettings {
+    <#
+    .SYNOPSIS
+      Pull preferred provider/model/dial/tools from the portal into local session.
+      Called after install / Set-PromptParleApiKey so desktop matches portal Settings.
+    #>
+    [CmdletBinding()]
+    param(
+        [switch]$Quiet
+    )
+    try {
+        $remote = Invoke-PromptParleApi -Method GET -Path '/api/v1/settings'
+    } catch {
+        if (-not $Quiet) {
+            Write-Host ("Could not pull portal settings: {0}" -f $_) -ForegroundColor Yellow
+        }
+        return $null
+    }
+
+    $prefProvider = [string](Get-PromptParleProp $remote 'preferred_provider' '')
+    $prefModels = Get-PromptParleProp $remote 'preferred_models' $null
+    $dial = Get-PromptParleProp $remote 'default_dial' 3
+    $tools = Get-PromptParleProp $remote 'default_tools_enabled' $true
+    try { $dial = [int]$dial } catch { $dial = 3 }
+    if ($dial -lt 1) { $dial = 1 }
+    if ($dial -gt 5) { $dial = 5 }
+    $toolsEn = $true
+    if ($null -ne $tools) { $toolsEn = [bool]$tools }
+
+    $model = $null
+    if ($prefProvider -and $prefModels) {
+        $model = Get-PromptParleProp $prefModels $prefProvider $null
+        if (-not $model -and ($prefModels -is [hashtable] -or $prefModels -is [System.Collections.IDictionary])) {
+            if ($prefModels.ContainsKey($prefProvider)) { $model = [string]$prefModels[$prefProvider] }
+        } elseif (-not $model) {
+            try { $model = [string]$prefModels.$prefProvider } catch { }
+        }
+    }
+
+    try {
+        $base = Get-PromptParleSessionState
+        $snapParams = @{
+            Base         = $base
+            Dial         = $dial
+            ToolsEnabled = $toolsEn
+        }
+        if ($prefProvider) { $snapParams.Provider = $prefProvider }
+        if ($model) { $snapParams.Model = [string]$model }
+        $next = New-PromptParleSessionSnapshot @snapParams
+        Save-PromptParleSessionState -State $next
+    } catch {
+        if (-not $Quiet) {
+            Write-Host ("Could not apply portal settings locally: {0}" -f $_) -ForegroundColor Yellow
+        }
+    }
+
+    if (-not $Quiet) {
+        Write-Host ("Portal settings synced · provider={0} model={1} dial={2} tools={3}" -f `
+            $(if ($prefProvider) { $prefProvider } else { '(auto)' }), `
+            $(if ($model) { $model } else { '(default)' }), `
+            $dial, `
+            $(if ($toolsEn) { 'on' } else { 'off' })) -ForegroundColor Green
+    }
+    return $remote
+}
+
 function Set-PromptParleApiKey {
     <#
     .SYNOPSIS
@@ -9976,6 +10042,13 @@ function Set-PromptParleApiKey {
 
     Save-PromptParleConfigInternal -ApiKey $ApiKey -BaseUrl $BaseUrl
     Write-Host "PromptParle API key saved to $($script:PromptParleConfigPath)" -ForegroundColor Green
+
+    # Auto-install: pull portal chat defaults (provider/model/dial/tools) into local session
+    try {
+        $null = Sync-PromptParlePortalSettings
+    } catch {
+        Write-Host ("Note: portal settings sync skipped ({0})" -f $_) -ForegroundColor DarkYellow
+    }
 
     if ($PassThru) {
         Get-PromptParleConfig
@@ -11996,9 +12069,103 @@ function Start-PromptParleLocalServer {
 
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/providers') {
                     try {
-                        $result = Invoke-PromptParleApi -Method GET -Path '/api/v1/providers'
+                        # Include model catalogs for desktop chat model selector (dynamic)
+                        $qProv = [string]$req.Url.Query
+                        $pathProv = '/api/v1/providers?models=1'
+                        if ($qProv -match '(?:^|[?&])refresh=1') { $pathProv += '&refresh=1' }
+                        $result = Invoke-PromptParleApi -Method GET -Path $pathProv
+                        $json = ($result | ConvertTo-Json -Depth 10 -Compress)
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                # Dynamic model list for one provider (live refresh when key present)
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/models') {
+                    try {
+                        $qM = [string]$req.Url.Query
+                        $provM = ''
+                        $refreshM = $false
+                        if ($qM -and $qM -match '(?:^|[?&])provider=([^&]*)') {
+                            $provM = [Uri]::UnescapeDataString(($Matches[1] -replace '\+', ' '))
+                        }
+                        if ($qM -match '(?:^|[?&])refresh=1') { $refreshM = $true }
+                        if (-not $provM) { throw 'Query provider=openai|anthropic|gemini|grok required' }
+                        $pathM = '/api/v1/models?provider=' + [Uri]::EscapeDataString($provM.ToLowerInvariant())
+                        if ($refreshM) { $pathM += '&refresh=1' }
+                        $result = Invoke-PromptParleApi -Method GET -Path $pathM
                         $json = ($result | ConvertTo-Json -Depth 8 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                # Portal ↔ client settings (GET pull / PATCH push)
+                if (($req.HttpMethod -eq 'GET' -or $req.HttpMethod -eq 'PATCH' -or $req.HttpMethod -eq 'POST') -and $path -eq '/api/settings') {
+                    try {
+                        if ($req.HttpMethod -eq 'GET') {
+                            $result = Invoke-PromptParleApi -Method GET -Path '/api/v1/settings'
+                            # Also apply to local session so UI + chat match portal
+                            try { $null = Sync-PromptParlePortalSettings -Quiet } catch { }
+                            $json = ($result | ConvertTo-Json -Depth 8 -Compress)
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                        } else {
+                            $encS = $req.ContentEncoding
+                            if (-not $encS) { $encS = [System.Text.Encoding]::UTF8 }
+                            $readerS = New-Object System.IO.StreamReader($req.InputStream, $encS)
+                            $rawS = $readerS.ReadToEnd()
+                            $readerS.Close()
+                            $bodyS = ConvertFrom-PromptParleJson -Json $rawS
+                            # Normalize client shape → portal v1 settings
+                            $patch = [ordered]@{}
+                            $pp = Get-PromptParleProp $bodyS 'preferred_provider' (Get-PromptParleProp $bodyS 'preferredProvider' $null)
+                            if ($null -ne $pp) { $patch.preferred_provider = $pp }
+                            $pm = Get-PromptParleProp $bodyS 'preferred_models' (Get-PromptParleProp $bodyS 'preferredModels' $null)
+                            if ($null -ne $pm) { $patch.preferred_models = $pm }
+                            $one = Get-PromptParleProp $bodyS 'preferred_model' (Get-PromptParleProp $bodyS 'preferredModel' $null)
+                            if ($null -ne $one) { $patch.preferred_model = $one }
+                            $dd = Get-PromptParleProp $bodyS 'default_dial' (Get-PromptParleProp $bodyS 'defaultDial' (Get-PromptParleProp $bodyS 'dial' $null))
+                            if ($null -ne $dd) { try { $patch.default_dial = [int]$dd } catch { } }
+                            $dt = Get-PromptParleProp $bodyS 'default_tools_enabled' (Get-PromptParleProp $bodyS 'defaultToolsEnabled' (Get-PromptParleProp $bodyS 'tools_enabled' $null))
+                            if ($null -ne $dt) { $patch.default_tools_enabled = [bool]$dt }
+                            $result = Invoke-PromptParleApi -Method PATCH -Path '/api/v1/settings' -Body $patch
+                            # Mirror into local session
+                            try {
+                                $baseS = Get-PromptParleSessionState
+                                $sp = @{ Base = $baseS }
+                                $np = Get-PromptParleProp $result 'preferred_provider' $null
+                                if ($np) { $sp.Provider = [string]$np }
+                                $nd = Get-PromptParleProp $result 'default_dial' $null
+                                if ($null -ne $nd) { try { $sp.Dial = [int]$nd } catch { } }
+                                $nt = Get-PromptParleProp $result 'default_tools_enabled' $null
+                                if ($null -ne $nt) { $sp.ToolsEnabled = [bool]$nt }
+                                $modelsR = Get-PromptParleProp $result 'preferred_models' $null
+                                $provForM = if ($np) { [string]$np } else { [string](Get-PromptParleProp $baseS 'provider' '') }
+                                if ($modelsR -and $provForM) {
+                                    $mv = Get-PromptParleProp $modelsR $provForM $null
+                                    if (-not $mv) { try { $mv = [string]$modelsR.$provForM } catch { } }
+                                    if ($mv) { $sp.Model = [string]$mv }
+                                }
+                                # Single model update from preferred_model
+                                $oneR = Get-PromptParleProp $bodyS 'preferred_model' $null
+                                if ($oneR) {
+                                    $om = Get-PromptParleProp $oneR 'model' $null
+                                    if ($om) { $sp.Model = [string]$om }
+                                    $op = Get-PromptParleProp $oneR 'provider' $null
+                                    if ($op) { $sp.Provider = [string]$op }
+                                }
+                                $nextS = New-PromptParleSessionSnapshot @sp
+                                Save-PromptParleSessionState -State $nextS
+                            } catch { }
+                            $json = ($result | ConvertTo-Json -Depth 8 -Compress)
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                        }
                     } catch {
                         $err = @{ error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
@@ -12522,6 +12689,14 @@ function Start-PromptParleLocalServer {
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
                         $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
                         if (-not $provider) { $provider = 'openai' }
+                        # Explicit model from UI selector (0.23) — else session preferred — else portal default on server
+                        $modelChat = [string](Get-PromptParleProp $body 'model' '')
+                        if (-not $modelChat) {
+                            try {
+                                $stM = Get-PromptParleSessionState
+                                $modelChat = [string](Get-PromptParleProp $stM 'model' '')
+                            } catch { $modelChat = '' }
+                        }
                         # Product 0.14: dial is the only aggressiveness knob (no agent/profile router)
                         $profile = 'general'
                         $dialRaw = Get-PromptParleProp $body 'compression_level' $null
@@ -12570,10 +12745,19 @@ function Start-PromptParleLocalServer {
                                 }
                             } catch { $toolsEnChat = $true }
                         }
-                        # Persist tools toggle from UI each chat
+                        # Persist provider/model/tools/dial from UI each chat
                         try {
                             $stSave = Get-PromptParleSessionState
-                            $stSave = New-PromptParleSessionSnapshot -Base $stSave -ToolsEnabled $toolsEnChat -Dial $dial -Profile $profile -Provider $provider -OptimizeOnly $optOnly
+                            $snapChat = @{
+                                Base         = $stSave
+                                ToolsEnabled = $toolsEnChat
+                                Dial         = $dial
+                                Profile      = $profile
+                                Provider     = $provider
+                                OptimizeOnly = $optOnly
+                            }
+                            if ($modelChat) { $snapChat.Model = $modelChat }
+                            $stSave = New-PromptParleSessionSnapshot @snapChat
                             Save-PromptParleSessionState -State $stSave
                         } catch { }
 
@@ -12638,8 +12822,8 @@ function Start-PromptParleLocalServer {
                         $frame = Get-PromptParleChatFraming -Prompt $prompt -RuntimeNote $rtNote
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} profile={1} dial={2} tools={3} optimize_only={4} prompt={5}c system={6}c context={7}c images={8} local_notes={9}" -f `
-                            $provider, $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} model={1} profile={2} dial={3} tools={4} optimize_only={5} prompt={6}c system={7}c context={8}c images={9} local_notes={10}" -f `
+                            $provider, $(if ($modelChat) { $modelChat } else { '(default)' }), $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
 
                         $params = @{
                             Prompt            = [string]$frame.Prompt
@@ -12649,6 +12833,7 @@ function Start-PromptParleLocalServer {
                             Profile           = $profile
                             CompressionLevel  = $dial
                         }
+                        if ($modelChat) { $params.Model = [string]$modelChat }
                         # Pass as single string - never as char-unrolled array
                         if ($context) { $params.Context = [string]$context }
                         if ($optOnly) { $params.OptimizeOnly = $true }
@@ -13354,6 +13539,7 @@ Set-Alias -Name promptparle -Value Start-PromptParle -Scope Script -Force
 
 Export-ModuleMember -Function @(
     'Set-PromptParleApiKey',
+    'Sync-PromptParlePortalSettings',
     'Get-PromptParleConfig',
     'Get-PromptParleProvider',
     'Get-PromptParleUsage',

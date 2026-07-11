@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiKey, V1AuthError } from "@/lib/v1-auth";
 import {
+  getUserDesktopChatPrefs,
   getUserDesktopFeatures,
   listActiveDesktopClients,
 } from "@/lib/desktop-clients";
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest) {
     const auth = await requireApiKey(req);
     const limits = getPlanLimits(auth.user.plan);
     const features = await getUserDesktopFeatures(auth.user.id);
+    const chatPrefs = await getUserDesktopChatPrefs(auth.user.id);
     const active = await listActiveDesktopClients(auth.user.id);
 
     return NextResponse.json({
@@ -31,6 +33,10 @@ export async function GET(req: NextRequest) {
       project_pc: features.projectPc,
       project_ssh: features.projectSsh,
       project_git: features.projectGit,
+      preferred_provider: chatPrefs.preferred_provider,
+      preferred_models: chatPrefs.preferred_models,
+      default_dial: chatPrefs.default_dial,
+      default_tools_enabled: chatPrefs.default_tools_enabled,
       seat_window_seconds: Math.round(DESKTOP_CLIENT_ACTIVE_MS / 1000),
     });
   } catch (err) {

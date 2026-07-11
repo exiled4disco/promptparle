@@ -3,11 +3,19 @@ import {
   DESKTOP_CLIENT_ACTIVE_MS,
   getPlanLimits,
 } from "./plans";
+import { parsePreferredModelsJson } from "./models";
 
 export type DesktopFeatureFlags = {
   projectPc: boolean;
   projectSsh: boolean;
   projectGit: boolean;
+};
+
+export type DesktopChatPrefs = {
+  preferred_provider: string | null;
+  preferred_models: Record<string, string>;
+  default_dial: number;
+  default_tools_enabled: boolean;
 };
 
 export type DesktopEntitlements = {
@@ -20,6 +28,10 @@ export type DesktopEntitlements = {
   project_pc: boolean;
   project_ssh: boolean;
   project_git: boolean;
+  preferred_provider: string | null;
+  preferred_models: Record<string, string>;
+  default_dial: number;
+  default_tools_enabled: boolean;
   client_id: string;
   seat_window_seconds: number;
 };
@@ -39,6 +51,26 @@ export async function getUserDesktopFeatures(
     projectPc: user?.featProjectPc !== false,
     projectSsh: user?.featProjectSsh !== false,
     projectGit: user?.featProjectGit !== false,
+  };
+}
+
+export async function getUserDesktopChatPrefs(
+  userId: string
+): Promise<DesktopChatPrefs> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      preferredProvider: true,
+      preferredModels: true,
+      defaultDial: true,
+      defaultToolsEnabled: true,
+    },
+  });
+  return {
+    preferred_provider: user?.preferredProvider || null,
+    preferred_models: parsePreferredModelsJson(user?.preferredModels),
+    default_dial: user?.defaultDial ?? 3,
+    default_tools_enabled: user?.defaultToolsEnabled !== false,
   };
 }
 
@@ -65,6 +97,7 @@ export async function heartbeatDesktopClient(opts: {
   const activeSince = new Date(now.getTime() - DESKTOP_CLIENT_ACTIVE_MS);
 
   const features = await getUserDesktopFeatures(opts.userId);
+  const chatPrefs = await getUserDesktopChatPrefs(opts.userId);
 
   // Other machines currently holding a seat
   const otherActive = await prisma.desktopClient.count({
@@ -86,6 +119,10 @@ export async function heartbeatDesktopClient(opts: {
       project_pc: features.projectPc,
       project_ssh: features.projectSsh,
       project_git: features.projectGit,
+      preferred_provider: chatPrefs.preferred_provider,
+      preferred_models: chatPrefs.preferred_models,
+      default_dial: chatPrefs.default_dial,
+      default_tools_enabled: chatPrefs.default_tools_enabled,
       client_id: clientId,
       seat_window_seconds: Math.round(DESKTOP_CLIENT_ACTIVE_MS / 1000),
     };
@@ -138,6 +175,10 @@ export async function heartbeatDesktopClient(opts: {
     project_pc: features.projectPc,
     project_ssh: features.projectSsh,
     project_git: features.projectGit,
+    preferred_provider: chatPrefs.preferred_provider,
+    preferred_models: chatPrefs.preferred_models,
+    default_dial: chatPrefs.default_dial,
+    default_tools_enabled: chatPrefs.default_tools_enabled,
     client_id: clientId,
     seat_window_seconds: Math.round(DESKTOP_CLIENT_ACTIVE_MS / 1000),
   };

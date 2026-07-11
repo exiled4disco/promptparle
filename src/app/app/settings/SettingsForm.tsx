@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { SessionUser } from "@/lib/auth";
-import { RETENTION_OPTIONS } from "@/lib/constants";
+import { PROVIDERS, RETENTION_OPTIONS } from "@/lib/constants";
 import { getPlanLimits } from "@/lib/plans";
 
 type ActiveClient = {
@@ -14,12 +14,38 @@ type ActiveClient = {
   lastSeenAt: string | Date;
 };
 
+type ModelOption = {
+  id: string;
+  label: string;
+  source?: string;
+};
+
+function parsePreferredModels(
+  raw: string | Record<string, string> | null | undefined
+): Record<string, string> {
+  if (!raw) return {};
+  if (typeof raw === "object") return { ...raw };
+  try {
+    const o = JSON.parse(raw) as unknown;
+    if (!o || typeof o !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim()) out[k] = v.trim();
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function SettingsForm({
   user,
   activeClients = [],
+  modelCatalog: initialCatalog = {},
 }: {
   user: SessionUser;
   activeClients?: ActiveClient[];
+  modelCatalog?: Record<string, ModelOption[]>;
 }) {
   const router = useRouter();
   const limits = getPlanLimits(user.plan);
@@ -34,9 +60,34 @@ export function SettingsForm({
     user.featProjectGit !== false
   );
   const [allowedIps, setAllowedIps] = useState(user.allowedIps || "");
+  const [preferredProvider, setPreferredProvider] = useState(
+    user.preferredProvider || ""
+  );
+  const [preferredModels, setPreferredModels] = useState<Record<string, string>>(
+    () => parsePreferredModels(user.preferredModels)
+  );
+  const [defaultDial, setDefaultDial] = useState(user.defaultDial ?? 3);
+  const [defaultToolsEnabled, setDefaultToolsEnabled] = useState(
+    user.defaultToolsEnabled !== false
+  );
+  const modelCatalog = initialCatalog;
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const enabledProviders = useMemo(
+    () => PROVIDERS.filter((p) => p.enabled),
+    []
+  );
+
+  function setModelForProvider(providerId: string, model: string) {
+    setPreferredModels((prev) => {
+      const next = { ...prev };
+      if (!model.trim()) delete next[providerId];
+      else next[providerId] = model.trim();
+      return next;
+    });
+  }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -55,6 +106,10 @@ export function SettingsForm({
           featProjectSsh,
           featProjectGit,
           allowedIps,
+          preferredProvider: preferredProvider || null,
+          preferredModels,
+          defaultDial,
+          defaultToolsEnabled,
         }),
       });
       const data = await res.json();
@@ -62,7 +117,7 @@ export function SettingsForm({
         setError(data.error || "Failed to save");
         return;
       }
-      setSuccess("Saved.");
+      setSuccess("Saved. Desktop clients pick this up on next heartbeat (~1 min).");
       router.refresh();
     } catch {
       setError("Network error");
@@ -70,6 +125,14 @@ export function SettingsForm({
       setLoading(false);
     }
   }
+
+  const dialLabels: Record<number, string> = {
+    1: "1 · Max fidelity",
+    2: "2 · Light",
+    3: "3 · Balanced",
+    4: "4 · Aggressive",
+    5: "5 · Max savings",
+  };
 
   return (
     <form onSubmit={onSubmit} className="card grid gap-3 p-4 sm:p-5">
@@ -128,6 +191,102 @@ export function SettingsForm({
           </span>
         </span>
       </label>
+
+      <div className="rounded-lg border border-[var(--border)] px-3 py-2.5">
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold">Chat defaults (portal ↔ desktop)</h2>
+          <span className="text-xs text-[var(--text-muted)]">
+            Syncs to client on install / heartbeat
+          </span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="field !mb-0">
+            <label className="label !mb-1 text-xs" htmlFor="preferredProvider">
+              Preferred provider
+            </label>
+            <select
+              id="preferredProvider"
+              className="select !py-2 text-sm"
+              value={preferredProvider}
+              onChange={(e) => setPreferredProvider(e.target.value)}
+            >
+              <option value="">Auto (first configured)</option>
+              {enabledProviders.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field !mb-0">
+            <label className="label !mb-1 text-xs" htmlFor="defaultDial">
+              Default dial
+            </label>
+            <select
+              id="defaultDial"
+              className="select !py-2 text-sm"
+              value={defaultDial}
+              onChange={(e) => setDefaultDial(Number(e.target.value))}
+            >
+              {[1, 2, 3, 4, 5].map((n) => (
+                <option key={n} value={n}>
+                  {dialLabels[n]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field !mb-0 flex items-end">
+            <label className="flex w-full items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={defaultToolsEnabled}
+                onChange={(e) => setDefaultToolsEnabled(e.target.checked)}
+              />
+              <span className="font-medium">Tools on by default</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {enabledProviders.map((p) => {
+            const catalog = modelCatalog[p.id] || [
+              { id: p.defaultModel, label: p.defaultModel },
+            ];
+            const current = preferredModels[p.id] || p.defaultModel;
+            const inList = catalog.some((m) => m.id === current);
+            return (
+              <div key={p.id} className="field !mb-0">
+                <label className="label !mb-1 text-xs" htmlFor={`model-${p.id}`}>
+                  {p.name} model
+                </label>
+                <input
+                  id={`model-${p.id}`}
+                  className="input !py-2 font-mono text-xs"
+                  list={`model-list-${p.id}`}
+                  value={current}
+                  onChange={(e) => setModelForProvider(p.id, e.target.value)}
+                  placeholder={p.defaultModel}
+                  spellCheck={false}
+                />
+                <datalist id={`model-list-${p.id}`}>
+                  {catalog.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                  {!inList && current ? (
+                    <option value={current}>{current}</option>
+                  ) : null}
+                </datalist>
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  Type any model id — curated suggestions above; desktop also
+                  refreshes live lists from your provider key.
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="rounded-lg border border-[var(--border)] px-3 py-2.5">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
@@ -227,7 +386,8 @@ export function SettingsForm({
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
         <p className="max-w-xl text-[11px] leading-snug text-[var(--text-muted)]">
           Keys encrypted at rest · desktop secrets stay on your PC · SSH/git
-          credentials never uploaded · revoke keys anytime
+          credentials never uploaded · revoke keys anytime · model prefs sync both
+          ways with the desktop client
         </p>
         <button
           type="submit"

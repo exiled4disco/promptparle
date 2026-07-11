@@ -17,6 +17,10 @@ export type SessionUser = {
   featProjectGit: boolean;
   /** API key allowlist (IPv4/CIDR text). Empty/null = unrestricted. */
   allowedIps: string | null;
+  preferredProvider: string | null;
+  preferredModels: string | null;
+  defaultDial: number;
+  defaultToolsEnabled: boolean;
 };
 
 export async function hashPassword(password: string): Promise<string> {
@@ -95,6 +99,10 @@ export async function getSessionUser(): Promise<SessionUser | null> {
           featProjectSsh: true,
           featProjectGit: true,
           allowedIps: true,
+          preferredProvider: true,
+          preferredModels: true,
+          defaultDial: true,
+          defaultToolsEnabled: true,
         },
       },
     },
@@ -107,7 +115,15 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     return null;
   }
 
-  return session.user;
+  const u = session.user;
+  return {
+    ...u,
+    defaultDial: u.defaultDial ?? 3,
+    defaultToolsEnabled: u.defaultToolsEnabled !== false,
+    featProjectPc: u.featProjectPc !== false,
+    featProjectSsh: u.featProjectSsh !== false,
+    featProjectGit: u.featProjectGit !== false,
+  };
 }
 
 export async function requireUser(): Promise<SessionUser> {

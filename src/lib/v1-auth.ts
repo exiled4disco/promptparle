@@ -12,6 +12,10 @@ export type V1User = {
   retentionPolicy: string;
   storePrompts: boolean;
   emailVerifiedAt: Date | null;
+  preferredProvider: string | null;
+  preferredModels: string | null;
+  defaultDial: number;
+  defaultToolsEnabled: boolean;
 };
 
 export type V1Auth = {
@@ -65,6 +69,10 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
       storePrompts: true,
       emailVerifiedAt: true,
       allowedIps: true,
+      preferredProvider: true,
+      preferredModels: true,
+      defaultDial: true,
+      defaultToolsEnabled: true,
     },
   });
 
@@ -88,6 +96,10 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
       retentionPolicy: user.retentionPolicy,
       storePrompts: user.storePrompts,
       emailVerifiedAt: user.emailVerifiedAt,
+      preferredProvider: user.preferredProvider,
+      preferredModels: user.preferredModels,
+      defaultDial: user.defaultDial ?? 3,
+      defaultToolsEnabled: user.defaultToolsEnabled !== false,
     },
     apiKeyId: auth.key.id,
     clientIp,

@@ -7,7 +7,6 @@
  */
 
 import {
-  defaultModelFor,
   getActiveProviderKey,
   isProviderRoutable,
   isValidProvider,
@@ -22,6 +21,10 @@ import type {
 import type { ProviderId } from "./constants";
 import { recordPromptRequest } from "./prompt-request";
 import { estimateTokens } from "./tokens";
+import {
+  parsePreferredModelsJson,
+  resolveModelForRequest,
+} from "./models";
 
 /** Serialize agent messages (+ optional tools) for portal usage Before/After. */
 export function formatAgentContextWindow(
@@ -102,6 +105,8 @@ export type RunAgentInput = {
   storePrompts: boolean;
   provider: string;
   model?: string;
+  /** JSON map or object of provider→preferred model (portal user prefs) */
+  preferredModels?: string | Record<string, string> | null;
   messages: AgentMessage[];
   tools?: AgentToolDefinition[];
   toolChoice?: "auto" | "none" | "required";
@@ -156,7 +161,15 @@ export async function runAgentStep(
   }
 
   const providerId = provider as ProviderId;
-  const model = input.model || defaultModelFor(providerId);
+  const preferredMap =
+    typeof input.preferredModels === "string"
+      ? parsePreferredModelsJson(input.preferredModels)
+      : input.preferredModels || null;
+  const model = resolveModelForRequest({
+    provider: providerId,
+    requested: input.model,
+    preferredModels: preferredMap,
+  });
 
   const cred = await getActiveProviderKey(input.userId, providerId);
   if (!cred) {

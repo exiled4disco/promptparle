@@ -72,6 +72,7 @@ export async function POST(req: NextRequest) {
       storePrompts: auth.user.storePrompts,
       provider: data.provider,
       model: data.model,
+      preferredModels: auth.user.preferredModels,
       messages: data.messages.map((m) => ({
         role: m.role,
         content: m.content ?? null,

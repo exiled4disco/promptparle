@@ -75,6 +75,7 @@ export async function POST(req: NextRequest) {
       storePrompts: user.storePrompts,
       provider: parsed.data.provider,
       model: parsed.data.model,
+      preferredModels: user.preferredModels,
       prompt: parsed.data.prompt,
       context: parsed.data.context,
       system:

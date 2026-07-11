@@ -1357,6 +1357,14 @@
             <select id="provider"></select>
           </div>
           <div class="field-compact">
+            <label for="model" title="Model for this provider. List is live when your key is configured; type any id if missing.">Model</label>
+            <select id="model"></select>
+            <div class="checks dial-tools" style="margin-top:.35rem">
+              <button type="button" class="secondary mini-primary" id="refreshModelsBtn" title="Refresh model list from provider">Refresh models</button>
+              <button type="button" class="secondary" id="syncSettingsBtn" title="Pull portal settings / push local defaults">Sync settings</button>
+            </div>
+          </div>
+          <div class="field-compact">
             <label for="dial" title="Always optimizes (shrinks tokens). Dial = how aggressive. High fidelity kept.">Dial <span class="ver-line" style="display:inline" id="agentMeta"></span></label>
             <!-- Profile fixed general; dial is the only aggressiveness control -->
             <select id="profile" class="hidden-profile" aria-hidden="true" tabindex="-1">
@@ -1725,6 +1733,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
   <script>
     const chat = document.getElementById('chat');
     const providerEl = document.getElementById('provider');
+    const modelEl = document.getElementById('model');
     const profileEl = document.getElementById('profile');
     const dialEl = document.getElementById('dial');
     const dialLabel = document.getElementById('dialLabel');
@@ -1734,6 +1743,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const sendBtn = document.getElementById('send');
     const optimizeOnlyEl = document.getElementById('optimizeOnly');
     const toolsEnabledEl = document.getElementById('toolsEnabled');
+    const refreshModelsBtn = document.getElementById('refreshModelsBtn');
+    const syncSettingsBtn = document.getElementById('syncSettingsBtn');
+    /** providerId → { models:[{id,label}], preferred, default, live } */
+    let providerModelCache = {};
+    let preferredModelsMap = {};
+    let preferredProviderId = null;
+    let settingsSyncQuiet = false;
     const fileInput = document.getElementById('fileInput');
     const chipsEl = document.getElementById('chips');
     const attachBtn = document.getElementById('attachBtn');
@@ -4786,6 +4802,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       if (profileEl) profileEl.value = 'general';
       if (agentSelect) agentSelect.value = 'none';
+      // Model after provider options exist
+      if (s.model && modelEl) {
+        ensureModelOption(s.model, s.model);
+        modelEl.value = s.model;
+      } else {
+        fillModelsForProvider(providerEl.value, { preferred: s.model || null });
+      }
       updateAgentMeta(s);
       applyWorkspaceUi(s);
     }
@@ -5491,6 +5514,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             plan: 'free'
           };
         }
+        // Portal chat prefs (heartbeat/entitlements carry preferred_* + dial/tools)
+        if (data) {
+          if (data.preferred_models && typeof data.preferred_models === 'object') {
+            preferredModelsMap = Object.assign({}, preferredModelsMap, data.preferred_models);
+          }
+          if (data.preferred_provider) preferredProviderId = data.preferred_provider;
+          if (!settingsSyncQuiet) {
+            if (data.preferred_provider && providerEl.querySelector('option[value="' + data.preferred_provider + '"]')) {
+              if (!providerEl.value || providerEl.value === data.preferred_provider) {
+                providerEl.value = data.preferred_provider;
+              }
+            }
+            if (typeof data.default_dial === 'number' && data.default_dial >= 1 && data.default_dial <= 5) {
+              // Only seed dial if still at default-ish on first load; session apply wins after
+            }
+            if (typeof data.default_tools_enabled === 'boolean' && toolsEnabledEl && !window.__ppToolsUserTouched) {
+              toolsEnabledEl.checked = !!data.default_tools_enabled;
+            }
+          }
+        }
         applyEntitlementUi();
       } catch (e) {
         if (!entitlements) {
@@ -5502,6 +5545,131 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           };
         }
       }
+    }
+
+    function ensureModelOption(id, label) {
+      if (!modelEl || !id) return;
+      var exists = false;
+      for (var i = 0; i < modelEl.options.length; i++) {
+        if (modelEl.options[i].value === id) { exists = true; break; }
+      }
+      if (!exists) {
+        var opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = label || id;
+        modelEl.appendChild(opt);
+      }
+    }
+
+    function fillModelsForProvider(providerId, opts) {
+      opts = opts || {};
+      if (!modelEl) return;
+      var cache = providerModelCache[providerId] || {};
+      var models = cache.models || [];
+      var preferred = opts.preferred || preferredModelsMap[providerId] || cache.preferred || cache.default || '';
+      modelEl.innerHTML = '';
+      if (!models.length) {
+        var fallback = preferred || cache.default || '';
+        if (fallback) {
+          ensureModelOption(fallback, fallback + ' (preferred)');
+          modelEl.value = fallback;
+        } else {
+          var empty = document.createElement('option');
+          empty.value = '';
+          empty.textContent = '(provider default)';
+          modelEl.appendChild(empty);
+        }
+        return;
+      }
+      models.forEach(function (m) {
+        var opt = document.createElement('option');
+        opt.value = m.id;
+        var src = m.source === 'live' ? '' : (m.source === 'curated' ? '' : '');
+        opt.textContent = m.label || m.id;
+        if (m.source === 'live') opt.title = 'From provider API';
+        modelEl.appendChild(opt);
+      });
+      if (preferred) {
+        ensureModelOption(preferred, preferred);
+        modelEl.value = preferred;
+      } else if (modelEl.options.length) {
+        modelEl.selectedIndex = 0;
+      }
+    }
+
+    async function loadModelsForProvider(providerId, refresh) {
+      if (!providerId) return;
+      try {
+        var url = '/api/models?provider=' + encodeURIComponent(providerId);
+        if (refresh) url += '&refresh=1';
+        const res = await fetch(url, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'models failed');
+        providerModelCache[providerId] = {
+          models: data.models || [],
+          preferred: data.preferred_model || null,
+          default: data.default_model || null,
+          live: !!data.live
+        };
+        if (data.preferred_model) {
+          preferredModelsMap[providerId] = data.preferred_model;
+        }
+        fillModelsForProvider(providerId);
+      } catch (e) {
+        // keep curated cache from providers payload if present
+        fillModelsForProvider(providerId);
+      }
+    }
+
+    async function pushLocalSettingsToPortal() {
+      if (!providerEl || !providerEl.value) return;
+      try {
+        const body = {
+          preferred_provider: providerEl.value,
+          preferred_model: {
+            provider: providerEl.value,
+            model: (modelEl && modelEl.value) ? modelEl.value : ''
+          },
+          default_dial: parseInt(dialEl.value, 10) || 3,
+          default_tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
+        };
+        const res = await fetch('/api/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.error || 'settings save failed');
+        if (data.preferred_models) preferredModelsMap = Object.assign({}, preferredModelsMap, data.preferred_models);
+        return data;
+      } catch (e) {
+        throw e;
+      }
+    }
+
+    async function pullPortalSettings() {
+      const res = await fetch('/api/settings', { cache: 'no-store' });
+      const data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || 'settings load failed');
+      if (data.preferred_models) preferredModelsMap = Object.assign({}, preferredModelsMap, data.preferred_models);
+      if (data.preferred_provider) preferredProviderId = data.preferred_provider;
+      if (data.preferred_provider && providerEl.querySelector('option[value="' + data.preferred_provider + '"]')) {
+        providerEl.value = data.preferred_provider;
+      }
+      if (typeof data.default_dial === 'number' && data.default_dial >= 1 && data.default_dial <= 5) {
+        dialEl.value = String(data.default_dial);
+        updateDialUi();
+      }
+      if (typeof data.default_tools_enabled === 'boolean' && toolsEnabledEl) {
+        toolsEnabledEl.checked = !!data.default_tools_enabled;
+      }
+      await loadModelsForProvider(providerEl.value, false);
+      var pref = preferredModelsMap[providerEl.value];
+      if (pref) {
+        ensureModelOption(pref, pref);
+        modelEl.value = pref;
+      }
+      return data;
     }
 
     // Activity log streamer: /?log=1
@@ -5599,12 +5767,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load providers');
       providerEl.innerHTML = '';
+      if (data.preferred_models && typeof data.preferred_models === 'object') {
+        preferredModelsMap = Object.assign({}, preferredModelsMap, data.preferred_models);
+      }
+      if (data.preferred_provider) preferredProviderId = data.preferred_provider;
       (data.providers || []).forEach(function (p) {
         const opt = document.createElement('option');
         opt.value = p.id;
         opt.textContent = p.name + (p.configured ? '' : ' (not configured)');
         opt.disabled = !p.configured;
         if (p.configured) providerEl.appendChild(opt);
+        // Cache model catalogs from providers payload (curated + live when available)
+        if (p.models && p.models.length) {
+          providerModelCache[p.id] = {
+            models: p.models,
+            preferred: p.preferred_model || preferredModelsMap[p.id] || p.default_model,
+            default: p.default_model,
+            live: !!p.models_live
+          };
+        } else {
+          providerModelCache[p.id] = {
+            models: [],
+            preferred: p.preferred_model || preferredModelsMap[p.id] || p.default_model,
+            default: p.default_model,
+            live: false
+          };
+        }
       });
       if (!providerEl.options.length) {
         (data.providers || []).forEach(function (p) {
@@ -5615,8 +5803,75 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         });
         addMsg('sys', 'No provider keys. Add one at https://promptparle.com/app/providers', null, true);
       }
+      // Prefer portal preferred_provider when present among configured
+      if (preferredProviderId && providerEl.querySelector('option[value="' + preferredProviderId + '"]')) {
+        providerEl.value = preferredProviderId;
+      }
+      fillModelsForProvider(providerEl.value);
+      // Live-refresh models for selected provider (non-blocking)
+      loadModelsForProvider(providerEl.value, false).catch(function () {});
     }
     loadProviders().catch(function (e) { addMsg('sys', String(e.message || e), null, true); });
+
+    if (providerEl) {
+      providerEl.addEventListener('change', function () {
+        fillModelsForProvider(providerEl.value);
+        loadModelsForProvider(providerEl.value, false).catch(function () {});
+        // Persist preferred provider to portal (best-effort)
+        pushLocalSettingsToPortal().catch(function () {});
+      });
+    }
+    if (modelEl) {
+      modelEl.addEventListener('change', function () {
+        if (providerEl && providerEl.value && modelEl.value) {
+          preferredModelsMap[providerEl.value] = modelEl.value;
+        }
+        pushLocalSettingsToPortal().catch(function () {});
+      });
+    }
+    if (refreshModelsBtn) {
+      refreshModelsBtn.addEventListener('click', function () {
+        refreshModelsBtn.disabled = true;
+        refreshModelsBtn.textContent = '…';
+        loadModelsForProvider(providerEl.value, true).then(function () {
+          refreshModelsBtn.textContent = 'Refresh models';
+          refreshModelsBtn.disabled = false;
+          addMsg('sys', 'Model list refreshed for ' + providerEl.value + '.', null, true);
+        }).catch(function (e) {
+          refreshModelsBtn.textContent = 'Refresh models';
+          refreshModelsBtn.disabled = false;
+          addMsg('sys', 'Model refresh failed: ' + (e.message || e), null, true);
+        });
+      });
+    }
+    if (syncSettingsBtn) {
+      syncSettingsBtn.addEventListener('click', async function () {
+        syncSettingsBtn.disabled = true;
+        syncSettingsBtn.textContent = '…';
+        try {
+          // Push local → portal, then pull (round-trip)
+          await pushLocalSettingsToPortal();
+          await pullPortalSettings();
+          addMsg('sys', 'Settings synced with portal (provider/model/dial/tools).', null, true);
+        } catch (e) {
+          addMsg('sys', 'Settings sync failed: ' + (e.message || e), null, true);
+        } finally {
+          syncSettingsBtn.textContent = 'Sync settings';
+          syncSettingsBtn.disabled = false;
+        }
+      });
+    }
+    if (toolsEnabledEl) {
+      toolsEnabledEl.addEventListener('change', function () {
+        window.__ppToolsUserTouched = true;
+      });
+    }
+    if (dialEl) {
+      dialEl.addEventListener('change', function () {
+        // Push dial default to portal (best-effort)
+        pushLocalSettingsToPortal().catch(function () {});
+      });
+    }
 
     inputEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -5783,6 +6038,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           optimize_only: optOnly,
           tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         };
+        if (modelEl && modelEl.value) {
+          payload.model = modelEl.value;
+        }
         if (hist.length) {
           payload.history = hist;
         }

@@ -23,6 +23,13 @@ model User {
   // Default on so portal can show before/after; user can opt out in Settings
   storePrompts    Boolean @default(true) @map("store_prompts")
 
+  // Preferred AI routing (portal ↔ desktop sync)
+  preferredProvider     String?  @map("preferred_provider")
+  /** JSON map provider→model id, e.g. {"openai":"gpt-4o","grok":"grok-3"} */
+  preferredModels       String?  @map("preferred_models") @db.Text
+  defaultDial           Int      @default(3) @map("default_dial")
+  defaultToolsEnabled   Boolean  @default(true) @map("default_tools_enabled")
+
   // Desktop Project Connections lockdown (portal Settings → desktop client)
   featProjectPc  Boolean @default(true) @map("feat_project_pc")
   featProjectSsh Boolean @default(true) @map("feat_project_ssh")
