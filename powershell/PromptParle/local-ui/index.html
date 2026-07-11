@@ -465,8 +465,8 @@
     }
     .savings-strip.show { display: flex; }
     .savings-strip .big {
-      font-size: .82rem; font-weight: 750; letter-spacing: -0.01em;
-      color: var(--success);
+      font-size: .85rem; font-weight: 800; letter-spacing: -0.01em;
+      color: #34d399;
     }
     .savings-strip .big.flat { color: var(--dim); font-weight: 600; }
     .savings-strip .muted { color: var(--muted); font-size: .7rem; }
@@ -521,20 +521,42 @@
     }
     .meta .ok { color: var(--success); font-weight: 600; }
     .meta .warn { color: var(--warn); }
-    /* Compact per-message savings (replaces big wow cards) */
+    /* Compact per-message savings — readable labels, green when saving */
     .meta.meta-savings {
-      margin-top: .28rem;
-      padding: .18rem 0 0;
-      border-top: 1px solid rgba(30, 42, 61, 0.85);
-      gap: .15rem .35rem;
-      font-size: .68rem;
-      line-height: 1.25;
-      color: var(--dim);
+      margin-top: .35rem;
+      padding: .32rem .5rem;
+      border: 1px solid rgba(52, 211, 153, 0.28);
+      border-radius: 8px;
+      background: rgba(52, 211, 153, 0.07);
+      gap: .2rem .45rem;
+      font-size: .72rem;
+      line-height: 1.35;
+      color: var(--text);
       align-items: center;
     }
-    .meta.meta-savings .sep { opacity: .45; margin: 0 .05rem; }
-    .meta.meta-savings .ok { font-weight: 700; }
-    .meta.meta-savings .flat { color: var(--dim); font-weight: 600; }
+    .meta.meta-savings.flat-save {
+      border-color: var(--border);
+      background: rgba(10, 14, 22, 0.55);
+    }
+    .meta.meta-savings .sep { opacity: .4; margin: 0 .05rem; color: var(--dim); }
+    .meta.meta-savings .ok {
+      color: #34d399;
+      font-weight: 800;
+      font-size: .78rem;
+    }
+    .meta.meta-savings .flat { color: var(--dim); font-weight: 700; }
+    .meta.meta-savings .lbl { color: var(--dim); font-weight: 500; }
+    .meta.meta-savings .val { color: var(--text); font-weight: 650; }
+    .meta.meta-savings .model-tag {
+      color: #93b4ff;
+      font-weight: 700;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .meta.meta-savings .cost-tag {
+      color: #34d399;
+      font-weight: 750;
+    }
+    .meta.meta-savings.flat-save .cost-tag { color: var(--muted); font-weight: 600; }
     /* Rare highlight only when real savings (pct >= 20) */
     .wow {
       display: none; /* legacy; compact meta replaces inline wow */
@@ -645,10 +667,10 @@
       margin-left: 3.2rem;
     }
     body.chat-style-term .msg .meta.meta-savings {
-      margin-top: .15rem;
-      padding-top: .1rem;
-      border-top-color: rgba(30, 42, 61, 0.6);
-      font-size: .65rem;
+      margin-top: .2rem;
+      margin-left: 3.2rem;
+      font-size: .7rem;
+      padding: .28rem .45rem;
     }
     body.chat-style-term .composer {
       background: #05070c;
@@ -1974,11 +1996,57 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     const slashMenuList = document.getElementById('slashMenuList');
     const slashFilterLabel = document.getElementById('slashFilterLabel');
     const CHAT_STYLE_KEY = 'pp_chat_style'; // 'bubble' | 'term'
+    const MODEL_PREFS_KEY = 'pp_model_prefs'; // sticky per-provider model choice
     /** providerId → { models:[{id,label}], preferred, default, live } */
     let providerModelCache = {};
     let preferredModelsMap = {};
     let preferredProviderId = null;
     let settingsSyncQuiet = false;
+    /** User explicitly picked a model this browser session (never clobber with portal preferred). */
+    let stickyModelByProvider = loadStickyModels();
+
+    function loadStickyModels() {
+      try {
+        var o = JSON.parse(localStorage.getItem(MODEL_PREFS_KEY) || '{}');
+        return o && typeof o === 'object' ? o : {};
+      } catch (e) {
+        return {};
+      }
+    }
+    function getStickyModel(providerId) {
+      if (!providerId) return null;
+      var s = stickyModelByProvider[providerId] || preferredModelsMap[providerId] || null;
+      return modelBelongsToProvider(providerId, s) ? s : null;
+    }
+    function setStickyModel(providerId, modelId) {
+      if (!providerId || !modelBelongsToProvider(providerId, modelId)) return;
+      stickyModelByProvider[providerId] = modelId;
+      preferredModelsMap[providerId] = modelId;
+      try {
+        localStorage.setItem(MODEL_PREFS_KEY, JSON.stringify(stickyModelByProvider));
+      } catch (e) { /* ignore */ }
+    }
+    /** Current model to send on chat — sticky/UI first, never silent portal override. */
+    function getSelectedModelForChat() {
+      var pid = providerEl ? providerEl.value : '';
+      if (!pid) return '';
+      if (modelEl && modelEl.value && modelBelongsToProvider(pid, modelEl.value)) {
+        return modelEl.value;
+      }
+      return getStickyModel(pid) || '';
+    }
+    async function persistLocalSessionModel(providerId, modelId) {
+      try {
+        await fetch('/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: providerId || (providerEl && providerEl.value) || undefined,
+            model: modelId || undefined
+          })
+        });
+      } catch (e) { /* best-effort */ }
+    }
     let slashActiveIndex = 0;
     let slashVisible = [];
 
@@ -2370,26 +2438,95 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return String(n);
     }
 
+    /**
+     * Rough blended USD per 1M tokens (input-heavy chat estimate).
+     * Used only for “est. $ saved” display — not billing.
+     */
+    function estimateUsdPerMillion(provider, model) {
+      var p = String(provider || '').toLowerCase();
+      var m = String(model || '').toLowerCase();
+      if (p === 'openai' || /gpt-|o[1-9]|chatgpt/.test(m)) {
+        if (/o3|o1-pro|o1\b/.test(m)) return 15;
+        if (/gpt-5|o4/.test(m)) return 8;
+        if (/4\.1|4o|gpt-4/.test(m)) return 5;
+        if (/mini|nano|haiku/.test(m)) return 1.5;
+        return 5;
+      }
+      if (p === 'anthropic' || /claude/.test(m)) {
+        if (/opus/.test(m)) return 18;
+        if (/haiku/.test(m)) return 1.2;
+        if (/sonnet/.test(m)) return 6;
+        return 6;
+      }
+      if (p === 'gemini' || /gemini/.test(m)) {
+        if (/pro/.test(m)) return 2.5;
+        if (/flash|lite|8b/.test(m)) return 0.4;
+        return 1;
+      }
+      if (p === 'grok' || /grok/.test(m)) {
+        if (/grok-4/.test(m)) return 6;
+        if (/mini/.test(m)) return 0.8;
+        if (/grok-3|grok-2/.test(m)) return 3;
+        return 3;
+      }
+      return 4;
+    }
+
+    function formatUsdEstimate(usd) {
+      if (!isFinite(usd) || usd <= 0) return '$0';
+      if (usd < 0.001) return '<$0.001';
+      if (usd < 0.01) return '$' + usd.toFixed(3);
+      if (usd < 1) return '$' + usd.toFixed(3);
+      if (usd < 10) return '$' + usd.toFixed(2);
+      return '$' + usd.toFixed(2);
+    }
+
+    /** Build readable savings line parts (shared by strip + per-message). */
+    function buildSavingsExplain(meta) {
+      var orig = Number(meta.original_tokens) || 0;
+      var opt = Number(meta.optimized_tokens) || 0;
+      var pct = Number(meta.token_reduction_percent) || 0;
+      var expanded = !!meta.expanded;
+      var saved = Math.max(0, orig - opt);
+      var provider = meta.provider || (providerEl && providerEl.value) || '';
+      var model = meta.model || (modelEl && modelEl.value) || '';
+      var dial = meta.compression_level;
+      var rate = estimateUsdPerMillion(provider, model);
+      var usdSaved = (saved / 1000000) * rate;
+      var usdWould = (orig / 1000000) * rate;
+      var usdNow = (opt / 1000000) * rate;
+      return {
+        orig: orig,
+        opt: opt,
+        pct: pct,
+        expanded: expanded,
+        saved: saved,
+        provider: provider,
+        model: model,
+        dial: dial,
+        rate: rate,
+        usdSaved: usdSaved,
+        usdWould: usdWould,
+        usdNow: usdNow,
+        flat: !expanded && !(pct > 0)
+      };
+    }
+
     function updateSavingsStrip(meta) {
       if (!meta || !(meta.original_tokens > 0 || meta.optimized_tokens > 0)) {
         return;
       }
-      const orig = meta.original_tokens;
-      const opt = meta.optimized_tokens;
-      const pct = meta.token_reduction_percent || 0;
-      const expanded = meta.expanded;
-      const saved = Math.max(0, orig - opt);
-      const flat = !expanded && !(pct > 0);
-      let big = expanded ? '↑' : (pct > 0 ? '−' + pct + '%' : '0%');
-      // Compact strip: pct · tokens · dial · model (no strategy wall)
-      const bits = [];
-      bits.push(compactTok(orig) + '→' + compactTok(opt));
-      if (saved > 0) bits.push('−' + compactTok(saved));
-      if (meta.compression_level != null) bits.push('d' + meta.compression_level);
-      if (meta.model) bits.push(String(meta.model));
-      else if (meta.provider) bits.push(String(meta.provider));
+      var s = buildSavingsExplain(meta);
+      var big = s.expanded ? '↑ expanded' : (s.pct > 0 ? '−' + s.pct + '% tokens' : '0% saved');
+      var bits = [];
+      bits.push('before ' + compactTok(s.orig) + ' → after ' + compactTok(s.opt) + ' tok');
+      if (s.saved > 0) bits.push(compactTok(s.saved) + ' tok cut');
+      bits.push('est. ' + formatUsdEstimate(s.usdSaved) + ' saved');
+      if (s.model) bits.push('model ' + s.model);
+      else if (s.provider) bits.push(s.provider);
+      if (s.dial != null) bits.push('dial ' + s.dial + '/5');
       savingsStrip.innerHTML =
-        '<span class="big' + (flat ? ' flat' : '') + '">' + big + '</span>' +
+        '<span class="big' + (s.flat ? ' flat' : '') + '">' + big + '</span>' +
         '<span class="muted">' + bits.join(' · ') + '</span>';
       savingsStrip.classList.add('show');
     }
@@ -2767,49 +2904,68 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         div.appendChild(ab);
       }
       if (nmeta && (nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy)) {
-        // One compact line under the reply — no giant 0% wow card
+        // Prefer response model; fall back to what the UI selected this turn
+        if (!nmeta.model && modelEl && modelEl.value) nmeta.model = modelEl.value;
+        if (!nmeta.provider && providerEl && providerEl.value) nmeta.provider = providerEl.value;
+
+        const s = buildSavingsExplain(nmeta);
         const m = document.createElement('div');
-        m.className = 'meta meta-savings';
-        const orig = nmeta.original_tokens;
-        const opt = nmeta.optimized_tokens;
-        const pct = Number(nmeta.token_reduction_percent) || 0;
-        const expanded = nmeta.expanded;
-        const dial = nmeta.compression_level;
-        const saved = Math.max(0, (orig || 0) - (opt || 0));
+        m.className = 'meta meta-savings' + (s.flat ? ' flat-save' : '');
+        m.title =
+          'Token optimization summary.\n' +
+          'Before = size of your prompt after local prep (what would have been billed without shrink).\n' +
+          'After = size actually sent to the model.\n' +
+          'Est. $ uses rough public list prices (blended) — not a bill.\n' +
+          'Model = the model that answered this turn.';
+
         const parts = [];
-        if (expanded) {
+        if (s.expanded) {
           parts.push('<span class="warn">↑ expanded</span>');
-        } else if (pct > 0) {
-          parts.push('<span class="ok">−' + pct + '%</span>');
+        } else if (s.pct > 0) {
+          parts.push('<span class="ok">−' + s.pct + '% tokens saved</span>');
         } else {
-          parts.push('<span class="flat">0%</span>');
+          parts.push('<span class="flat">0% tokens saved</span>');
         }
-        if (orig > 0 || opt > 0) {
-          parts.push('<span>' + compactTok(orig) + '→' + compactTok(opt) + '</span>');
+        parts.push(
+          '<span><span class="lbl">before</span> <span class="val">' + compactTok(s.orig) +
+          '</span> <span class="lbl">→ after</span> <span class="val">' + compactTok(s.opt) +
+          '</span> <span class="lbl">tok</span></span>'
+        );
+        if (s.saved > 0) {
+          parts.push('<span class="ok">−' + compactTok(s.saved) + ' tok</span>');
         }
-        if (saved > 0) parts.push('<span>−' + compactTok(saved) + '</span>');
-        if (dial != null) parts.push('<span>d' + dial + '</span>');
-        if (nmeta.image_count) parts.push('<span>' + nmeta.image_count + ' img</span>');
-        if (nmeta.model) parts.push('<span>' + String(nmeta.model) + '</span>');
-        else if (nmeta.provider) parts.push('<span>' + String(nmeta.provider) + '</span>');
-        // strategy only when not the noisy default agent label
-        if (nmeta.strategy && !/^native-agent/i.test(String(nmeta.strategy))) {
-          parts.push('<span>' + String(nmeta.strategy) + '</span>');
+        parts.push(
+          '<span class="cost-tag" title="Rough estimate from public list prices (~$' +
+            s.rate + '/M tok blended). Not a bill.">est. ' +
+            formatUsdEstimate(s.usdSaved) + ' saved</span>'
+        );
+        if (s.model) {
+          parts.push('<span><span class="lbl">model</span> <span class="model-tag">' +
+            String(s.model).replace(/</g, '') + '</span></span>');
+        } else if (s.provider) {
+          parts.push('<span><span class="lbl">provider</span> <span class="val">' +
+            String(s.provider) + '</span></span>');
+        }
+        if (s.dial != null) {
+          parts.push('<span><span class="lbl">dial</span> <span class="val">' + s.dial + '/5</span></span>');
+        }
+        if (nmeta.image_count) {
+          parts.push('<span><span class="lbl">images</span> <span class="val">' + nmeta.image_count + '</span></span>');
         }
         m.innerHTML = parts.join('<span class="sep">·</span>');
         div.appendChild(m);
 
-        // Highlight bar only for meaningful savings (keeps chat clean on 0%/pass-through)
-        if (!expanded && pct >= 20) {
+        // Small green bar only when real savings (keeps 0% agent turns quiet)
+        if (!s.expanded && s.pct >= 20) {
           const wow = document.createElement('div');
           wow.className = 'wow show-wow';
           wow.innerHTML =
-            '<div class="big">−' + pct + '%</div>' +
+            '<div class="big">−' + s.pct + '% · est. ' + formatUsdEstimate(s.usdSaved) + '</div>' +
             '<div class="bar"><i style="width:0%"></i></div>';
           div.appendChild(wow);
           requestAnimationFrame(function () {
             const bar = wow.querySelector('.bar > i');
-            if (bar) bar.style.width = Math.min(100, pct) + '%';
+            if (bar) bar.style.width = Math.min(100, s.pct) + '%';
           });
         }
 
@@ -5194,9 +5350,12 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       if (profileEl) profileEl.value = 'general';
       if (agentSelect) agentSelect.value = 'none';
-      // Model list is always scoped to the selected provider only
+      // Model list is always scoped to the selected provider only.
+      // Session model becomes sticky so mid-chat switches persist.
+      var sessionModel = modelBelongsToProvider(providerEl.value, s.model) ? s.model : null;
+      if (sessionModel) setStickyModel(providerEl.value, sessionModel);
       fillModelsForProvider(providerEl.value, {
-        preferred: modelBelongsToProvider(providerEl.value, s.model) ? s.model : null
+        preferred: getStickyModel(providerEl.value) || sessionModel
       });
       updateAgentMeta(s);
       applyWorkspaceUi(s);
@@ -5909,7 +6068,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             // Only accept per-provider models that belong to that provider
             Object.keys(data.preferred_models).forEach(function (pid) {
               var mid = data.preferred_models[pid];
-              if (modelBelongsToProvider(pid, mid)) preferredModelsMap[pid] = mid;
+              // Never overwrite a sticky mid-session user pick
+              if (modelBelongsToProvider(pid, mid) && !stickyModelByProvider[pid]) {
+                preferredModelsMap[pid] = mid;
+              }
             });
           }
           if (data.preferred_provider) preferredProviderId = data.preferred_provider;
@@ -5917,7 +6079,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             if (data.preferred_provider && providerEl.querySelector('option[value="' + data.preferred_provider + '"]')) {
               if (!providerEl.value || providerEl.value === data.preferred_provider) {
                 providerEl.value = data.preferred_provider;
-                fillModelsForProvider(providerEl.value);
+                fillModelsForProvider(providerEl.value, { preferred: getStickyModel(providerEl.value) });
               }
             }
             if (typeof data.default_tools_enabled === 'boolean' && toolsEnabledEl && !window.__ppToolsUserTouched) {
@@ -5981,7 +6143,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var models = (cache.models || []).filter(function (m) {
         return m && m.id && modelBelongsToProvider(providerId, m.id);
       });
-      var preferredRaw = opts.preferred || preferredModelsMap[providerId] || cache.preferred || cache.default || '';
+      // Priority: explicit opts → sticky user pick → current dropdown (if same provider) → map → server preferred → default
+      var currentSel = (modelEl.getAttribute('data-provider') === providerId) ? modelEl.value : '';
+      var preferredRaw =
+        opts.preferred ||
+        stickyModelByProvider[providerId] ||
+        (modelBelongsToProvider(providerId, currentSel) ? currentSel : '') ||
+        preferredModelsMap[providerId] ||
+        cache.preferred ||
+        cache.default ||
+        '';
       var preferred = modelBelongsToProvider(providerId, preferredRaw) ? preferredRaw : '';
       if (!preferred && cache.default && modelBelongsToProvider(providerId, cache.default)) {
         preferred = cache.default;
@@ -5991,7 +6162,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (!models.length) {
         var fallback = preferred || (modelBelongsToProvider(providerId, cache.default) ? cache.default : '');
         if (fallback) {
-          ensureModelOption(fallback, fallback + (preferred === fallback ? ' (preferred)' : ''));
+          ensureModelOption(fallback, fallback + (stickyModelByProvider[providerId] === fallback ? ' (selected)' : ''));
           modelEl.value = fallback;
         } else {
           var empty = document.createElement('option');
@@ -6026,31 +6197,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         const res = await fetch(url, { cache: 'no-store' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'models failed');
-        // Ignore stale responses if user switched provider mid-flight
-        if (providerEl && providerEl.value && providerEl.value !== reqProvider) {
-          // still cache for when they switch back
-          providerModelCache[reqProvider] = {
-            models: (data.models || []).filter(function (m) {
-              return m && m.id && modelBelongsToProvider(reqProvider, m.id);
-            }),
-            preferred: modelBelongsToProvider(reqProvider, data.preferred_model) ? data.preferred_model : null,
-            default: data.default_model || null,
-            live: !!data.live
-          };
-          return;
-        }
+        var ownModels = (data.models || []).filter(function (m) {
+          return m && m.id && modelBelongsToProvider(reqProvider, m.id);
+        });
+        var serverPref = modelBelongsToProvider(reqProvider, data.preferred_model)
+          ? data.preferred_model
+          : null;
         providerModelCache[reqProvider] = {
-          models: (data.models || []).filter(function (m) {
-            return m && m.id && modelBelongsToProvider(reqProvider, m.id);
-          }),
-          preferred: modelBelongsToProvider(reqProvider, data.preferred_model) ? data.preferred_model : null,
+          models: ownModels,
+          preferred: serverPref,
           default: data.default_model || null,
           live: !!data.live
         };
-        if (data.preferred_model && modelBelongsToProvider(reqProvider, data.preferred_model)) {
-          preferredModelsMap[reqProvider] = data.preferred_model;
+        // Do NOT clobber sticky user pick with portal preferred_model
+        if (serverPref && !stickyModelByProvider[reqProvider] && !preferredModelsMap[reqProvider]) {
+          preferredModelsMap[reqProvider] = serverPref;
         }
-        fillModelsForProvider(reqProvider);
+        // Only repaint if still on this provider
+        if (!providerEl || !providerEl.value || providerEl.value === reqProvider) {
+          fillModelsForProvider(reqProvider);
+        }
       } catch (e) {
         if (!providerEl || !providerEl.value || providerEl.value === reqProvider) {
           fillModelsForProvider(reqProvider);
@@ -6061,11 +6227,12 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     async function pushLocalSettingsToPortal() {
       if (!providerEl || !providerEl.value) return;
       try {
+        var midPush = getSelectedModelForChat();
         const body = {
           preferred_provider: providerEl.value,
           preferred_model: {
             provider: providerEl.value,
-            model: (modelEl && modelEl.value) ? modelEl.value : ''
+            model: midPush || ''
           },
           default_dial: parseInt(dialEl.value, 10) || 3,
           default_tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
@@ -6101,7 +6268,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         toolsEnabledEl.checked = !!data.default_tools_enabled;
       }
       await loadModelsForProvider(providerEl.value, false);
-      var pref = preferredModelsMap[providerEl.value];
+      // Sticky user pick wins over portal preferred after pull
+      var pref = getStickyModel(providerEl.value) || preferredModelsMap[providerEl.value];
       if (pref) {
         ensureModelOption(pref, pref);
         modelEl.value = pref;
@@ -6207,7 +6375,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (data.preferred_models && typeof data.preferred_models === 'object') {
         Object.keys(data.preferred_models).forEach(function (pid) {
           var mid = data.preferred_models[pid];
-          if (modelBelongsToProvider(pid, mid)) preferredModelsMap[pid] = mid;
+          if (modelBelongsToProvider(pid, mid) && !stickyModelByProvider[pid]) {
+            preferredModelsMap[pid] = mid;
+          }
         });
       }
       if (data.preferred_provider) preferredProviderId = data.preferred_provider;
@@ -6255,18 +6425,23 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       providerEl.addEventListener('change', function () {
         var pid = providerEl.value;
         // Immediately show only this provider's models (never leave previous list visible)
-        fillModelsForProvider(pid);
+        fillModelsForProvider(pid, { preferred: getStickyModel(pid) });
         loadModelsForProvider(pid, false).catch(function () {});
+        var mid = getSelectedModelForChat();
+        if (mid) setStickyModel(pid, mid);
+        persistLocalSessionModel(pid, mid);
         // Persist preferred provider + its model to portal (best-effort)
         pushLocalSettingsToPortal().catch(function () {});
       });
     }
     if (modelEl) {
       modelEl.addEventListener('change', function () {
-        if (providerEl && providerEl.value && modelEl.value) {
-          if (modelBelongsToProvider(providerEl.value, modelEl.value)) {
-            preferredModelsMap[providerEl.value] = modelEl.value;
-          }
+        var pid = providerEl ? providerEl.value : '';
+        var mid = modelEl.value;
+        if (pid && mid && modelBelongsToProvider(pid, mid)) {
+          setStickyModel(pid, mid);
+          persistLocalSessionModel(pid, mid);
+          addMsg('sys', 'Model set to ' + mid + ' for this session (and saved as preferred).', null, false);
         }
         pushLocalSettingsToPortal().catch(function () {});
       });
@@ -6446,9 +6621,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         } else if (pid && modelBelongsToProvider(pid, mArg)) {
           ensureModelOption(mArg, mArg);
           if (modelEl) modelEl.value = mArg;
-          preferredModelsMap[pid] = mArg;
+          setStickyModel(pid, mArg);
+          persistLocalSessionModel(pid, mArg);
           pushLocalSettingsToPortal().catch(function () {});
-          addMsg('sys', 'Model set to ' + mArg + ' (' + pid + ').', null, false);
+          addMsg('sys', 'Model set to ' + mArg + ' (' + pid + ') for this session.', null, false);
         } else {
           addMsg('sys', 'Model "' + mArg + '" does not look like a ' + pid +
             ' model id. Pick from the Model list or use a matching id.', null, true);
@@ -6608,8 +6784,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           optimize_only: optOnly,
           tools_enabled: toolsEnabledEl ? !!toolsEnabledEl.checked : true
         };
-        if (modelEl && modelEl.value && modelBelongsToProvider(providerEl.value, modelEl.value)) {
-          payload.model = modelEl.value;
+        var chatModel = getSelectedModelForChat();
+        if (chatModel) {
+          payload.model = chatModel;
+          // Keep sticky + session in lockstep with what we send
+          setStickyModel(providerEl.value, chatModel);
         }
         if (hist.length) {
           payload.history = hist;

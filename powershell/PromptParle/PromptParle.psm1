@@ -1161,7 +1161,7 @@ function Get-PromptParleSelfCard {
       0.22.4: compact self-knowledge — what PromptParle is, desktop hands, portal, help.
       Always-on so the model does not invent a wrong host or hardcode foreign paths.
     #>
-    $ver = '0.23.3'
+    $ver = '0.23.4'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -12278,6 +12278,51 @@ function Start-PromptParleLocalServer {
                     continue
                 }
 
+                # Persist local session fields immediately (model/provider/dial) so mid-chat switches stick
+                if (($req.HttpMethod -eq 'POST' -or $req.HttpMethod -eq 'PATCH') -and $path -eq '/api/session') {
+                    try {
+                        $encSess = $req.ContentEncoding
+                        if (-not $encSess) { $encSess = [System.Text.Encoding]::UTF8 }
+                        $readerSess = New-Object System.IO.StreamReader($req.InputStream, $encSess)
+                        $rawSess = $readerSess.ReadToEnd()
+                        $readerSess.Close()
+                        $bodySess = ConvertFrom-PromptParleJson -Json $rawSess
+                        $baseSess = Get-PromptParleSessionState
+                        $sp = @{ Base = $baseSess }
+                        $provS = Get-PromptParleProp $bodySess 'provider' $null
+                        if ($provS) { $sp.Provider = [string]$provS }
+                        # Always apply model when key present (including explicit switch to grok-3 etc.)
+                        if ($null -ne (Get-PromptParleProp $bodySess 'model' $null) -or
+                            ($bodySess.PSObject.Properties.Name -contains 'model')) {
+                            $modS = [string](Get-PromptParleProp $bodySess 'model' '')
+                            $sp.Model = $modS
+                        }
+                        $dialS = Get-PromptParleProp $bodySess 'dial' (Get-PromptParleProp $bodySess 'compression_level' $null)
+                        if ($null -ne $dialS) {
+                            try {
+                                $di = [int]$dialS
+                                if ($di -ge 1 -and $di -le 5) { $sp.Dial = $di }
+                            } catch { }
+                        }
+                        $teS = Get-PromptParleProp $bodySess 'tools_enabled' (Get-PromptParleProp $bodySess 'toolsEnabled' $null)
+                        if ($null -ne $teS) { $sp.ToolsEnabled = [bool]$teS }
+                        $nextSess = New-PromptParleSessionSnapshot @sp
+                        Save-PromptParleSessionState -State $nextSess
+                        $payloadS = @{
+                            ok       = $true
+                            provider = $nextSess.provider
+                            model    = $nextSess.model
+                            dial     = [int]$nextSess.dial
+                            tools_enabled = [bool]$nextSess.tools_enabled
+                        } | ConvertTo-Json -Depth 4 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payloadS
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 # Local filesystem browser (this PC only — never sent to cloud)
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/fs/list') {
                     try {
@@ -12693,14 +12738,17 @@ function Start-PromptParleLocalServer {
                         if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
                         $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
                         if (-not $provider) { $provider = 'openai' }
-                        # Explicit model from UI selector (0.23) — else session preferred — else portal default on server
+                        # Explicit model from UI selector (0.23.4+) — body wins, then session sticky.
+                        # Mid-chat model switches must not fall back to a stale portal preferred.
                         $modelChat = [string](Get-PromptParleProp $body 'model' '')
-                        if (-not $modelChat) {
+                        $modelFromBody = -not [string]::IsNullOrWhiteSpace($modelChat)
+                        if (-not $modelFromBody) {
                             try {
                                 $stM = Get-PromptParleSessionState
                                 $modelChat = [string](Get-PromptParleProp $stM 'model' '')
                             } catch { $modelChat = '' }
                         }
+                        $modelChat = $modelChat.Trim()
                         # Product 0.14: dial is the only aggressiveness knob (no agent/profile router)
                         $profile = 'general'
                         $dialRaw = Get-PromptParleProp $body 'compression_level' $null
@@ -12749,7 +12797,7 @@ function Start-PromptParleLocalServer {
                                 }
                             } catch { $toolsEnChat = $true }
                         }
-                        # Persist provider/model/tools/dial from UI each chat
+                        # Persist provider/model/tools/dial from UI each chat (model always when known)
                         try {
                             $stSave = Get-PromptParleSessionState
                             $snapChat = @{
@@ -12760,7 +12808,10 @@ function Start-PromptParleLocalServer {
                                 Provider     = $provider
                                 OptimizeOnly = $optOnly
                             }
-                            if ($modelChat) { $snapChat.Model = $modelChat }
+                            # Force Model key so a UI switch replaces prior session model
+                            if ($modelFromBody -or $modelChat) {
+                                $snapChat.Model = $modelChat
+                            }
                             $stSave = New-PromptParleSessionSnapshot @snapChat
                             Save-PromptParleSessionState -State $stSave
                         } catch { }
@@ -12837,7 +12888,12 @@ function Start-PromptParleLocalServer {
                             Profile           = $profile
                             CompressionLevel  = $dial
                         }
-                        if ($modelChat) { $params.Model = [string]$modelChat }
+                        if ($modelChat) {
+                            $params.Model = [string]$modelChat
+                            Write-Host ("  chat: forcing model={0}" -f $modelChat) -ForegroundColor DarkCyan
+                        } else {
+                            Write-Host '  chat: no model in body/session — portal preferred/default will apply' -ForegroundColor DarkYellow
+                        }
                         # Pass as single string - never as char-unrolled array
                         if ($context) { $params.Context = [string]$context }
                         if ($optOnly) { $params.OptimizeOnly = $true }

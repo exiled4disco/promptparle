@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.23.3'
+    ModuleVersion     = '0.23.4'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -57,6 +57,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.23.3: Compact chat savings (one thin line; no giant 0% wow cards; quieter top strip)
 0.23.2: Terminal AI chat layout option; slash / command autocomplete in bubble + terminal; /mode /model
 0.23.1: Model list strictly per provider (no GPT under Grok); race-safe refresh; expanded curated catalogs (Grok 4, GPT-5, Claude 4.5, Gemini 2.5)
 0.23.0: Dynamic model select from provider list (live+curated); portal Settings chat defaults; bidirectional portal↔client settings sync; install pulls prefs after API key
