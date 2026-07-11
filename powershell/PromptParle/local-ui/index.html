@@ -455,22 +455,23 @@
       display: none;
       align-items: center;
       flex-wrap: wrap;
-      gap: .45rem .75rem;
-      padding: .55rem .75rem;
-      border-radius: 10px;
-      border: 1px solid rgba(52,211,153,.35);
-      background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.1));
-      font-size: .82rem;
+      gap: .2rem .45rem;
+      padding: .28rem .55rem;
+      border-radius: 8px;
+      border: 1px solid rgba(52,211,153,.28);
+      background: rgba(52,211,153,.06);
+      font-size: .72rem;
+      line-height: 1.25;
     }
     .savings-strip.show { display: flex; }
     .savings-strip .big {
-      font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em;
-      background: linear-gradient(90deg, #34d399, #5b8cff);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
+      font-size: .82rem; font-weight: 750; letter-spacing: -0.01em;
+      color: var(--success);
     }
-    .savings-strip .muted { color: var(--muted); font-size: .78rem; }
+    .savings-strip .big.flat { color: var(--dim); font-weight: 600; }
+    .savings-strip .muted { color: var(--muted); font-size: .7rem; }
     .savings-strip .chip {
-      font-size: .7rem; padding: .15rem .45rem; border-radius: 999px;
+      font-size: .65rem; padding: .08rem .35rem; border-radius: 999px;
       background: #0a0e16; border: 1px solid var(--border); color: var(--muted);
       display: inline-flex; max-width: none;
     }
@@ -520,18 +521,36 @@
     }
     .meta .ok { color: var(--success); font-weight: 600; }
     .meta .warn { color: var(--warn); }
+    /* Compact per-message savings (replaces big wow cards) */
+    .meta.meta-savings {
+      margin-top: .28rem;
+      padding: .18rem 0 0;
+      border-top: 1px solid rgba(30, 42, 61, 0.85);
+      gap: .15rem .35rem;
+      font-size: .68rem;
+      line-height: 1.25;
+      color: var(--dim);
+      align-items: center;
+    }
+    .meta.meta-savings .sep { opacity: .45; margin: 0 .05rem; }
+    .meta.meta-savings .ok { font-weight: 700; }
+    .meta.meta-savings .flat { color: var(--dim); font-weight: 600; }
+    /* Rare highlight only when real savings (pct >= 20) */
     .wow {
-      margin-top: .55rem; padding: .65rem .75rem; border-radius: 10px;
-      background: linear-gradient(135deg, rgba(52,211,153,.12), rgba(91,140,255,.1));
-      border: 1px solid rgba(52,211,153,.35);
+      display: none; /* legacy; compact meta replaces inline wow */
+      margin-top: .35rem; padding: .4rem .55rem; border-radius: 8px;
+      background: linear-gradient(135deg, rgba(52,211,153,.1), rgba(91,140,255,.08));
+      border: 1px solid rgba(52,211,153,.3);
+    }
+    .wow.show-wow {
+      display: block;
     }
     .wow .big {
-      font-size: 1.4rem; font-weight: 800; letter-spacing: -0.02em;
-      background: linear-gradient(90deg, #34d399, #5b8cff);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
+      font-size: 1rem; font-weight: 800; letter-spacing: -0.02em;
+      color: var(--success);
     }
     .wow .bar {
-      margin-top: .4rem; height: 7px; border-radius: 999px; background: #0a0e16; overflow: hidden;
+      margin-top: .25rem; height: 4px; border-radius: 999px; background: #0a0e16; overflow: hidden;
       border: 1px solid var(--border);
     }
     .wow .bar > i {
@@ -539,9 +558,9 @@
       background: linear-gradient(90deg, #34d399, #5b8cff);
       transition: width 700ms cubic-bezier(.2,.8,.2,1);
     }
-    .wow .chips { margin-top: .45rem; display: flex; flex-wrap: wrap; gap: .3rem; }
+    .wow .chips { margin-top: .3rem; display: flex; flex-wrap: wrap; gap: .25rem; }
     .wow .chip2 {
-      font-size: .7rem; padding: .15rem .45rem; border-radius: 999px;
+      font-size: .65rem; padding: .1rem .35rem; border-radius: 999px;
       background: #0a0e16; border: 1px solid var(--border); color: var(--muted);
     }
     .wow .chip2 strong { color: var(--success); font-weight: 700; }
@@ -624,6 +643,12 @@
     body.chat-style-term .msg .wow {
       font-family: system-ui, -apple-system, Segoe UI, sans-serif;
       margin-left: 3.2rem;
+    }
+    body.chat-style-term .msg .meta.meta-savings {
+      margin-top: .15rem;
+      padding-top: .1rem;
+      border-top-color: rgba(30, 42, 61, 0.6);
+      font-size: .65rem;
     }
     body.chat-style-term .composer {
       background: #05070c;
@@ -2336,6 +2361,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       };
     }
 
+    /** Compact token counts: 4647 → 4.6k */
+    function compactTok(n) {
+      n = Number(n) || 0;
+      if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 10000) return Math.round(n / 1000) + 'k';
+      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+      return String(n);
+    }
+
     function updateSavingsStrip(meta) {
       if (!meta || !(meta.original_tokens > 0 || meta.optimized_tokens > 0)) {
         return;
@@ -2345,17 +2379,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const pct = meta.token_reduction_percent || 0;
       const expanded = meta.expanded;
       const saved = Math.max(0, orig - opt);
+      const flat = !expanded && !(pct > 0);
       let big = expanded ? '↑' : (pct > 0 ? '−' + pct + '%' : '0%');
-      const chips = [];
-      if (meta.compression_level != null) chips.push('<span class="chip">dial <strong>' + meta.compression_level + '/5</strong></span>');
-      if (meta.strategy) chips.push('<span class="chip">strategy <strong>' + meta.strategy + '</strong></span>');
-      if (meta.provider) chips.push('<span class="chip">' + meta.provider + '</span>');
-      if (meta.model) chips.push('<span class="chip">' + meta.model + '</span>');
+      // Compact strip: pct · tokens · dial · model (no strategy wall)
+      const bits = [];
+      bits.push(compactTok(orig) + '→' + compactTok(opt));
+      if (saved > 0) bits.push('−' + compactTok(saved));
+      if (meta.compression_level != null) bits.push('d' + meta.compression_level);
+      if (meta.model) bits.push(String(meta.model));
+      else if (meta.provider) bits.push(String(meta.provider));
       savingsStrip.innerHTML =
-        '<span class="big">' + big + '</span>' +
-        '<span class="muted">' + orig.toLocaleString() + ' → ' + opt.toLocaleString() +
-          ' tokens · saved ' + saved.toLocaleString() + '</span>' +
-        chips.join('');
+        '<span class="big' + (flat ? ' flat' : '') + '">' + big + '</span>' +
+        '<span class="muted">' + bits.join(' · ') + '</span>';
       savingsStrip.classList.add('show');
     }
 
@@ -2732,54 +2767,51 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         div.appendChild(ab);
       }
       if (nmeta && (nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy)) {
+        // One compact line under the reply — no giant 0% wow card
         const m = document.createElement('div');
-        m.className = 'meta';
+        m.className = 'meta meta-savings';
         const orig = nmeta.original_tokens;
         const opt = nmeta.optimized_tokens;
-        const pct = nmeta.token_reduction_percent;
+        const pct = Number(nmeta.token_reduction_percent) || 0;
         const expanded = nmeta.expanded;
         const dial = nmeta.compression_level;
-        let save = expanded
-          ? '<span class="warn">expanded</span>'
-          : (pct > 0
-            ? '<span class="ok">−' + pct + '% saved</span>'
-            : '<span class="warn">0% saved (attach a larger doc, or raise dial)</span>');
-        m.innerHTML =
-          '<span><strong>' + orig.toLocaleString() + ' → ' + opt.toLocaleString() + '</strong> tokens</span>' + save +
-          (dial != null ? '<span>dial ' + dial + '/5</span>' : '') +
-          (nmeta.strategy ? '<span>' + nmeta.strategy + '</span>' : '') +
-          (nmeta.image_count ? '<span>' + nmeta.image_count + ' image(s)</span>' : '') +
-          (nmeta.provider ? '<span>' + nmeta.provider + '</span>' : '') +
-          (nmeta.model ? '<span>' + nmeta.model + '</span>' : '');
+        const saved = Math.max(0, (orig || 0) - (opt || 0));
+        const parts = [];
+        if (expanded) {
+          parts.push('<span class="warn">↑ expanded</span>');
+        } else if (pct > 0) {
+          parts.push('<span class="ok">−' + pct + '%</span>');
+        } else {
+          parts.push('<span class="flat">0%</span>');
+        }
+        if (orig > 0 || opt > 0) {
+          parts.push('<span>' + compactTok(orig) + '→' + compactTok(opt) + '</span>');
+        }
+        if (saved > 0) parts.push('<span>−' + compactTok(saved) + '</span>');
+        if (dial != null) parts.push('<span>d' + dial + '</span>');
+        if (nmeta.image_count) parts.push('<span>' + nmeta.image_count + ' img</span>');
+        if (nmeta.model) parts.push('<span>' + String(nmeta.model) + '</span>');
+        else if (nmeta.provider) parts.push('<span>' + String(nmeta.provider) + '</span>');
+        // strategy only when not the noisy default agent label
+        if (nmeta.strategy && !/^native-agent/i.test(String(nmeta.strategy))) {
+          parts.push('<span>' + String(nmeta.strategy) + '</span>');
+        }
+        m.innerHTML = parts.join('<span class="sep">·</span>');
         div.appendChild(m);
 
-        // Always show wow card when we have token stats (including 0% so user sees it)
-        const wow = document.createElement('div');
-        wow.className = 'wow';
-        const saved = Math.max(0, orig - opt);
-        const sig = nmeta.signals || {};
-        const chips = [];
-        if (dial != null) chips.push('<span class="chip2">dial <strong>' + dial + '/5</strong></span>');
-        if (nmeta.strategy) chips.push('<span class="chip2">strategy <strong>' + nmeta.strategy + '</strong></span>');
-        if (sig.fleetParts != null) chips.push('<span class="chip2">fleet parts <strong>' + sig.fleetParts + '</strong></span>');
-        if (sig.obligations != null) chips.push('<span class="chip2">requirements <strong>' + sig.obligations + '</strong></span>');
-        if (sig.numbers != null) chips.push('<span class="chip2">numbers <strong>' + sig.numbers + '</strong></span>');
-        if (sig.unitsFull != null) chips.push('<span class="chip2">code full units <strong>' + sig.unitsFull + '</strong></span>');
-        if (sig.rows != null) chips.push('<span class="chip2">sheet rows <strong>' + sig.rows + '</strong></span>');
-        if (nmeta.notes && nmeta.notes[0]) chips.push('<span class="chip2">' + String(nmeta.notes[0]).slice(0, 90) + '</span>');
-        const bigLabel = expanded ? 'expanded' : (pct > 0 ? '−' + pct + '%' : '0%');
-        wow.innerHTML =
-          '<div class="big">' + bigLabel + '</div>' +
-          '<div style="font-size:.82rem;color:var(--muted);margin-top:.1rem">' +
-            orig.toLocaleString() + ' → ' + opt.toLocaleString() + ' tokens · saved ' + saved.toLocaleString() +
-          '</div>' +
-          '<div class="bar"><i style="width:0%"></i></div>' +
-          (chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '');
-        div.appendChild(wow);
-        requestAnimationFrame(function () {
-          const bar = wow.querySelector('.bar > i');
-          if (bar) bar.style.width = Math.min(100, Math.max(expanded ? 0 : pct, 0)) + '%';
-        });
+        // Highlight bar only for meaningful savings (keeps chat clean on 0%/pass-through)
+        if (!expanded && pct >= 20) {
+          const wow = document.createElement('div');
+          wow.className = 'wow show-wow';
+          wow.innerHTML =
+            '<div class="big">−' + pct + '%</div>' +
+            '<div class="bar"><i style="width:0%"></i></div>';
+          div.appendChild(wow);
+          requestAnimationFrame(function () {
+            const bar = wow.querySelector('.bar > i');
+            if (bar) bar.style.width = Math.min(100, pct) + '%';
+          });
+        }
 
         updateSavingsStrip(nmeta);
       }

@@ -1161,7 +1161,7 @@ function Get-PromptParleSelfCard {
       0.22.4: compact self-knowledge — what PromptParle is, desktop hands, portal, help.
       Always-on so the model does not invent a wrong host or hardcode foreign paths.
     #>
-    $ver = '0.23.2'
+    $ver = '0.23.3'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
