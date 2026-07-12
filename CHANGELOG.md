@@ -9,6 +9,18 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.19] - 2026-07-12
+
+### Fixed
+- Attaching documents and asking for a summary returned "Deliver FAIL-CLOSED"
+  (or web-searched) instead of summarizing them. "Executive summary" was
+  classified as owing a downloadable FILE (so no-file-built → fail-closed), and
+  "summary" tripped web intent. Now, when composer attachments are present and
+  the ask is to read/summarize/analyze them (with no explicit URL/domain or
+  "as a PDF/DOCX"), the turn answers from the attachments in chat — no forced
+  deliverable, no web lookup. Explicit "as a pdf" or a domain still route to
+  deliver/web as before.
+
 ## [0.32.18] - 2026-07-12
 
 ### Fixed

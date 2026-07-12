@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.18'
+    $ver = '0.32.19'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -6980,6 +6980,14 @@ function Resolve-PromptParleTurnObligation {
     $domains = @(Get-PromptParleDomainsFromText -Text $p)
     $paths = @(Get-PromptParlePathsFromText -Text $p)
 
+    # Composer attachments present this turn? If the user attached docs/images and
+    # asked to summarize/read/analyze them, the EVIDENCE is the attachments — it is
+    # an answer-from-attachments turn (mode=reason), NOT a file-deliverable and NOT
+    # a web lookup. ("executive summary of these documents" was wrongly classified
+    # as owing a downloadable file → FAIL-CLOSED, and 'summary' tripped web intent.)
+    $hasAttachments = [bool]($p -match '\[ATTACHED THIS TURN' -or $p -match '(?im)^\s*\[\d+ attachment\(s\)\]')
+    $attachReadIntent = [bool]($p -match '(?i)\b(summar|summarize|summary|executive (summary|brief)|review|read|analy[sz]e|go over|walk through|explain|compare|what.?s in|contents? of|key points|tl;?dr|extract|brief me)\b')
+
     $wantWeb = $false
     if ($urls.Count -gt 0) { $wantWeb = $true }
     if (Test-PromptParleWebSearchIntent -Prompt $p) { $wantWeb = $true }
@@ -7001,6 +7009,11 @@ function Resolve-PromptParleTurnObligation {
     # Domain present + "can you / please / I would like" → treat as web observe
     if (-not $wantWeb -and $domains.Count -gt 0 -and $p -match '(?i)\b(can you|please|i would like|help me|tell me)\b') {
         $wantWeb = $true
+    }
+    # Attachments + read-intent and NO explicit URL/domain → answer from the
+    # attachments, don't go to the web. (Fixes "summarize these docs" web-searching.)
+    if ($hasAttachments -and $attachReadIntent -and $urls.Count -eq 0 -and $domains.Count -eq 0) {
+        $wantWeb = $false
     }
 
     $wantList = [bool]($p -match '(?i)\b(list(\s+the)?(\s+dir|\s+directory|\s+files|\s+folder)?|directory listing|dir listing|\bls\b|show (me )?(the )?(files|contents|listing)|what''?s in|whats in|tree\s+(the\s+)?(dir|directory|folder)|contents of)\b')
@@ -7036,6 +7049,14 @@ function Resolve-PromptParleTurnObligation {
 
     # Explicit document deliver only — "review X.com" / "tell me about" are chat answers, not downloads.
     $wantDeliver = [bool]($p -match '(?i)\b(one[\s-]?page|one[\s-]?pager|executive summary|write me (a |an )?(article|summary|brief|report|pdf|docx|document)|deliverable|download(able)?|as (a )?(pdf|docx|markdown|md)\b)')
+    # BUT: if the user ATTACHED documents and asked to summarize/read them, they want
+    # the answer IN CHAT (reading their files), not a file to download. Don't force a
+    # deliverable (which would FAIL-CLOSED when no file is built) UNLESS they explicitly
+    # asked for a downloadable format.
+    if ($wantDeliver -and $hasAttachments -and $attachReadIntent -and
+        ($p -notmatch '(?i)\b(download(able)?|as (a )?(pdf|docx|markdown|md)\b|\.pdf|\.docx|one[\s-]?pager|deliverable)')) {
+        $wantDeliver = $false
+    }
     # Artifact ask: "create/build/make/generate/write me a <form|app|page|script|
     # component|website|tool|file|html|template>" → the user wants a usable file,
     # not code pasted in chat. Default to a downloadable deliverable (0.30.1).
