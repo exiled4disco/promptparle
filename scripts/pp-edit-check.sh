@@ -14,7 +14,11 @@
 # Never fails the tool call for style; only reports. Exit 0 always.
 ########################################################################
 set -uo pipefail
-export PATH="/home/linuxbrew/.linuxbrew/bin:/home/ubuntu/.nvm/versions/node/v22.19.0/bin:$PATH:/usr/local/bin:/usr/bin:/bin"
+# Prepend common local toolchain dirs if present (portable — no hardcoded username).
+for d in "$HOME"/.nvm/versions/node/*/bin /home/linuxbrew/.linuxbrew/bin; do
+  [ -d "$d" ] && PATH="$d:$PATH"
+done
+export PATH="$PATH:/usr/local/bin:/usr/bin:/bin"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Extract the edited file path from the hook JSON on stdin (best-effort).

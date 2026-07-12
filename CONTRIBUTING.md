@@ -103,7 +103,7 @@ below to jump to a function.
 
 ## Dev token tooling (`scripts/pp-*.sh`)
 
-This repo carries ExampleCorp-style helper scripts so working on it costs fewer
+This repo carries token-efficiency helper scripts so working on it costs fewer
 tokens: answer from a tool, not a giant file load. Reach for these before
 composing greps or reading large files.
 

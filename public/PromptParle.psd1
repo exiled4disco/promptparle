@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.32.6'
+    ModuleVersion     = '0.32.7'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -135,7 +135,7 @@
 0.23.2: Terminal AI chat layout option; slash / command autocomplete in bubble + terminal; /mode /model
 0.23.1: Model list strictly per provider (no GPT under Grok); race-safe refresh; expanded curated catalogs (Grok 4, GPT-5, Claude 4.5, Gemini 2.5)
 0.23.0: Dynamic model select from provider list (live+curated); portal Settings chat defaults; bidirectional portal↔client settings sync; install pulls prefs after API key
-0.22.4: Local dir list on this PC (C:\); no hardcoded /home/ubuntu product root; [SELF] capabilities + portal/help; local_list tool
+0.22.4: Local dir list on this PC (C:\); no hardcoded dev product root; [SELF] capabilities + portal/help; local_list tool
 0.22.3: Stop Grounding 0.20 near-quote spam after clean quality gate; high-severity-only grounding; AMTD expansion not flagged when AMTD in evidence
 0.22.2: Quality gate scores product bullets (not markdown-skip / grounding theater); silent when research is source-backed; package always includes local-ui
 0.22.1: Research hands — HTML DDG fallback + domain page auto-fetch into [WEB]/[OBSERVE]; quality gate skips no-evidence meta / thin shells (no 0% spam)

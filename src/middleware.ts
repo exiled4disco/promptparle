@@ -17,9 +17,11 @@ function withSecurityHeaders(res: NextResponse): NextResponse {
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob:",
+      "img-src 'self' data: blob: https://github.com https://*.githubusercontent.com",
       "font-src 'self' data:",
       "connect-src 'self'",
+      // GitHub Sponsors button/card are official iframes from github.com
+      "frame-src https://github.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

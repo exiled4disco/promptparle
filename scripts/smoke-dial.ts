@@ -28,7 +28,7 @@ Sensors must coordinate decoy responses.
 ### Principle 5 — Hive
 Hundreds rotating, not static. Hive defenses cannot be mapped.
 
-## 4. How ExampleCorp Delivers AMTD
+## 4. How the Platform Delivers AMTD
 ### 4.1 Sensor Subsystem
 Sensors observe and act with full context.
 ### 4.2 Decoy Responder

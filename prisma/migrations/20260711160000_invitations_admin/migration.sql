@@ -1,8 +1,10 @@
 -- Admin flag
 ALTER TABLE "users" ADD COLUMN "is_admin" BOOLEAN NOT NULL DEFAULT false;
 
--- Promote founder account
-UPDATE "users" SET "is_admin" = true WHERE "email" = 'REDACTED_EMAIL';
+-- Promote the founder/admin account out-of-band (do NOT hardcode an email here).
+-- After the first account is created, grant admin manually, e.g.:
+--   UPDATE "users" SET "is_admin" = true WHERE "email" = '<your-admin-email>';
+-- or set it via your own seed/ops script.
 
 -- Invitations
 CREATE TABLE "invitations" (

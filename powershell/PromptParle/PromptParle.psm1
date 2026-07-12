@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.6'
+    $ver = '0.32.7'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -2590,7 +2590,7 @@ function Get-PromptParleWebSearchQuery {
     # Prefer domain after search/from/of/about
     if ($p -match '(?i)\bsearch\s+([\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)') { return $Matches[1] }
     if ($p -match '(?i)\bfrom\s+(?:the\s+)?([\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)') { return $Matches[1] }
-    # "research the strengths of examplecorp.com" → domain + topic (page fetch uses domain; search uses this)
+    # "research the strengths of example.com" → domain + topic (page fetch uses domain; search uses this)
     if ($p -match '(?i)\b([\w.-]+\.(?:com|org|net|io|ai|dev|co))\b') {
         $dom = $Matches[1]
         $topics = New-Object System.Collections.Generic.List[string]
@@ -2830,10 +2830,8 @@ function Invoke-PromptParleWebSearchLocal {
     $domainHit = ''
     if ($q -match '(?i)\b((?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|dev|co))\b') {
         $domainHit = $Matches[1].ToLowerInvariant()
-    } elseif ($q -match '(?i)\bexamplecorp\b') {
-        $domainHit = 'examplecorp.com'
     }
-    # Brand-like token → try matching hit URL host (e.g. "examplecorp strengths")
+    # Brand-like token → try matching hit URL host (e.g. "acme strengths")
     if (-not $domainHit -and $hits.Count -gt 0) {
         $qTokens = @([regex]::Matches($q.ToLowerInvariant(), '[a-z0-9]{4,}') | ForEach-Object { $_.Value } |
             Where-Object { $_ -notmatch '^(https|http|www|com|org|net|news|latest|release|releases|strength|strengths|about|what|does|with|from|site|website|company|product|solution)$' })
@@ -2867,7 +2865,11 @@ function Invoke-PromptParleWebSearchLocal {
                 }
                 if (-not $hasDom) {
                     $titleLine = $domainHit
-                    if ($pageBlob -match '(?i)\bExampleCorp[^\n.]{0,80}') {
+                    # Use the brand-ish token from the query (if any) to pull a title line
+                    # from the fetched page — generic, no hardcoded brand.
+                    $brandTok = ''
+                    if ($q -match '(?i)\b([a-z][a-z0-9]{3,})\b') { $brandTok = $Matches[1] }
+                    if ($brandTok -and $pageBlob -match ('(?i)\b' + [regex]::Escape($brandTok) + '[^\n.]{0,80}')) {
                         $titleLine = $Matches[0].Trim()
                     }
                     $snip = $pageBlob
@@ -4883,9 +4885,9 @@ function ConvertFrom-PromptParleBareHandsBlocks {
       Parse bare [HANDS] requests models emit when they echo the catalog header
       instead of a ```hands fence. Example:
         [HANDS]
-        web_page: examplecorp.com
+        web_page: example.com
       Or inline:
-        [HANDS] web_page: examplecorp.com
+        [HANDS] web_page: example.com
     #>
     param([string]$Text = '')
     $reqs = New-Object System.Collections.Generic.List[object]
@@ -8206,7 +8208,7 @@ function Get-PromptParleClaimMatchStatus {
         'offers'=$true;'offer'=$true;'enables'=$true;'enable'=$true;'allows'=$true;'allow'=$true
         'platform'=$true;'solution'=$true;'solutions'=$true;'security'=$true;'network'=$true
         'system'=$true;'systems'=$true;'product'=$true;'products'=$true;'company'=$true
-        'examplecorp'=$true;'website'=$true;'page'=$true;'site'=$true;'http'=$true;'https'=$true
+        'website'=$true;'page'=$true;'site'=$true;'http'=$true;'https'=$true
         'environments'=$true;'environment'=$true;'organizations'=$true;'rather'=$true;'these'=$true
         'capabilities'=$true;'capability'=$true;'features'=$true;'feature'=$true;'above'=$true
         'additional'=$true;'details'=$true;'claimed'=$true;'statements'=$true;'taken'=$true
@@ -9243,12 +9245,11 @@ function Invoke-PromptParleAgentLocalPrep {
     try {
         if (Test-PromptParleProvenanceIntent -Prompt $pr) {
             # Ensure web observe if domain/site mentioned and not already fetched
-            if ($pr -match '(?i)website|examplecorp\.com|https?://' -or $pr -match '(?i)\b(site|page)\b') {
+            if ($pr -match '(?i)website|https?://' -or $pr -match '(?i)\b(site|page)\b') {
                 if ($ctx -notmatch '(?m)\[OBSERVE\] kind=web') {
                     try {
                         $dom = ''
                         if ($pr -match '(?i)([a-z0-9.-]+\.(?:com|org|net|io|ai))') { $dom = $Matches[1] }
-                        if (-not $dom -and $pr -match '(?i)examplecorp') { $dom = 'examplecorp.com' }
                         if ($dom) {
                             $pg = Invoke-PromptParleWebPageFetch -UrlOrDomain $dom -MaxChars 6000
                             if ($pg.ok -and $pg.text) {

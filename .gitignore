@@ -51,6 +51,16 @@ HANDOFF.txt
 *.pp-bak*
 *.pp-bak-*
 
+# Internal dev harness + planning — kept local, not part of the public app
+.claude/
+CLAUDE.md
+AGENTS.md
+PROMPTPARLE_HANDOFF.md
+GROK-WORKSPACE.md
+PromptParle Product Plan.md
+docs/PUBLIC-GITHUB-CHECKLIST.md
+docs/tool-savings-attribution-plan.md
+
 # local tooling / OS
 *.swp
 .idea/
