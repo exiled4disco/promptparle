@@ -362,6 +362,174 @@ if (Test-Path -LiteralPath $script:PromptParleLocalFirstPath) {
     Write-Warning "LocalFirst.ps1 missing at $($script:PromptParleLocalFirstPath) — local provider path unavailable"
 }
 
+# Module dir (for spawning a detached child pwsh that re-imports the module).
+$script:PromptParleModuleDir = $PSScriptRoot
+
+# =============================================================================
+# 0.30 Background jobs: long turns run in a DETACHED child pwsh process so the
+# single-threaded local HTTP server never blocks. Job state is file-backed under
+# the config dir (jobs/<id>.json); the child writes the final result there. The
+# UI polls /api/chat/job. Result lands in the origin chat (client_session_id).
+# =============================================================================
+
+function Get-PromptParleJobsDir {
+    $dir = Join-Path $script:PromptParleConfigDir 'jobs'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
+function Get-PromptParleJobPath {
+    param([Parameter(Mandatory)][string]$Id)
+    $safe = ($Id -replace '[^A-Za-z0-9_-]', '')
+    if (-not $safe) { throw 'bad job id' }
+    return (Join-Path (Get-PromptParleJobsDir) ("$safe.json"))
+}
+
+function Read-PromptParleJob {
+    param([Parameter(Mandatory)][string]$Id)
+    $path = Get-PromptParleJobPath -Id $Id
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if (-not $raw) { return $null }
+        return (ConvertFrom-PromptParleJson -Json $raw)
+    } catch { return $null }
+}
+
+function Write-PromptParleJob {
+    param([Parameter(Mandatory)]$Job)
+    $id = [string](Get-PromptParleProp $Job 'id' '')
+    if (-not $id) { throw 'job has no id' }
+    $path = Get-PromptParleJobPath -Id $id
+    $tmp = "$path.tmp"
+    $json = ConvertTo-PromptParleJson -InputObject $Job -Depth 12
+    # Atomic-ish write so a poller never reads a half-written file.
+    Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8
+    try { Move-Item -LiteralPath $tmp -Destination $path -Force } catch { Set-Content -LiteralPath $path -Value $json -Encoding UTF8 }
+}
+
+function Start-PromptParleChatJob {
+    <#
+    .SYNOPSIS
+      Spawn a detached child pwsh to run one chat turn in the background.
+      Returns { job_id, status='running' } immediately. Child writes the final
+      result (response + metadata) into jobs/<id>.json when done.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Payload,
+        [string]$SessionId = '',
+        [string]$Title = ''
+    )
+    # id: time-free (Date.now unavailable concerns don't apply here — module, not workflow)
+    $id = 'job_' + ([guid]::NewGuid().ToString('N').Substring(0, 16))
+    $now = (Get-Date).ToUniversalTime().ToString('o')
+    $job = [pscustomobject]@{
+        id                = $id
+        status            = 'running'
+        session_id        = [string]$SessionId
+        title             = [string]$Title
+        created_at        = $now
+        updated_at        = $now
+        prompt_preview    = ([string](Get-PromptParleProp $Payload 'message' '')).Substring(0, [Math]::Min(80, ([string](Get-PromptParleProp $Payload 'message' '')).Length))
+        response          = $null
+        metadata          = $null
+        error             = $null
+    }
+    Write-PromptParleJob -Job $job
+
+    # Hand the payload + job path to the child via a temp request file.
+    $reqPath = (Get-PromptParleJobPath -Id $id) -replace '\.json$', '.req.json'
+    Set-Content -LiteralPath $reqPath -Value (ConvertTo-PromptParleJson -InputObject $Payload -Depth 12) -Encoding UTF8
+
+    $modDir = $script:PromptParleModuleDir
+    $cfgDir = $script:PromptParleConfigDir
+    $jobPath = Get-PromptParleJobPath -Id $id
+    # Child script: import module, run the turn via the shared runner, write result.
+    $childScript = @"
+`$ErrorActionPreference = 'Stop'
+`$env:PROMPTPARLE_CONFIG_DIR = '$($cfgDir -replace "'", "''")'
+Import-Module '$($modDir -replace "'", "''")\PromptParle.psd1' -Force
+try {
+    Invoke-PromptParleRunChatJob -JobPath '$($jobPath -replace "'", "''")' -RequestPath '$($reqPath -replace "'", "''")'
+} catch {
+    try {
+        `$j = Get-Content -LiteralPath '$($jobPath -replace "'", "''")' -Raw | ConvertFrom-Json
+        `$j.status = 'error'; `$j.error = "`$_"
+        `$j | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath '$($jobPath -replace "'", "''")' -Encoding UTF8
+    } catch { }
+}
+"@
+    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($childScript))
+    $pwshExe = (Get-Process -Id $PID).Path
+    if (-not $pwshExe) { $pwshExe = if ($script:PromptParleIsWindows) { 'powershell.exe' } else { 'pwsh' } }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $pwshExe
+        $psi.Arguments = "-NoProfile -NonInteractive -EncodedCommand $b64"
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = 'Hidden'
+        [void][System.Diagnostics.Process]::Start($psi)
+    } catch {
+        # Could not spawn — mark failed so the UI stops polling.
+        $job.status = 'error'; $job.error = "spawn failed: $($_.Exception.Message)"
+        Write-PromptParleJob -Job $job
+    }
+    return [pscustomobject]@{ job_id = $id; status = $job.status }
+}
+
+function Invoke-PromptParleRunChatJob {
+    <#
+    .SYNOPSIS
+      Child-process entry: read the request payload, run the turn synchronously
+      via the shared runner, write the result into the job file. Runs in a fresh
+      process so it never touches the parent's HTTP listener.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$JobPath,
+        [Parameter(Mandatory)][string]$RequestPath
+    )
+    $job = Get-Content -LiteralPath $JobPath -Raw | ConvertFrom-Json
+    $payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+    try {
+        $res = Invoke-PromptParleChatTurnCore -Body $payload
+        $job.status = 'done'
+        $job.response = [string](Get-PromptParleProp $res 'response' '')
+        $job.metadata = Get-PromptParleProp $res 'metadata' $null
+        $job.error = $null
+    } catch {
+        $job.status = 'error'
+        $job.error = "$_"
+    }
+    $job.updated_at = (Get-Date).ToUniversalTime().ToString('o')
+    $json = $job | ConvertTo-Json -Depth 12
+    Set-Content -LiteralPath $JobPath -Value $json -Encoding UTF8
+    try { Remove-Item -LiteralPath $RequestPath -Force -ErrorAction SilentlyContinue } catch { }
+}
+
+function Get-PromptParleJobList {
+    <# Pending/recent jobs for the UI badge. Prunes finished jobs older than 1h. #>
+    $dir = Get-PromptParleJobsDir
+    $out = New-Object System.Collections.ArrayList
+    Get-ChildItem -LiteralPath $dir -Filter '*.json' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '\.req\.json$' } |
+        ForEach-Object {
+            try {
+                $j = ConvertFrom-PromptParleJson -Json (Get-Content -LiteralPath $_.FullName -Raw)
+                [void]$out.Add([pscustomobject]@{
+                    id         = [string](Get-PromptParleProp $j 'id' '')
+                    status     = [string](Get-PromptParleProp $j 'status' 'running')
+                    session_id = [string](Get-PromptParleProp $j 'session_id' '')
+                    title      = [string](Get-PromptParleProp $j 'title' '')
+                    updated_at = [string](Get-PromptParleProp $j 'updated_at' '')
+                })
+            } catch { }
+        }
+    return @($out.ToArray())
+}
+
 function Set-PromptParleConfigAcl {
     <#
       Restrict config/token file to current user on Windows.
@@ -1879,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.29.1'
+    $ver = '0.30.0'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -15353,6 +15521,658 @@ function Stop-PromptParleLocalServer {
     Write-Host ("Port {0} cleared (or was already free)." -f $Port) -ForegroundColor Green
 }
 
+function Invoke-PromptParleChatTurnCore {
+    <#
+    .SYNOPSIS
+      Shared chat-turn runner. Takes a parsed request body and returns the
+      response payload (@{ response; optimized_prompt; metadata }) or
+      @{ error = <string> } on failure. Extracted verbatim from the /api/chat
+      handler so a background-job child process can run the same turn logic
+      without touching the HTTP listener. Must NOT reference $ctx/$req or write
+      HTTP responses — the caller serializes/delivers the returned object.
+    #>
+    param(
+        [Parameter(Mandatory)]$Body
+    )
+    $chatStage = 'init'
+    try {
+        $chatStage = 'parse-body'
+        $body = $Body
+        if ($null -eq $body) { throw 'Empty request body' }
+        # StrictMode: never touch $body.foo if foo may be absent
+        $prompt = [string](Get-PromptParleProp $body 'prompt' '')
+        if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
+        $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
+        if (-not $provider) { $provider = 'openai' }
+        # Explicit model from UI selector (0.23.4+) — body wins, then session sticky.
+        # Mid-chat model switches must not fall back to a stale portal preferred.
+        $modelChat = [string](Get-PromptParleProp $body 'model' '')
+        $modelFromBody = -not [string]::IsNullOrWhiteSpace($modelChat)
+        if (-not $modelFromBody) {
+            try {
+                $stM = Get-PromptParleSessionState
+                $modelChat = [string](Get-PromptParleProp $stM 'model' '')
+            } catch { $modelChat = '' }
+        }
+        $modelChat = $modelChat.Trim()
+        # Product 0.14: dial is the only aggressiveness knob (no agent/profile router)
+        $profile = 'general'
+        $dialRaw = Get-PromptParleProp $body 'compression_level' $null
+        if ($null -eq $dialRaw) { $dialRaw = Get-PromptParleProp $body 'compressionLevel' $null }
+        $dial = 3
+        if ($null -ne $dialRaw) {
+            try { $dial = [int]$dialRaw } catch { $dial = 3 }
+        }
+        if ($dial -lt 1) { $dial = 1 }
+        if ($dial -gt 5) { $dial = 5 }
+        $context = Get-PromptParleProp $body 'context' $null
+        if ($null -ne $context) { $context = [string]$context }
+        $optOnly = $false
+        $optFlag = Get-PromptParleProp $body 'optimize_only' $null
+        if ($null -eq $optFlag) { $optFlag = Get-PromptParleProp $body 'optimizeOnly' $null }
+        if ($optFlag -eq $true) { $optOnly = $true }
+
+        $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
+
+        $sessionTitleChat = [string](Get-PromptParleProp $body 'session_title' (Get-PromptParleProp $body 'sessionTitle' ''))
+        $clientSessionIdChat = [string](Get-PromptParleProp $body 'client_session_id' (Get-PromptParleProp $body 'clientSessionId' ''))
+
+
+        # Optional prior-turn history for [MEM] brief (UI multi-turn fidelity)
+        $histArr = @()
+        $histRaw = Get-PromptParleProp $body 'history' $null
+        if ($null -eq $histRaw) { $histRaw = Get-PromptParleProp $body 'History' $null }
+        if ($null -ne $histRaw) {
+            foreach ($h in @($histRaw)) {
+                if ($null -eq $h) { continue }
+                $hr = [string](Get-PromptParleProp $h 'role' (Get-PromptParleProp $h 'Role' 'user'))
+                $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' (Get-PromptParleProp $h 'Content' '')))
+                if (-not $ht) { continue }
+                $histArr += [pscustomobject]@{ role = $hr; text = $ht }
+            }
+        }
+        $histText = [string](Get-PromptParleProp $body 'history_text' (Get-PromptParleProp $body 'historyText' ''))
+
+        # Session Tools (default ON) + dial: local prep before AI tokens
+        $localNotes = @()
+        $toolsEnChat = $true
+        $teBody = Get-PromptParleProp $body 'tools_enabled' (Get-PromptParleProp $body 'toolsEnabled' $null)
+        if ($null -ne $teBody) {
+            $toolsEnChat = ConvertTo-PromptParleBool -Value $teBody -Default $true
+        } else {
+            try {
+                $stChat = Get-PromptParleSessionState
+                if ($null -ne (Get-PromptParleProp $stChat 'tools_enabled' $null)) {
+                    $toolsEnChat = ConvertTo-PromptParleBool -Value (Get-PromptParleProp $stChat 'tools_enabled' $true) -Default $true
+                }
+            } catch { $toolsEnChat = $true }
+        }
+        # Persist provider/model/tools/dial from UI each chat (model always when known)
+        try {
+            $stSave = Get-PromptParleSessionState
+            $snapChat = @{
+                Base         = $stSave
+                ToolsEnabled = $toolsEnChat
+                Dial         = $dial
+                Profile      = $profile
+                Provider     = $provider
+                OptimizeOnly = $optOnly
+            }
+            # Force Model key so a UI switch replaces prior session model
+            if ($modelFromBody -or $modelChat) {
+                $snapChat.Model = $modelChat
+            }
+            $stSave = New-PromptParleSessionSnapshot @snapChat
+            Save-PromptParleSessionState -State $stSave
+        } catch { }
+
+        # You → local prep → local-first optimize + provider (dial). Portal = license only.
+        $prep = $null
+        $toolBreakdownOut = @()
+        $prepTokensBefore = 0
+        $prepTokensAfter = 0
+        $groundingContext = if ($context) { [string]$context } else { '' }
+        $chatStage = 'local-prep'
+        try {
+            $prepParams = @{
+                Prompt       = $prompt
+                Context      = $(if ($context) { [string]$context } else { '' })
+                ToolsEnabled = $toolsEnChat
+                Dial         = $dial
+                Profile      = $profile
+            }
+            if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
+            elseif ($histText) { $prepParams.HistoryText = $histText }
+            if ($clientSessionIdChat) { $prepParams.ClientSessionId = $clientSessionIdChat.Trim() }
+            # User-pinned session Knowledge (★) from local UI — key present = UI is source of truth (empty clears)
+            $pkArr = @()
+            $pkRaw = $null
+            $pkKeyPresent = $false
+            try {
+                if ($body.PSObject.Properties['priority_knowledge'] -or $body.PSObject.Properties['priorityKnowledge']) {
+                    $pkKeyPresent = $true
+                    $pkRaw = Get-PromptParleProp $body 'priority_knowledge' $null
+                    if ($null -eq $pkRaw) { $pkRaw = Get-PromptParleProp $body 'priorityKnowledge' $null }
+                }
+            } catch {
+                $pkRaw = Get-PromptParleProp $body 'priority_knowledge' $null
+                if ($null -eq $pkRaw) { $pkRaw = Get-PromptParleProp $body 'priorityKnowledge' $null }
+                if ($null -ne $pkRaw) { $pkKeyPresent = $true }
+            }
+            if ($null -ne $pkRaw) {
+                foreach ($pk in @($pkRaw)) {
+                    if ($null -eq $pk) { continue }
+                    $pkt = [string](Get-PromptParleProp $pk 'text' (Get-PromptParleProp $pk 'Text' ''))
+                    if (-not $pkt) { continue }
+                    $pkr = [string](Get-PromptParleProp $pk 'role' (Get-PromptParleProp $pk 'Role' 'assistant'))
+                    $pki = [string](Get-PromptParleProp $pk 'id' (Get-PromptParleProp $pk 'Id' ''))
+                    $pkArr += [pscustomobject]@{ id = $pki; role = $pkr; text = $pkt }
+                    if ($pkArr.Count -ge 12) { break }
+                }
+            }
+            if ($pkKeyPresent) {
+                $prepParams.PriorityKnowledge = $pkArr
+                $prepParams.PriorityKnowledgeReplace = $true
+            }
+            $prepRaw = Invoke-PromptParleAgentLocalPrep @prepParams
+            # PS 5.1: pipeline pollution can wrap prep as Object[]; take last real object
+            $prep = $null
+            if ($null -ne $prepRaw) {
+                if ($prepRaw -is [System.Array]) {
+                    for ($pi = $prepRaw.Length - 1; $pi -ge 0; $pi--) {
+                        $cand = $prepRaw[$pi]
+                        if ($null -eq $cand) { continue }
+                        if ($cand -is [int] -or $cand -is [long]) { continue }
+                        $probe = Get-PromptParleProp $cand 'prompt' $null
+                        if ($null -eq $probe) { $probe = Get-PromptParleProp $cand 'context' $null }
+                        if ($null -ne $probe -or (Get-PromptParleProp $cand 'tokens_before' $null) -ne $null) {
+                            $prep = $cand
+                            break
+                        }
+                    }
+                    if ($null -eq $prep -and $prepRaw.Length -gt 0) { $prep = $prepRaw[-1] }
+                } else {
+                    $prep = $prepRaw
+                }
+            }
+            if ($null -eq $prep) { throw 'local prep returned empty result' }
+            $prepPrompt = Get-PromptParleProp $prep 'prompt' $null
+            if ($null -ne $prepPrompt -and [string]$prepPrompt) { $prompt = [string]$prepPrompt }
+            $prepCtx = Get-PromptParleProp $prep 'context' $null
+            if ($null -ne $prepCtx) { $context = [string]$prepCtx }
+            $prepNotes = Get-PromptParleProp $prep 'notes' $null
+            if ($prepNotes) { $localNotes = @($localNotes) + @($prepNotes) }
+            # Per-tool savings ledger from prep (0.28.0) — carried to metaOut for display.
+            $toolBreakdownOut = @()
+            try {
+                $tbRaw = Get-PromptParleProp $prep 'tool_breakdown' $null
+                if ($tbRaw) { $toolBreakdownOut = @($tbRaw) }
+            } catch { }
+            # Turn baseline: raw prompt+history+attach before MEM/fleet densify
+            try {
+                $ptb = Get-PromptParleProp $prep 'tokens_before' $null
+                $pta = Get-PromptParleProp $prep 'tokens_after' $null
+                if ($null -eq $ptb) {
+                    $ci = Get-PromptParleProp $prep 'chars_in' 0
+                    if ($ci -gt 0) { $ptb = [Math]::Max(1, [int][Math]::Ceiling([int]$ci / 4.0)) }
+                }
+                if ($null -eq $pta) {
+                    $co = Get-PromptParleProp $prep 'chars_out' 0
+                    if ($co -gt 0) { $pta = [Math]::Max(1, [int][Math]::Ceiling([int]$co / 4.0)) }
+                }
+                if ($null -ne $ptb) { $prepTokensBefore = [int]$ptb }
+                if ($null -ne $pta) { $prepTokensAfter = [int]$pta }
+            } catch { }
+        } catch {
+            Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
+            Write-PromptParleDebugLog ("chat local-prep: " + $_.Exception.ToString())
+            $prep = $null
+        }
+        # 0.20: freeze prep evidence for grounding/provenance post-pass
+        # (agent rounds may compress context; post-pass must still see OBSERVE/PROVENANCE)
+        $groundingContext = if ($context) { [string]$context } else { $groundingContext }
+        # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
+        $turnForRt = 'chat'
+        try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt -History $histArr } catch { }
+        $oblForRt = $null
+        try { $oblForRt = Get-PromptParleProp $prep 'obligation' $null } catch { $oblForRt = $null }
+        if (-not $oblForRt) {
+            try { $oblForRt = Resolve-PromptParleTurnObligation -Prompt $prompt -History $histArr } catch { }
+        }
+        # Prep owns evidence_mode + hands_allowed (product dispatch, not chat special cases)
+        $evidenceMode = 'live'
+        $handsAllowed = [bool]$toolsEnChat
+        $evidenceReason = ''
+        try {
+            if ($prep) {
+                $em0 = Get-PromptParleProp $prep 'evidence_mode' $null
+                if ($em0) { $evidenceMode = [string]$em0 }
+                $ha0 = Get-PromptParleProp $prep 'hands_allowed' $null
+                if ($null -ne $ha0) { $handsAllowed = [bool]$ha0 -and $toolsEnChat }
+                $evidenceReason = [string](Get-PromptParleProp $prep 'evidence_reason' '')
+            }
+        } catch { }
+        if (-not $toolsEnChat) { $handsAllowed = $false }
+
+        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][KNOW][ATTACH][WEB][OBSERVE][GROUNDING][PROVENANCE]. [KNOW]=user-pinned session truth. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn; never invent product facts not in evidence.'
+        if ($oblForRt -and $oblForRt.mode -eq 'mutate') {
+            $rtNote = 'MUTATE TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
+            $turnForRt = 'implement'
+        } elseif ($oblForRt -and $oblForRt.mode -eq 'deliver') {
+            $rtNote = 'DELIVER TURN · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
+        } elseif ($oblForRt -and $oblForRt.mode -eq 'observe') {
+            $rtNote = 'OBSERVE TURN · client already filled [OBSERVE]/[WEB] when possible. Present results only; invent nothing beyond evidence. NEVER ```run ls``` or search-homework as the answer.'
+        } elseif ($turnForRt -eq 'implement') {
+            $rtNote = 'IMPLEMENT TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` for migrate/build client executes. NEVER tell the user to run npx. No theater.'
+        } elseif ($turnForRt -eq 'question') {
+            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/[OBSERVE]/[WEB]/[PROVENANCE]/[MEM][KNOW] evidence first. Never invent capabilities.'
+        }
+        if ($evidenceMode -eq 'session') {
+            $rtNote = $rtNote + ' EVIDENCE_MODE=session: answer from [MEM]/[KNOW]/[PROJECT]/[CONN] only. No hands. No re-discovery. Offer refresh if incomplete.'
+        } elseif ($evidenceMode -eq 'refresh') {
+            $rtNote = $rtNote + ' EVIDENCE_MODE=refresh: user forced live re-pull; prefer [SSH]/[OBSERVE] this turn.'
+        }
+        if ($groundingContext -match '(?m)\[PROVENANCE\]') {
+            $rtNote = $rtNote + ' PROVENANCE OWED: report client YES/NO on-source and prior-assistant origin. Never only "nowhere".'
+        }
+        try {
+            $ctxHasAttach = $context -and ($context -match '(?m)^\[ATTACH\]' -or $context -match '===== FILE:')
+            $prHasAttach = $prompt -match '\[ATTACHED THIS TURN'
+            if ($ctxHasAttach -or $prHasAttach) {
+                $rtNote = $rtNote + ' ATTACH PRIMARY: summarize/create deliverables from THIS turn FILE only. Do not reuse prior [MEM] document topic when a new file is attached.'
+            }
+        } catch { }
+        if ($localNotes -and $localNotes.Count -gt 0) {
+            $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
+        }
+        $frame = Get-PromptParleChatFraming -Prompt $prompt -RuntimeNote $rtNote
+
+        $ctxLen = if ($context) { $context.Length } else { 0 }
+        Write-Host ("  chat: provider={0} model={1} profile={2} dial={3} tools={4} optimize_only={5} prompt={6}c system={7}c context={8}c images={9} local_notes={10} evidence={11} hands={12}" -f `
+            $provider, $(if ($modelChat) { $modelChat } else { '(default)' }), $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count, $evidenceMode, $handsAllowed) -ForegroundColor DarkGray
+
+        $params = @{
+            Prompt            = [string]$frame.Prompt
+            System            = [string]$frame.System
+            Runtime           = [string]$frame.Runtime
+            Provider          = $provider
+            Profile           = $profile
+            CompressionLevel  = $dial
+        }
+        if ($modelChat) {
+            $params.Model = [string]$modelChat
+            Write-Host ("  chat: forcing model={0}" -f $modelChat) -ForegroundColor DarkCyan
+        } else {
+            Write-Host '  chat: no model in body/session — local default model will apply' -ForegroundColor DarkYellow
+        }
+        if ($context) { $params.Context = [string]$context }
+        if ($optOnly) { $params.OptimizeOnly = $true }
+        if ($images.Count -gt 0) { $params.Images = $images }
+        if ($sessionTitleChat) { $params.SessionTitle = $sessionTitleChat.Trim() }
+        if ($clientSessionIdChat) { $params.ClientSessionId = $clientSessionIdChat.Trim() }
+
+        # Dispatch from prep.hands_allowed only (no MaxRounds/session special cases)
+        $chatStage = 'model-call'
+        if (-not $handsAllowed -or -not $toolsEnChat -or $optOnly) {
+            $params.Quiet = $true
+            $params.Raw = $true
+            foreach ($dropK in @('MaxRounds', 'ClientSessionId', 'SessionTitle')) {
+                if ($params.ContainsKey($dropK)) { $params.Remove($dropK) | Out-Null }
+            }
+            Write-Host ("  chat: single completion (evidence={0} hands={1})" -f $evidenceMode, $handsAllowed) -ForegroundColor Green
+            $result = Invoke-PromptParle @params
+        } else {
+            try {
+                $result = Invoke-PromptParleAgentTurn @params
+            } catch {
+                $msg = "$_"
+                if ($msg -match 'parameter name') {
+                    Write-Host ("  chat: agent turn param retry after: {0}" -f $msg) -ForegroundColor DarkYellow
+                    $params.Remove('ClientSessionId') | Out-Null
+                    $params.Remove('SessionTitle') | Out-Null
+                    $params.Remove('Quiet') | Out-Null
+                    $params.Remove('Raw') | Out-Null
+                    $result = Invoke-PromptParleAgentTurn @params
+                } else {
+                    throw
+                }
+            }
+        }
+        # Normalize metadata keys for the browser UI (always snake_case numbers)
+        $chatStage = 'meta-normalize'
+        $metaIn = Get-PromptParleProp $result 'metadata'
+        if ($null -eq $metaIn) { $metaIn = Get-PromptParleProp $result 'Metadata' }
+        $metaOut = $null
+        if ($null -ne $metaIn) {
+            $origT = Get-PromptParleProp $metaIn 'original_tokens'
+            if ($null -eq $origT) { $origT = Get-PromptParleProp $metaIn 'originalTokens' }
+            $optT = Get-PromptParleProp $metaIn 'optimized_tokens'
+            if ($null -eq $optT) { $optT = Get-PromptParleProp $metaIn 'optimizedTokens' }
+            $pctT = Get-PromptParleProp $metaIn 'token_reduction_percent'
+            if ($null -eq $pctT) { $pctT = Get-PromptParleProp $metaIn 'tokenReductionPercent' }
+            $dialT = Get-PromptParleProp $metaIn 'compression_level'
+            if ($null -eq $dialT) { $dialT = Get-PromptParleProp $metaIn 'compressionLevel' }
+            # Prefer the dial the UI actually sent this turn (authoritative).
+            # Older native-agent builds hardcoded compression_level=1; never let that win.
+            $dialForMeta = $dial
+            if ($null -ne $dialT) {
+                $dialMetaN = ConvertTo-PromptParleInt32 -Value $dialT -Default $dial
+                if ($dialMetaN -ge 1 -and $dialMetaN -le 5) {
+                    if ($dial -lt 1 -or $dialMetaN -eq $dial) { $dialForMeta = $dialMetaN }
+                    else { $dialForMeta = $dial }
+                }
+            }
+            # Plain hashtable only — never [ordered] + cast / ConvertTo-Json footguns
+            $metaOut = @{
+                original_tokens         = (ConvertTo-PromptParleInt32 -Value $origT -Default 0)
+                optimized_tokens        = (ConvertTo-PromptParleInt32 -Value $optT -Default 0)
+                token_reduction_percent = (ConvertTo-PromptParleInt32 -Value $pctT -Default 0)
+                tokens_saved            = 0
+                expanded                = $false
+                provider                = [string](Get-PromptParleProp $metaIn 'provider' '')
+                model                   = [string](Get-PromptParleProp $metaIn 'model' '')
+                optimization_profile    = [string](Get-PromptParleProp $metaIn 'optimization_profile' (Get-PromptParleProp $metaIn 'optimizationProfile' ''))
+                compression_level       = (ConvertTo-PromptParleInt32 -Value $dialForMeta -Default 3)
+                strategy                = [string](Get-PromptParleProp $metaIn 'strategy' '')
+                secrets_masked          = (ConvertTo-PromptParleBool -Value (Get-PromptParleProp $metaIn 'secrets_masked' $false) -Default $false)
+                notes                   = @()
+                signals                 = @{}
+                image_count             = 0
+                local_tools             = @($localNotes)
+                tool_breakdown          = @($toolBreakdownOut)
+            }
+            # Roll up this turn's per-tool savings for the portal bridge
+            # (aggregate numbers only; flushed on heartbeat). Best-effort.
+            try {
+                if ($toolBreakdownOut -and @($toolBreakdownOut).Count -gt 0) {
+                    Add-PromptParleToolSavings -Breakdown @($toolBreakdownOut) -Provider ([string]$metaOut.provider)
+                }
+            } catch { }
+            $notesRaw = Get-PromptParleProp $metaIn 'notes' @()
+            if ($null -ne $notesRaw) {
+                $nAcc = New-Object System.Collections.ArrayList
+                foreach ($n in @($notesRaw)) {
+                    if ($null -eq $n) { continue }
+                    [void]$nAcc.Add([string]$n)
+                }
+                $metaOut.notes = @($nAcc.ToArray())
+            }
+            $sigRaw = Get-PromptParleProp $metaIn 'signals' $null
+            if ($null -ne $sigRaw -and $sigRaw -is [System.Collections.IDictionary]) {
+                $metaOut.signals = @{}
+                foreach ($sk in @($sigRaw.Keys)) {
+                    $metaOut.signals[[string]$sk] = $sigRaw[$sk]
+                }
+            }
+            $imgC = Get-PromptParleProp $metaIn 'image_count'
+            if ($null -eq $imgC) { $imgC = Get-PromptParleProp $metaIn 'imageCount' }
+            if ($null -ne $imgC) { $metaOut.image_count = ConvertTo-PromptParleInt32 -Value $imgC -Default 0 }
+            $expF = Get-PromptParleProp $metaIn 'expanded'
+            if ($null -ne $expF) { $metaOut.expanded = ConvertTo-PromptParleBool -Value $expF -Default $false }
+            elseif ($metaOut.optimized_tokens -gt $metaOut.original_tokens) { $metaOut.expanded = $true }
+            $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
+            if ($metaOut.token_reduction_percent -eq 0 -and $metaOut.original_tokens -gt 0 -and -not $metaOut.expanded) {
+                $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
+            }
+            if ($localNotes -and $localNotes.Count -gt 0) {
+                $mergedNotes = @()
+                foreach ($n in @($metaOut.notes)) { if ($n) { $mergedNotes += [string]$n } }
+                foreach ($n in @($localNotes)) { if ($n) { $mergedNotes += [string]$n } }
+                $metaOut.notes = $mergedNotes
+            }
+            try {
+                $ag = Get-PromptParleProp $result 'agent' $null
+                if ($ag) {
+                    $metaOut.agent_rounds = [int](Get-PromptParleProp $ag 'agent_rounds' 0)
+                    $metaOut.hands_count = [int](Get-PromptParleProp $ag 'hands_count' 0)
+                    $metaOut.hands_tools = @(Get-PromptParleProp $ag 'hands_tools' @())
+                    $metaOut.architecture = [string](Get-PromptParleProp $ag 'architecture' '0.19-brain-hands')
+                    $sumO = Get-PromptParleProp $ag 'tokens_sum_original' $null
+                    $sumZ = Get-PromptParleProp $ag 'tokens_sum_optimized' $null
+                    if ($null -ne $sumO) {
+                        $metaOut.original_tokens = [int]$sumO
+                        $metaOut.tokens_sum_original = [int]$sumO
+                    }
+                    if ($null -ne $sumZ) {
+                        $metaOut.optimized_tokens = [int]$sumZ
+                        $metaOut.tokens_sum_optimized = [int]$sumZ
+                    }
+                }
+            } catch { }
+            # Turn meter: prep wire baseline → tokens actually sent this turn (one formula)
+            if ($prepTokensBefore -gt 0) {
+                $metaOut.prep_tokens_before = [int]$prepTokensBefore
+                $metaOut.prep_tokens_after = [int]$prepTokensAfter
+                $sendAfter = [int]$metaOut.optimized_tokens
+                if ($sendAfter -le 0 -and $prepTokensAfter -gt 0) { $sendAfter = [int]$prepTokensAfter }
+                if ($sendAfter -le 0) { $sendAfter = [int]$metaOut.original_tokens }
+                $metaOut.original_tokens = [int]$prepTokensBefore
+                $metaOut.optimized_tokens = [int]$sendAfter
+            }
+            try {
+                $metaOut.evidence_mode = $evidenceMode
+                $metaOut.hands_allowed = [bool]$handsAllowed
+                if ($evidenceReason) { $metaOut.evidence_reason = $evidenceReason }
+            } catch { }
+            if ($metaOut.optimized_tokens -gt $metaOut.original_tokens -and $metaOut.original_tokens -gt 0) {
+                $metaOut.expanded = $true
+                $metaOut.tokens_saved = 0
+                $metaOut.token_reduction_percent = 0
+            } else {
+                $metaOut.expanded = $false
+                $metaOut.tokens_saved = [Math]::Max(0, [int]$metaOut.original_tokens - [int]$metaOut.optimized_tokens)
+                if ($metaOut.original_tokens -gt 0) {
+                    $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
+                } else {
+                    $metaOut.token_reduction_percent = 0
+                }
+            }
+            if ([int]$metaOut.optimized_tokens -eq [int]$metaOut.original_tokens) {
+                $metaOut.expanded = $false
+                $metaOut.tokens_saved = 0
+                $metaOut.token_reduction_percent = 0
+            }
+        }
+        $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+        # 0.16.1: always run implement pipeline post-pass when implement OR any apply/run/homework signal
+        $applyInfo = $null
+        $pipeTrigger = $false
+        if ($respText) {
+            if ($turnForRt -eq 'implement') { $pipeTrigger = $true }
+            elseif ($respText -match '(?m)```apply\s+path' -or $respText -match '(?m)```run\b') { $pipeTrigger = $true }
+            elseif ($respText -match '(?i)\b(run this|please run|npx prisma|npm run (build|test))\b') { $pipeTrigger = $true }
+        }
+        if ($pipeTrigger) {
+            try {
+                $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText -TurnKind $turnForRt
+                if ($applyInfo -and $applyInfo.text) { $respText = [string]$applyInfo.text }
+                if ($applyInfo -and $applyInfo.count -gt 0) {
+                    Write-Host ("  chat: applied {0} file(s) via SSH" -f $applyInfo.count) -ForegroundColor Green
+                    if ($metaOut) {
+                        $metaOut.applied_files = @($applyInfo.applied)
+                        $metaOut.applied_count = [int]$applyInfo.count
+                    }
+                }
+                if ($applyInfo -and $applyInfo.run_count -gt 0) {
+                    Write-Host ("  chat: ran {0} remote command(s)" -f $applyInfo.run_count) -ForegroundColor Cyan
+                    if ($metaOut) {
+                        $metaOut.run_count = [int]$applyInfo.run_count
+                        $metaOut.runs = @($applyInfo.runs | ForEach-Object {
+                            [ordered]@{ command = $_.command; exit_code = $_.exit_code; ok = [bool]$_.ok }
+                        })
+                    }
+                }
+                if ($applyInfo -and $applyInfo.homework -and $applyInfo.homework.Count -gt 0) {
+                    Write-Host ("  chat: intercepted {0} homework command(s)" -f $applyInfo.homework.Count) -ForegroundColor Magenta
+                    if ($metaOut) { $metaOut.homework_intercepted = @($applyInfo.homework) }
+                }
+                if ($applyInfo -and $applyInfo.fail_closed) {
+                    Write-Host '  chat: FAIL-CLOSED implement turn (no apply/run)' -ForegroundColor Yellow
+                    if ($metaOut) { $metaOut.fail_closed = $true }
+                }
+                if ($applyInfo -and $applyInfo.errors -and $applyInfo.errors.Count -gt 0) {
+                    Write-Host ("  chat: pipeline errors: {0}" -f ($applyInfo.errors -join '; ')) -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host ("  chat: implement pipeline failed: {0}" -f $_) -ForegroundColor Yellow
+                $respText = $respText + "`n`n**Implement pipeline failed:** $_"
+            }
+        }
+        # 0.17/0.18: document deliverables — ```file name=Report.docx``` → real file + download URL
+        $deliverInfo = $null
+        if ($respText -and ($respText -match '(?m)```(?:file|deliver)\s+')) {
+            try {
+                $deliverInfo = Invoke-PromptParleDeliverResponseBlocks -ResponseText $respText
+                if ($deliverInfo -and $deliverInfo.text) { $respText = [string]$deliverInfo.text }
+                if ($deliverInfo -and $deliverInfo.count -gt 0) {
+                    Write-Host ("  chat: delivered {0} downloadable file(s)" -f $deliverInfo.count) -ForegroundColor Green
+                    if ($metaOut) {
+                        $metaOut.exports = @($deliverInfo.exports | ForEach-Object {
+                            [ordered]@{
+                                name         = $_.name
+                                url          = $_.url
+                                download_url = $_.download_url
+                                bytes        = $_.bytes
+                                content_type = $_.content_type
+                            }
+                        })
+                        $metaOut.export_count = [int]$deliverInfo.count
+                    }
+                }
+                if ($deliverInfo -and $deliverInfo.errors -and $deliverInfo.errors.Count -gt 0) {
+                    Write-Host ("  chat: deliver errors: {0}" -f ($deliverInfo.errors -join '; ')) -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host ("  chat: deliver pipeline failed: {0}" -f $_) -ForegroundColor Yellow
+                $respText = $respText + "`n`n**Document deliver failed:** $_"
+            }
+        }
+        # 0.18: deliver fail-closed when document was owed but no export
+        try {
+            $expN = 0
+            if ($deliverInfo) { $expN = [int]$deliverInfo.count }
+            $oweDeliver = $false
+            if ($oblForRt) { $oweDeliver = Test-PromptParleDeliverOwed -Obligation $oblForRt -ResponseText $respText }
+            if ($oweDeliver) {
+                $fc = Invoke-PromptParleDeliverFailClosed -ResponseText $respText -ExportCount $expN
+                if ($fc.fail_closed) {
+                    $respText = [string]$fc.text
+                    Write-Host '  chat: FAIL-CLOSED deliver turn (no file artifact)' -ForegroundColor Yellow
+                    if ($metaOut) { $metaOut.deliver_fail_closed = $true }
+                }
+            }
+            # sticky open obligation update
+            $appN = 0; $runN = 0
+            if ($applyInfo) {
+                try { $appN = [int]$applyInfo.count } catch { }
+                try { $runN = [int]$applyInfo.run_count } catch { }
+            }
+            if ($oblForRt) {
+                Update-PromptParleOpenObligationFromTurn -Obligation $oblForRt -ResponseText $respText -ExportCount $expN -ApplyCount $appN -RunCount $runN
+            }
+        } catch {
+            Write-Host ("  chat: obligation post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
+        }
+        # 0.20/0.21: provenance fail-closed + quality gate (BS detector/corrector, 0 AI tokens)
+        try {
+            $gctx = if ($groundingContext) { [string]$groundingContext } elseif ($context) { [string]$context } else { '' }
+            try {
+                $evFromAgent = Get-PromptParleProp $result 'evidence_context' $null
+                if ($evFromAgent -and [string]$evFromAgent) { $gctx = [string]$evFromAgent }
+            } catch { }
+            $pp = Invoke-PromptParleProvenancePostPass -ResponseText $respText -Context $gctx
+            if ($pp.applied) {
+                $respText = [string]$pp.text
+                Write-Host '  chat: provenance FAIL-CLOSED (client origin facts appended)' -ForegroundColor Yellow
+                if ($metaOut) {
+                    $metaOut.provenance_fail_closed = $true
+                    $metaOut.provenance_reason = [string]$pp.reason
+                }
+            }
+            # Quality gate: product-claim auditor vs fetched evidence — not session/menu turns
+            $qg = $null
+            if ($evidenceMode -eq 'session') {
+                $qg = [pscustomobject]@{
+                    text = $respText; applied = $false; reason = 'session-mode'
+                    claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+                }
+            } else {
+                $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
+            }
+            if ($qg.applied) {
+                $respText = [string]$qg.text
+                Write-Host ("  chat: quality gate {0}% ({1} supported, {2} unverified, corrected={3})" -f `
+                    $qg.score_pct, $qg.supported, $qg.unsupported, $qg.corrected) -ForegroundColor Yellow
+            } elseif ($qg.reason -match 'clean-silent|partial-silent') {
+                Write-Host ("  chat: quality gate silent ({0} score={1}%)" -f $qg.reason, $qg.score_pct) -ForegroundColor DarkGray
+            }
+            if ($metaOut) {
+                $metaOut.quality_reason = [string]$qg.reason
+                if ($null -ne $qg.score_pct) { $metaOut.quality_score_pct = [int]$qg.score_pct }
+                try {
+                    $metaOut.quality_supported = [int]$qg.supported
+                    $metaOut.quality_partial = [int]$qg.partial
+                    $metaOut.quality_unsupported = [int]$qg.unsupported
+                    $metaOut.quality_corrected = [bool]$qg.corrected
+                } catch { }
+                if ($qg.applied) { $metaOut.quality_gate = $true }
+                try {
+                    if ($qg.claims) {
+                        $metaOut.quality_claims = @($qg.claims | ForEach-Object {
+                            [ordered]@{ claim = [string]$_.claim; status = [string]$_.status }
+                        })
+                    }
+                } catch { }
+            }
+            # Last-resort high-severity only if gate never evaluated claims at all
+            $gateEvaluated = $qg.applied -or ($null -ne $qg.score_pct) -or (
+                [string]$qg.reason -match 'clean-silent|partial-silent|scored|unverified|corrected|no-claims|no-scored|no-evidence-meta|thin-evidence|empty-evidence|no-evidence|too-short|session-mode|procedural-menu|hands-only-nonproduct'
+            )
+            if (-not $gateEvaluated) {
+                $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
+                if ($gp.applied) {
+                    $respText = [string]$gp.text
+                    Write-Host ("  chat: grounding flagged {0} high-severity phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
+                    if ($metaOut) {
+                        $metaOut.grounding_flagged = @($gp.flagged)
+                        $metaOut.grounding_audit = $true
+                    }
+                }
+            }
+        } catch {
+            Write-Host ("  chat: quality/provenance post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
+        }
+        $chatStage = 'serialize'
+        $payload = @{
+            response         = [string]$respText
+            optimized_prompt = Get-PromptParleProp $result 'optimized_prompt' (Get-PromptParleProp $result 'OptimizedPrompt' $null)
+            metadata         = $metaOut
+        }
+        # Keep error field if present
+        $errField = Get-PromptParleProp $result 'error'
+        if ($errField) { $payload.error = [string]$errField }
+        if ($metaOut) {
+            Write-Host ("  chat: ok  {0} → {1} tokens (−{2}%) dial={3} strat={4}" -f `
+                $metaOut.original_tokens, $metaOut.optimized_tokens, $metaOut.token_reduction_percent, `
+                $metaOut.compression_level, $metaOut.strategy) -ForegroundColor DarkGreen
+        } else {
+            Write-Host '  chat: ok (no metadata)' -ForegroundColor DarkGreen
+        }
+        return $payload
+    } catch {
+        $verChat = 'unknown'
+        try { $verChat = Get-PromptParleClientVersion } catch { }
+        $etype = ''
+        try { $etype = $_.Exception.GetType().FullName } catch { $etype = 'Exception' }
+        $emsg = $_.Exception.Message
+        if (-not $emsg) { $emsg = "$_" }
+        $full = ("Chat failed [v{0}] at {1}: {2}: {3}" -f $verChat, $chatStage, $etype, $emsg)
+        Write-Host ("  chat: error - {0}" -f $full) -ForegroundColor Red
+        Write-PromptParleDebugLog ("chat FAIL " + $full + " stack=" + $_.ScriptStackTrace)
+        return @{ error = $full }
+    }
+}
+
 function Start-PromptParleLocalServer {
     <#
     .SYNOPSIS
@@ -16717,653 +17537,62 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
                 }
 
                 if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/chat') {
-                    $enc = $req.ContentEncoding
-                    if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
+                    $enc = $req.ContentEncoding; if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
                     $reader = New-Object System.IO.StreamReader($req.InputStream, $enc)
-                    $rawBody = $reader.ReadToEnd()
-                    $reader.Close()
-                    $chatStage = 'init'
+                    $rawBody = $reader.ReadToEnd(); $reader.Close()
                     try {
-                        $chatStage = 'parse-body'
-                        if ([string]::IsNullOrWhiteSpace($rawBody)) { throw 'Empty request body' }
                         $body = ConvertFrom-PromptParleJson -Json $rawBody
-                        # StrictMode: never touch $body.foo if foo may be absent
-                        $prompt = [string](Get-PromptParleProp $body 'prompt' '')
-                        if (-not $prompt) { throw 'Missing prompt (type in the bottom box)' }
-                        $provider = [string](Get-PromptParleProp $body 'provider' 'openai')
-                        if (-not $provider) { $provider = 'openai' }
-                        # Explicit model from UI selector (0.23.4+) — body wins, then session sticky.
-                        # Mid-chat model switches must not fall back to a stale portal preferred.
-                        $modelChat = [string](Get-PromptParleProp $body 'model' '')
-                        $modelFromBody = -not [string]::IsNullOrWhiteSpace($modelChat)
-                        if (-not $modelFromBody) {
-                            try {
-                                $stM = Get-PromptParleSessionState
-                                $modelChat = [string](Get-PromptParleProp $stM 'model' '')
-                            } catch { $modelChat = '' }
-                        }
-                        $modelChat = $modelChat.Trim()
-                        # Product 0.14: dial is the only aggressiveness knob (no agent/profile router)
-                        $profile = 'general'
-                        $dialRaw = Get-PromptParleProp $body 'compression_level' $null
-                        if ($null -eq $dialRaw) { $dialRaw = Get-PromptParleProp $body 'compressionLevel' $null }
-                        $dial = 3
-                        if ($null -ne $dialRaw) {
-                            try { $dial = [int]$dialRaw } catch { $dial = 3 }
-                        }
-                        if ($dial -lt 1) { $dial = 1 }
-                        if ($dial -gt 5) { $dial = 5 }
-                        $context = Get-PromptParleProp $body 'context' $null
-                        if ($null -ne $context) { $context = [string]$context }
-                        $optOnly = $false
-                        $optFlag = Get-PromptParleProp $body 'optimize_only' $null
-                        if ($null -eq $optFlag) { $optFlag = Get-PromptParleProp $body 'optimizeOnly' $null }
-                        if ($optFlag -eq $true) { $optOnly = $true }
-
-                        $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
-
-                        $sessionTitleChat = [string](Get-PromptParleProp $body 'session_title' (Get-PromptParleProp $body 'sessionTitle' ''))
-                        $clientSessionIdChat = [string](Get-PromptParleProp $body 'client_session_id' (Get-PromptParleProp $body 'clientSessionId' ''))
-
-
-                        # Optional prior-turn history for [MEM] brief (UI multi-turn fidelity)
-                        $histArr = @()
-                        $histRaw = Get-PromptParleProp $body 'history' $null
-                        if ($null -eq $histRaw) { $histRaw = Get-PromptParleProp $body 'History' $null }
-                        if ($null -ne $histRaw) {
-                            foreach ($h in @($histRaw)) {
-                                if ($null -eq $h) { continue }
-                                $hr = [string](Get-PromptParleProp $h 'role' (Get-PromptParleProp $h 'Role' 'user'))
-                                $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' (Get-PromptParleProp $h 'Content' '')))
-                                if (-not $ht) { continue }
-                                $histArr += [pscustomobject]@{ role = $hr; text = $ht }
-                            }
-                        }
-                        $histText = [string](Get-PromptParleProp $body 'history_text' (Get-PromptParleProp $body 'historyText' ''))
-
-                        # Session Tools (default ON) + dial: local prep before AI tokens
-                        $localNotes = @()
-                        $toolsEnChat = $true
-                        $teBody = Get-PromptParleProp $body 'tools_enabled' (Get-PromptParleProp $body 'toolsEnabled' $null)
-                        if ($null -ne $teBody) {
-                            $toolsEnChat = ConvertTo-PromptParleBool -Value $teBody -Default $true
+                        # 0.30: background handoff. When the UI asks (turn is running long),
+                        # spawn a detached child pwsh and return a job_id immediately so the
+                        # single-threaded server stays free and the user can keep chatting.
+                        $bg = Get-PromptParleProp $body 'background' $false
+                        if ($bg -eq $true) {
+                            $bhash = @{}
+                            foreach ($p in $body.PSObject.Properties) { $bhash[$p.Name] = $p.Value }
+                            $bhash.Remove('background') | Out-Null
+                            $sid = [string](Get-PromptParleProp $body 'client_session_id' (Get-PromptParleProp $body 'clientSessionId' ''))
+                            $ttl = [string](Get-PromptParleProp $body 'session_title' (Get-PromptParleProp $body 'sessionTitle' ''))
+                            $started = Start-PromptParleChatJob -Payload $bhash -SessionId $sid -Title $ttl
+                            $json = ConvertTo-PromptParleJson -InputObject $started -Depth 6
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
                         } else {
-                            try {
-                                $stChat = Get-PromptParleSessionState
-                                if ($null -ne (Get-PromptParleProp $stChat 'tools_enabled' $null)) {
-                                    $toolsEnChat = ConvertTo-PromptParleBool -Value (Get-PromptParleProp $stChat 'tools_enabled' $true) -Default $true
-                                }
-                            } catch { $toolsEnChat = $true }
-                        }
-                        # Persist provider/model/tools/dial from UI each chat (model always when known)
-                        try {
-                            $stSave = Get-PromptParleSessionState
-                            $snapChat = @{
-                                Base         = $stSave
-                                ToolsEnabled = $toolsEnChat
-                                Dial         = $dial
-                                Profile      = $profile
-                                Provider     = $provider
-                                OptimizeOnly = $optOnly
-                            }
-                            # Force Model key so a UI switch replaces prior session model
-                            if ($modelFromBody -or $modelChat) {
-                                $snapChat.Model = $modelChat
-                            }
-                            $stSave = New-PromptParleSessionSnapshot @snapChat
-                            Save-PromptParleSessionState -State $stSave
-                        } catch { }
-
-                        # You → local prep → local-first optimize + provider (dial). Portal = license only.
-                        $prep = $null
-                        $toolBreakdownOut = @()
-                        $prepTokensBefore = 0
-                        $prepTokensAfter = 0
-                        $groundingContext = if ($context) { [string]$context } else { '' }
-                        $chatStage = 'local-prep'
-                        try {
-                            $prepParams = @{
-                                Prompt       = $prompt
-                                Context      = $(if ($context) { [string]$context } else { '' })
-                                ToolsEnabled = $toolsEnChat
-                                Dial         = $dial
-                                Profile      = $profile
-                            }
-                            if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
-                            elseif ($histText) { $prepParams.HistoryText = $histText }
-                            if ($clientSessionIdChat) { $prepParams.ClientSessionId = $clientSessionIdChat.Trim() }
-                            # User-pinned session Knowledge (★) from local UI — key present = UI is source of truth (empty clears)
-                            $pkArr = @()
-                            $pkRaw = $null
-                            $pkKeyPresent = $false
-                            try {
-                                if ($body.PSObject.Properties['priority_knowledge'] -or $body.PSObject.Properties['priorityKnowledge']) {
-                                    $pkKeyPresent = $true
-                                    $pkRaw = Get-PromptParleProp $body 'priority_knowledge' $null
-                                    if ($null -eq $pkRaw) { $pkRaw = Get-PromptParleProp $body 'priorityKnowledge' $null }
-                                }
-                            } catch {
-                                $pkRaw = Get-PromptParleProp $body 'priority_knowledge' $null
-                                if ($null -eq $pkRaw) { $pkRaw = Get-PromptParleProp $body 'priorityKnowledge' $null }
-                                if ($null -ne $pkRaw) { $pkKeyPresent = $true }
-                            }
-                            if ($null -ne $pkRaw) {
-                                foreach ($pk in @($pkRaw)) {
-                                    if ($null -eq $pk) { continue }
-                                    $pkt = [string](Get-PromptParleProp $pk 'text' (Get-PromptParleProp $pk 'Text' ''))
-                                    if (-not $pkt) { continue }
-                                    $pkr = [string](Get-PromptParleProp $pk 'role' (Get-PromptParleProp $pk 'Role' 'assistant'))
-                                    $pki = [string](Get-PromptParleProp $pk 'id' (Get-PromptParleProp $pk 'Id' ''))
-                                    $pkArr += [pscustomobject]@{ id = $pki; role = $pkr; text = $pkt }
-                                    if ($pkArr.Count -ge 12) { break }
-                                }
-                            }
-                            if ($pkKeyPresent) {
-                                $prepParams.PriorityKnowledge = $pkArr
-                                $prepParams.PriorityKnowledgeReplace = $true
-                            }
-                            $prepRaw = Invoke-PromptParleAgentLocalPrep @prepParams
-                            # PS 5.1: pipeline pollution can wrap prep as Object[]; take last real object
-                            $prep = $null
-                            if ($null -ne $prepRaw) {
-                                if ($prepRaw -is [System.Array]) {
-                                    for ($pi = $prepRaw.Length - 1; $pi -ge 0; $pi--) {
-                                        $cand = $prepRaw[$pi]
-                                        if ($null -eq $cand) { continue }
-                                        if ($cand -is [int] -or $cand -is [long]) { continue }
-                                        $probe = Get-PromptParleProp $cand 'prompt' $null
-                                        if ($null -eq $probe) { $probe = Get-PromptParleProp $cand 'context' $null }
-                                        if ($null -ne $probe -or (Get-PromptParleProp $cand 'tokens_before' $null) -ne $null) {
-                                            $prep = $cand
-                                            break
-                                        }
-                                    }
-                                    if ($null -eq $prep -and $prepRaw.Length -gt 0) { $prep = $prepRaw[-1] }
-                                } else {
-                                    $prep = $prepRaw
-                                }
-                            }
-                            if ($null -eq $prep) { throw 'local prep returned empty result' }
-                            $prepPrompt = Get-PromptParleProp $prep 'prompt' $null
-                            if ($null -ne $prepPrompt -and [string]$prepPrompt) { $prompt = [string]$prepPrompt }
-                            $prepCtx = Get-PromptParleProp $prep 'context' $null
-                            if ($null -ne $prepCtx) { $context = [string]$prepCtx }
-                            $prepNotes = Get-PromptParleProp $prep 'notes' $null
-                            if ($prepNotes) { $localNotes = @($localNotes) + @($prepNotes) }
-                            # Per-tool savings ledger from prep (0.28.0) — carried to metaOut for display.
-                            $toolBreakdownOut = @()
-                            try {
-                                $tbRaw = Get-PromptParleProp $prep 'tool_breakdown' $null
-                                if ($tbRaw) { $toolBreakdownOut = @($tbRaw) }
-                            } catch { }
-                            # Turn baseline: raw prompt+history+attach before MEM/fleet densify
-                            try {
-                                $ptb = Get-PromptParleProp $prep 'tokens_before' $null
-                                $pta = Get-PromptParleProp $prep 'tokens_after' $null
-                                if ($null -eq $ptb) {
-                                    $ci = Get-PromptParleProp $prep 'chars_in' 0
-                                    if ($ci -gt 0) { $ptb = [Math]::Max(1, [int][Math]::Ceiling([int]$ci / 4.0)) }
-                                }
-                                if ($null -eq $pta) {
-                                    $co = Get-PromptParleProp $prep 'chars_out' 0
-                                    if ($co -gt 0) { $pta = [Math]::Max(1, [int][Math]::Ceiling([int]$co / 4.0)) }
-                                }
-                                if ($null -ne $ptb) { $prepTokensBefore = [int]$ptb }
-                                if ($null -ne $pta) { $prepTokensAfter = [int]$pta }
-                            } catch { }
-                        } catch {
-                            Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
-                            Write-PromptParleDebugLog ("chat local-prep: " + $_.Exception.ToString())
-                            $prep = $null
-                        }
-                        # 0.20: freeze prep evidence for grounding/provenance post-pass
-                        # (agent rounds may compress context; post-pass must still see OBSERVE/PROVENANCE)
-                        $groundingContext = if ($context) { [string]$context } else { $groundingContext }
-                        # Native system role (0.14.12+) — product brief + runtime stay out of user prompt / usage Before
-                        $turnForRt = 'chat'
-                        try { $turnForRt = Get-PromptParleTurnKind -Prompt $prompt -History $histArr } catch { }
-                        $oblForRt = $null
-                        try { $oblForRt = Get-PromptParleProp $prep 'obligation' $null } catch { $oblForRt = $null }
-                        if (-not $oblForRt) {
-                            try { $oblForRt = Resolve-PromptParleTurnObligation -Prompt $prompt -History $histArr } catch { }
-                        }
-                        # Prep owns evidence_mode + hands_allowed (product dispatch, not chat special cases)
-                        $evidenceMode = 'live'
-                        $handsAllowed = [bool]$toolsEnChat
-                        $evidenceReason = ''
-                        try {
-                            if ($prep) {
-                                $em0 = Get-PromptParleProp $prep 'evidence_mode' $null
-                                if ($em0) { $evidenceMode = [string]$em0 }
-                                $ha0 = Get-PromptParleProp $prep 'hands_allowed' $null
-                                if ($null -ne $ha0) { $handsAllowed = [bool]$ha0 -and $toolsEnChat }
-                                $evidenceReason = [string](Get-PromptParleProp $prep 'evidence_reason' '')
-                            }
-                        } catch { }
-                        if (-not $toolsEnChat) { $handsAllowed = $false }
-
-                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][KNOW][ATTACH][WEB][OBSERVE][GROUNDING][PROVENANCE]. [KNOW]=user-pinned session truth. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn; never invent product facts not in evidence.'
-                        if ($oblForRt -and $oblForRt.mode -eq 'mutate') {
-                            $rtNote = 'MUTATE TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
-                            $turnForRt = 'implement'
-                        } elseif ($oblForRt -and $oblForRt.mode -eq 'deliver') {
-                            $rtNote = 'DELIVER TURN · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
-                        } elseif ($oblForRt -and $oblForRt.mode -eq 'observe') {
-                            $rtNote = 'OBSERVE TURN · client already filled [OBSERVE]/[WEB] when possible. Present results only; invent nothing beyond evidence. NEVER ```run ls``` or search-homework as the answer.'
-                        } elseif ($turnForRt -eq 'implement') {
-                            $rtNote = 'IMPLEMENT TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` for migrate/build client executes. NEVER tell the user to run npx. No theater.'
-                        } elseif ($turnForRt -eq 'question') {
-                            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/[OBSERVE]/[WEB]/[PROVENANCE]/[MEM][KNOW] evidence first. Never invent capabilities.'
-                        }
-                        if ($evidenceMode -eq 'session') {
-                            $rtNote = $rtNote + ' EVIDENCE_MODE=session: answer from [MEM]/[KNOW]/[PROJECT]/[CONN] only. No hands. No re-discovery. Offer refresh if incomplete.'
-                        } elseif ($evidenceMode -eq 'refresh') {
-                            $rtNote = $rtNote + ' EVIDENCE_MODE=refresh: user forced live re-pull; prefer [SSH]/[OBSERVE] this turn.'
-                        }
-                        if ($groundingContext -match '(?m)\[PROVENANCE\]') {
-                            $rtNote = $rtNote + ' PROVENANCE OWED: report client YES/NO on-source and prior-assistant origin. Never only "nowhere".'
-                        }
-                        try {
-                            $ctxHasAttach = $context -and ($context -match '(?m)^\[ATTACH\]' -or $context -match '===== FILE:')
-                            $prHasAttach = $prompt -match '\[ATTACHED THIS TURN'
-                            if ($ctxHasAttach -or $prHasAttach) {
-                                $rtNote = $rtNote + ' ATTACH PRIMARY: summarize/create deliverables from THIS turn FILE only. Do not reuse prior [MEM] document topic when a new file is attached.'
-                            }
-                        } catch { }
-                        if ($localNotes -and $localNotes.Count -gt 0) {
-                            $rtNote = $rtNote + ' Notes: ' + (($localNotes | Select-Object -First 8) -join ',') + '.'
-                        }
-                        $frame = Get-PromptParleChatFraming -Prompt $prompt -RuntimeNote $rtNote
-
-                        $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} model={1} profile={2} dial={3} tools={4} optimize_only={5} prompt={6}c system={7}c context={8}c images={9} local_notes={10} evidence={11} hands={12}" -f `
-                            $provider, $(if ($modelChat) { $modelChat } else { '(default)' }), $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count, $evidenceMode, $handsAllowed) -ForegroundColor DarkGray
-
-                        $params = @{
-                            Prompt            = [string]$frame.Prompt
-                            System            = [string]$frame.System
-                            Runtime           = [string]$frame.Runtime
-                            Provider          = $provider
-                            Profile           = $profile
-                            CompressionLevel  = $dial
-                        }
-                        if ($modelChat) {
-                            $params.Model = [string]$modelChat
-                            Write-Host ("  chat: forcing model={0}" -f $modelChat) -ForegroundColor DarkCyan
-                        } else {
-                            Write-Host '  chat: no model in body/session — local default model will apply' -ForegroundColor DarkYellow
-                        }
-                        if ($context) { $params.Context = [string]$context }
-                        if ($optOnly) { $params.OptimizeOnly = $true }
-                        if ($images.Count -gt 0) { $params.Images = $images }
-                        if ($sessionTitleChat) { $params.SessionTitle = $sessionTitleChat.Trim() }
-                        if ($clientSessionIdChat) { $params.ClientSessionId = $clientSessionIdChat.Trim() }
-
-                        # Dispatch from prep.hands_allowed only (no MaxRounds/session special cases)
-                        $chatStage = 'model-call'
-                        if (-not $handsAllowed -or -not $toolsEnChat -or $optOnly) {
-                            $params.Quiet = $true
-                            $params.Raw = $true
-                            foreach ($dropK in @('MaxRounds', 'ClientSessionId', 'SessionTitle')) {
-                                if ($params.ContainsKey($dropK)) { $params.Remove($dropK) | Out-Null }
-                            }
-                            Write-Host ("  chat: single completion (evidence={0} hands={1})" -f $evidenceMode, $handsAllowed) -ForegroundColor Green
-                            $result = Invoke-PromptParle @params
-                        } else {
-                            try {
-                                $result = Invoke-PromptParleAgentTurn @params
-                            } catch {
-                                $msg = "$_"
-                                if ($msg -match 'parameter name') {
-                                    Write-Host ("  chat: agent turn param retry after: {0}" -f $msg) -ForegroundColor DarkYellow
-                                    $params.Remove('ClientSessionId') | Out-Null
-                                    $params.Remove('SessionTitle') | Out-Null
-                                    $params.Remove('Quiet') | Out-Null
-                                    $params.Remove('Raw') | Out-Null
-                                    $result = Invoke-PromptParleAgentTurn @params
-                                } else {
-                                    throw
-                                }
-                            }
-                        }
-                        # Normalize metadata keys for the browser UI (always snake_case numbers)
-                        $chatStage = 'meta-normalize'
-                        $metaIn = Get-PromptParleProp $result 'metadata'
-                        if ($null -eq $metaIn) { $metaIn = Get-PromptParleProp $result 'Metadata' }
-                        $metaOut = $null
-                        if ($null -ne $metaIn) {
-                            $origT = Get-PromptParleProp $metaIn 'original_tokens'
-                            if ($null -eq $origT) { $origT = Get-PromptParleProp $metaIn 'originalTokens' }
-                            $optT = Get-PromptParleProp $metaIn 'optimized_tokens'
-                            if ($null -eq $optT) { $optT = Get-PromptParleProp $metaIn 'optimizedTokens' }
-                            $pctT = Get-PromptParleProp $metaIn 'token_reduction_percent'
-                            if ($null -eq $pctT) { $pctT = Get-PromptParleProp $metaIn 'tokenReductionPercent' }
-                            $dialT = Get-PromptParleProp $metaIn 'compression_level'
-                            if ($null -eq $dialT) { $dialT = Get-PromptParleProp $metaIn 'compressionLevel' }
-                            # Prefer the dial the UI actually sent this turn (authoritative).
-                            # Older native-agent builds hardcoded compression_level=1; never let that win.
-                            $dialForMeta = $dial
-                            if ($null -ne $dialT) {
-                                $dialMetaN = ConvertTo-PromptParleInt32 -Value $dialT -Default $dial
-                                if ($dialMetaN -ge 1 -and $dialMetaN -le 5) {
-                                    if ($dial -lt 1 -or $dialMetaN -eq $dial) { $dialForMeta = $dialMetaN }
-                                    else { $dialForMeta = $dial }
-                                }
-                            }
-                            # Plain hashtable only — never [ordered] + cast / ConvertTo-Json footguns
-                            $metaOut = @{
-                                original_tokens         = (ConvertTo-PromptParleInt32 -Value $origT -Default 0)
-                                optimized_tokens        = (ConvertTo-PromptParleInt32 -Value $optT -Default 0)
-                                token_reduction_percent = (ConvertTo-PromptParleInt32 -Value $pctT -Default 0)
-                                tokens_saved            = 0
-                                expanded                = $false
-                                provider                = [string](Get-PromptParleProp $metaIn 'provider' '')
-                                model                   = [string](Get-PromptParleProp $metaIn 'model' '')
-                                optimization_profile    = [string](Get-PromptParleProp $metaIn 'optimization_profile' (Get-PromptParleProp $metaIn 'optimizationProfile' ''))
-                                compression_level       = (ConvertTo-PromptParleInt32 -Value $dialForMeta -Default 3)
-                                strategy                = [string](Get-PromptParleProp $metaIn 'strategy' '')
-                                secrets_masked          = (ConvertTo-PromptParleBool -Value (Get-PromptParleProp $metaIn 'secrets_masked' $false) -Default $false)
-                                notes                   = @()
-                                signals                 = @{}
-                                image_count             = 0
-                                local_tools             = @($localNotes)
-                                tool_breakdown          = @($toolBreakdownOut)
-                            }
-                            # Roll up this turn's per-tool savings for the portal bridge
-                            # (aggregate numbers only; flushed on heartbeat). Best-effort.
-                            try {
-                                if ($toolBreakdownOut -and @($toolBreakdownOut).Count -gt 0) {
-                                    Add-PromptParleToolSavings -Breakdown @($toolBreakdownOut) -Provider ([string]$metaOut.provider)
-                                }
-                            } catch { }
-                            $notesRaw = Get-PromptParleProp $metaIn 'notes' @()
-                            if ($null -ne $notesRaw) {
-                                $nAcc = New-Object System.Collections.ArrayList
-                                foreach ($n in @($notesRaw)) {
-                                    if ($null -eq $n) { continue }
-                                    [void]$nAcc.Add([string]$n)
-                                }
-                                $metaOut.notes = @($nAcc.ToArray())
-                            }
-                            $sigRaw = Get-PromptParleProp $metaIn 'signals' $null
-                            if ($null -ne $sigRaw -and $sigRaw -is [System.Collections.IDictionary]) {
-                                $metaOut.signals = @{}
-                                foreach ($sk in @($sigRaw.Keys)) {
-                                    $metaOut.signals[[string]$sk] = $sigRaw[$sk]
-                                }
-                            }
-                            $imgC = Get-PromptParleProp $metaIn 'image_count'
-                            if ($null -eq $imgC) { $imgC = Get-PromptParleProp $metaIn 'imageCount' }
-                            if ($null -ne $imgC) { $metaOut.image_count = ConvertTo-PromptParleInt32 -Value $imgC -Default 0 }
-                            $expF = Get-PromptParleProp $metaIn 'expanded'
-                            if ($null -ne $expF) { $metaOut.expanded = ConvertTo-PromptParleBool -Value $expF -Default $false }
-                            elseif ($metaOut.optimized_tokens -gt $metaOut.original_tokens) { $metaOut.expanded = $true }
-                            $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
-                            if ($metaOut.token_reduction_percent -eq 0 -and $metaOut.original_tokens -gt 0 -and -not $metaOut.expanded) {
-                                $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
-                            }
-                            if ($localNotes -and $localNotes.Count -gt 0) {
-                                $mergedNotes = @()
-                                foreach ($n in @($metaOut.notes)) { if ($n) { $mergedNotes += [string]$n } }
-                                foreach ($n in @($localNotes)) { if ($n) { $mergedNotes += [string]$n } }
-                                $metaOut.notes = $mergedNotes
-                            }
-                            try {
-                                $ag = Get-PromptParleProp $result 'agent' $null
-                                if ($ag) {
-                                    $metaOut.agent_rounds = [int](Get-PromptParleProp $ag 'agent_rounds' 0)
-                                    $metaOut.hands_count = [int](Get-PromptParleProp $ag 'hands_count' 0)
-                                    $metaOut.hands_tools = @(Get-PromptParleProp $ag 'hands_tools' @())
-                                    $metaOut.architecture = [string](Get-PromptParleProp $ag 'architecture' '0.19-brain-hands')
-                                    $sumO = Get-PromptParleProp $ag 'tokens_sum_original' $null
-                                    $sumZ = Get-PromptParleProp $ag 'tokens_sum_optimized' $null
-                                    if ($null -ne $sumO) {
-                                        $metaOut.original_tokens = [int]$sumO
-                                        $metaOut.tokens_sum_original = [int]$sumO
-                                    }
-                                    if ($null -ne $sumZ) {
-                                        $metaOut.optimized_tokens = [int]$sumZ
-                                        $metaOut.tokens_sum_optimized = [int]$sumZ
-                                    }
-                                }
-                            } catch { }
-                            # Turn meter: prep wire baseline → tokens actually sent this turn (one formula)
-                            if ($prepTokensBefore -gt 0) {
-                                $metaOut.prep_tokens_before = [int]$prepTokensBefore
-                                $metaOut.prep_tokens_after = [int]$prepTokensAfter
-                                $sendAfter = [int]$metaOut.optimized_tokens
-                                if ($sendAfter -le 0 -and $prepTokensAfter -gt 0) { $sendAfter = [int]$prepTokensAfter }
-                                if ($sendAfter -le 0) { $sendAfter = [int]$metaOut.original_tokens }
-                                $metaOut.original_tokens = [int]$prepTokensBefore
-                                $metaOut.optimized_tokens = [int]$sendAfter
-                            }
-                            try {
-                                $metaOut.evidence_mode = $evidenceMode
-                                $metaOut.hands_allowed = [bool]$handsAllowed
-                                if ($evidenceReason) { $metaOut.evidence_reason = $evidenceReason }
-                            } catch { }
-                            if ($metaOut.optimized_tokens -gt $metaOut.original_tokens -and $metaOut.original_tokens -gt 0) {
-                                $metaOut.expanded = $true
-                                $metaOut.tokens_saved = 0
-                                $metaOut.token_reduction_percent = 0
-                            } else {
-                                $metaOut.expanded = $false
-                                $metaOut.tokens_saved = [Math]::Max(0, [int]$metaOut.original_tokens - [int]$metaOut.optimized_tokens)
-                                if ($metaOut.original_tokens -gt 0) {
-                                    $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
-                                } else {
-                                    $metaOut.token_reduction_percent = 0
-                                }
-                            }
-                            if ([int]$metaOut.optimized_tokens -eq [int]$metaOut.original_tokens) {
-                                $metaOut.expanded = $false
-                                $metaOut.tokens_saved = 0
-                                $metaOut.token_reduction_percent = 0
-                            }
-                        }
-                        $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
-                        # 0.16.1: always run implement pipeline post-pass when implement OR any apply/run/homework signal
-                        $applyInfo = $null
-                        $pipeTrigger = $false
-                        if ($respText) {
-                            if ($turnForRt -eq 'implement') { $pipeTrigger = $true }
-                            elseif ($respText -match '(?m)```apply\s+path' -or $respText -match '(?m)```run\b') { $pipeTrigger = $true }
-                            elseif ($respText -match '(?i)\b(run this|please run|npx prisma|npm run (build|test))\b') { $pipeTrigger = $true }
-                        }
-                        if ($pipeTrigger) {
-                            try {
-                                $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText -TurnKind $turnForRt
-                                if ($applyInfo -and $applyInfo.text) { $respText = [string]$applyInfo.text }
-                                if ($applyInfo -and $applyInfo.count -gt 0) {
-                                    Write-Host ("  chat: applied {0} file(s) via SSH" -f $applyInfo.count) -ForegroundColor Green
-                                    if ($metaOut) {
-                                        $metaOut.applied_files = @($applyInfo.applied)
-                                        $metaOut.applied_count = [int]$applyInfo.count
-                                    }
-                                }
-                                if ($applyInfo -and $applyInfo.run_count -gt 0) {
-                                    Write-Host ("  chat: ran {0} remote command(s)" -f $applyInfo.run_count) -ForegroundColor Cyan
-                                    if ($metaOut) {
-                                        $metaOut.run_count = [int]$applyInfo.run_count
-                                        $metaOut.runs = @($applyInfo.runs | ForEach-Object {
-                                            [ordered]@{ command = $_.command; exit_code = $_.exit_code; ok = [bool]$_.ok }
-                                        })
-                                    }
-                                }
-                                if ($applyInfo -and $applyInfo.homework -and $applyInfo.homework.Count -gt 0) {
-                                    Write-Host ("  chat: intercepted {0} homework command(s)" -f $applyInfo.homework.Count) -ForegroundColor Magenta
-                                    if ($metaOut) { $metaOut.homework_intercepted = @($applyInfo.homework) }
-                                }
-                                if ($applyInfo -and $applyInfo.fail_closed) {
-                                    Write-Host '  chat: FAIL-CLOSED implement turn (no apply/run)' -ForegroundColor Yellow
-                                    if ($metaOut) { $metaOut.fail_closed = $true }
-                                }
-                                if ($applyInfo -and $applyInfo.errors -and $applyInfo.errors.Count -gt 0) {
-                                    Write-Host ("  chat: pipeline errors: {0}" -f ($applyInfo.errors -join '; ')) -ForegroundColor Yellow
-                                }
-                            } catch {
-                                Write-Host ("  chat: implement pipeline failed: {0}" -f $_) -ForegroundColor Yellow
-                                $respText = $respText + "`n`n**Implement pipeline failed:** $_"
-                            }
-                        }
-                        # 0.17/0.18: document deliverables — ```file name=Report.docx``` → real file + download URL
-                        $deliverInfo = $null
-                        if ($respText -and ($respText -match '(?m)```(?:file|deliver)\s+')) {
-                            try {
-                                $deliverInfo = Invoke-PromptParleDeliverResponseBlocks -ResponseText $respText
-                                if ($deliverInfo -and $deliverInfo.text) { $respText = [string]$deliverInfo.text }
-                                if ($deliverInfo -and $deliverInfo.count -gt 0) {
-                                    Write-Host ("  chat: delivered {0} downloadable file(s)" -f $deliverInfo.count) -ForegroundColor Green
-                                    if ($metaOut) {
-                                        $metaOut.exports = @($deliverInfo.exports | ForEach-Object {
-                                            [ordered]@{
-                                                name         = $_.name
-                                                url          = $_.url
-                                                download_url = $_.download_url
-                                                bytes        = $_.bytes
-                                                content_type = $_.content_type
-                                            }
-                                        })
-                                        $metaOut.export_count = [int]$deliverInfo.count
-                                    }
-                                }
-                                if ($deliverInfo -and $deliverInfo.errors -and $deliverInfo.errors.Count -gt 0) {
-                                    Write-Host ("  chat: deliver errors: {0}" -f ($deliverInfo.errors -join '; ')) -ForegroundColor Yellow
-                                }
-                            } catch {
-                                Write-Host ("  chat: deliver pipeline failed: {0}" -f $_) -ForegroundColor Yellow
-                                $respText = $respText + "`n`n**Document deliver failed:** $_"
-                            }
-                        }
-                        # 0.18: deliver fail-closed when document was owed but no export
-                        try {
-                            $expN = 0
-                            if ($deliverInfo) { $expN = [int]$deliverInfo.count }
-                            $oweDeliver = $false
-                            if ($oblForRt) { $oweDeliver = Test-PromptParleDeliverOwed -Obligation $oblForRt -ResponseText $respText }
-                            if ($oweDeliver) {
-                                $fc = Invoke-PromptParleDeliverFailClosed -ResponseText $respText -ExportCount $expN
-                                if ($fc.fail_closed) {
-                                    $respText = [string]$fc.text
-                                    Write-Host '  chat: FAIL-CLOSED deliver turn (no file artifact)' -ForegroundColor Yellow
-                                    if ($metaOut) { $metaOut.deliver_fail_closed = $true }
-                                }
-                            }
-                            # sticky open obligation update
-                            $appN = 0; $runN = 0
-                            if ($applyInfo) {
-                                try { $appN = [int]$applyInfo.count } catch { }
-                                try { $runN = [int]$applyInfo.run_count } catch { }
-                            }
-                            if ($oblForRt) {
-                                Update-PromptParleOpenObligationFromTurn -Obligation $oblForRt -ResponseText $respText -ExportCount $expN -ApplyCount $appN -RunCount $runN
-                            }
-                        } catch {
-                            Write-Host ("  chat: obligation post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
-                        }
-                        # 0.20/0.21: provenance fail-closed + quality gate (BS detector/corrector, 0 AI tokens)
-                        try {
-                            $gctx = if ($groundingContext) { [string]$groundingContext } elseif ($context) { [string]$context } else { '' }
-                            try {
-                                $evFromAgent = Get-PromptParleProp $result 'evidence_context' $null
-                                if ($evFromAgent -and [string]$evFromAgent) { $gctx = [string]$evFromAgent }
-                            } catch { }
-                            $pp = Invoke-PromptParleProvenancePostPass -ResponseText $respText -Context $gctx
-                            if ($pp.applied) {
-                                $respText = [string]$pp.text
-                                Write-Host '  chat: provenance FAIL-CLOSED (client origin facts appended)' -ForegroundColor Yellow
-                                if ($metaOut) {
-                                    $metaOut.provenance_fail_closed = $true
-                                    $metaOut.provenance_reason = [string]$pp.reason
-                                }
-                            }
-                            # Quality gate: product-claim auditor vs fetched evidence — not session/menu turns
-                            $qg = $null
-                            if ($evidenceMode -eq 'session') {
-                                $qg = [pscustomobject]@{
-                                    text = $respText; applied = $false; reason = 'session-mode'
-                                    claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
-                                }
-                            } else {
-                                $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
-                            }
-                            if ($qg.applied) {
-                                $respText = [string]$qg.text
-                                Write-Host ("  chat: quality gate {0}% ({1} supported, {2} unverified, corrected={3})" -f `
-                                    $qg.score_pct, $qg.supported, $qg.unsupported, $qg.corrected) -ForegroundColor Yellow
-                            } elseif ($qg.reason -match 'clean-silent|partial-silent') {
-                                Write-Host ("  chat: quality gate silent ({0} score={1}%)" -f $qg.reason, $qg.score_pct) -ForegroundColor DarkGray
-                            }
-                            if ($metaOut) {
-                                $metaOut.quality_reason = [string]$qg.reason
-                                if ($null -ne $qg.score_pct) { $metaOut.quality_score_pct = [int]$qg.score_pct }
-                                try {
-                                    $metaOut.quality_supported = [int]$qg.supported
-                                    $metaOut.quality_partial = [int]$qg.partial
-                                    $metaOut.quality_unsupported = [int]$qg.unsupported
-                                    $metaOut.quality_corrected = [bool]$qg.corrected
-                                } catch { }
-                                if ($qg.applied) { $metaOut.quality_gate = $true }
-                                try {
-                                    if ($qg.claims) {
-                                        $metaOut.quality_claims = @($qg.claims | ForEach-Object {
-                                            [ordered]@{ claim = [string]$_.claim; status = [string]$_.status }
-                                        })
-                                    }
-                                } catch { }
-                            }
-                            # Last-resort high-severity only if gate never evaluated claims at all
-                            $gateEvaluated = $qg.applied -or ($null -ne $qg.score_pct) -or (
-                                [string]$qg.reason -match 'clean-silent|partial-silent|scored|unverified|corrected|no-claims|no-scored|no-evidence-meta|thin-evidence|empty-evidence|no-evidence|too-short|session-mode|procedural-menu|hands-only-nonproduct'
-                            )
-                            if (-not $gateEvaluated) {
-                                $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
-                                if ($gp.applied) {
-                                    $respText = [string]$gp.text
-                                    Write-Host ("  chat: grounding flagged {0} high-severity phrase(s)" -f $gp.flagged.Count) -ForegroundColor Yellow
-                                    if ($metaOut) {
-                                        $metaOut.grounding_flagged = @($gp.flagged)
-                                        $metaOut.grounding_audit = $true
-                                    }
-                                }
-                            }
-                        } catch {
-                            Write-Host ("  chat: quality/provenance post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
-                        }
-                        $chatStage = 'serialize'
-                        $payload = @{
-                            response         = [string]$respText
-                            optimized_prompt = Get-PromptParleProp $result 'optimized_prompt' (Get-PromptParleProp $result 'OptimizedPrompt' $null)
-                            metadata         = $metaOut
-                        }
-                        # Keep error field if present
-                        $errField = Get-PromptParleProp $result 'error'
-                        if ($errField) { $payload.error = [string]$errField }
-                        try {
+                            $payload = Invoke-PromptParleChatTurnCore -Body $body
                             $json = ConvertTo-PromptParleJson -InputObject $payload -Depth 12
-                        } catch {
-                            $json = ($payload | ConvertTo-Json -Depth 12 -Compress)
-                        }
-                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
-                        if ($metaOut) {
-                            Write-Host ("  chat: ok  {0} → {1} tokens (−{2}%) dial={3} strat={4}" -f `
-                                $metaOut.original_tokens, $metaOut.optimized_tokens, $metaOut.token_reduction_percent, `
-                                $metaOut.compression_level, $metaOut.strategy) -ForegroundColor DarkGreen
-                        } else {
-                            Write-Host '  chat: ok (no metadata)' -ForegroundColor DarkGreen
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
                         }
                     } catch {
-                        $verChat = 'unknown'
-                        try { $verChat = Get-PromptParleClientVersion } catch { }
-                        $etype = ''
-                        try { $etype = $_.Exception.GetType().FullName } catch { $etype = 'Exception' }
-                        $emsg = $_.Exception.Message
-                        if (-not $emsg) { $emsg = "$_" }
-                        $full = ("Chat failed [v{0}] at {1}: {2}: {3}" -f $verChat, $chatStage, $etype, $emsg)
-                        Write-Host ("  chat: error - {0}" -f $full) -ForegroundColor Red
-                        Write-PromptParleDebugLog ("chat FAIL " + $full + " stack=" + $_.ScriptStackTrace)
-                        $err = @{ error = $full } | ConvertTo-Json -Compress
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                # 0.30: poll a background chat job by id
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/chat/job') {
+                    try {
+                        $jid = [string]$req.QueryString['id']
+                        if (-not $jid) { throw 'missing id' }
+                        $job = Read-PromptParleJob -Id $jid
+                        if ($null -eq $job) {
+                            Write-PromptParleHttpResponse -Context $ctx -StatusCode 404 -ContentType 'application/json; charset=utf-8' -Body (@{ error = 'no such job' } | ConvertTo-Json -Compress)
+                        } else {
+                            $json = ConvertTo-PromptParleJson -InputObject $job -Depth 12
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                        }
+                    } catch {
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body (@{ error = "$_" } | ConvertTo-Json -Compress)
+                    }
+                    continue
+                }
+
+                # 0.30: list pending/recent background jobs (for the UI badge)
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/chat/jobs') {
+                    try {
+                        $list = Get-PromptParleJobList
+                        $json = ConvertTo-PromptParleJson -InputObject @{ jobs = @($list) } -Depth 8
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body (@{ error = "$_" } | ConvertTo-Json -Compress)
                     }
                     continue
                 }
@@ -17867,6 +18096,8 @@ Export-ModuleMember -Function @(
     'Invoke-PromptParleLocalFirst',
     'Invoke-PromptParleAgentTurn',
     'Invoke-PromptParleNativeAgentTurn',
+    'Invoke-PromptParleChatTurnCore',
+    'Invoke-PromptParleRunChatJob',
     'Invoke-PromptParleSecurityReview',
     'Start-PromptParle',
     'Start-PromptParleLocalServer',

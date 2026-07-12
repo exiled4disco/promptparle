@@ -1880,6 +1880,87 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         '<span class="muted">' + bits.join(' · ') + '</span>' +
         (toolLine ? '<span class="muted tool-breakdown" style="display:block;margin-top:2px;opacity:.85">' + escapeHtml(toolLine) + '</span>' : ''); savingsStrip.classList.add('show'); }
 
+    // ---- 0.30 Background jobs: keep chatting while a long turn runs elsewhere ----
+    var bgJobs = {};            // jobId -> { chatId, prompt, timer }
+    var bgReady = [];           // finished-but-not-yet-viewed results (for badge)
+
+    function updateBgBadge() {
+      var el = document.getElementById('knowBadge'); // reuse the header badge slot if present
+      var n = 0; for (var k in bgJobs) { if (bgJobs.hasOwnProperty(k)) n++; }
+      var pill = document.getElementById('bgJobPill');
+      if (!pill) {
+        var host = document.querySelector('.savings-strip') ? document.querySelector('.savings-strip').parentNode : document.body;
+        pill = document.createElement('div'); pill.id = 'bgJobPill';
+        pill.style.cssText = 'display:none;margin:4px 0;font-size:12px;color:var(--text-dim);cursor:pointer';
+        if (host) host.insertBefore(pill, host.firstChild);
+        pill.addEventListener('click', function () { if (bgReady.length) { var r = bgReady[0]; if (r && r.chatId) switchChat(r.chatId); } });
+      }
+      var running = n, ready = bgReady.length;
+      if (running === 0 && ready === 0) { pill.style.display = 'none'; return; }
+      var msg = [];
+      if (running) msg.push('⏳ ' + running + ' running in background');
+      if (ready) msg.push('✓ ' + ready + ' result' + (ready > 1 ? 's' : '') + ' ready — click to view');
+      pill.textContent = msg.join(' · '); pill.style.display = 'block';
+    }
+
+    function beginBackgroundJob(jobId, chatId, promptText) {
+      addMsg('sys', '⏳ Working in the background — you can keep chatting. This turn’s answer will land here when it’s ready.', null, false);
+      bgJobs[jobId] = { chatId: chatId, prompt: promptText };
+      updateBgBadge();
+      pollBackgroundJob(jobId);
+    }
+
+    async function pollBackgroundJob(jobId) {
+      var job = bgJobs[jobId]; if (!job) return;
+      try {
+        var res = await fetch('/api/chat/job?id=' + encodeURIComponent(jobId), { headers: { 'Accept': 'application/json' } });
+        if (res.ok) {
+          var j = await res.json();
+          var status = String(j.status || 'running');
+          if (status === 'done' || status === 'error') {
+            delete bgJobs[jobId];
+            finishBackgroundJob(job, j);
+            updateBgBadge();
+            return;
+          }
+        }
+      } catch (e) { /* offline / transient — keep polling */ }
+      // Poll every 3s; the turn may run minutes.
+      bgJobs[jobId] && (bgJobs[jobId].timer = setTimeout(function () { pollBackgroundJob(jobId); }, 3000));
+    }
+
+    function finishBackgroundJob(job, j) {
+      var text, meta = null, isErr = false;
+      if (String(j.status) === 'error') { text = 'Background turn failed: ' + (j.error || 'unknown error'); isErr = true; }
+      else {
+        text = (j.response && String(j.response)) || '(empty response)';
+        meta = j.metadata || null;
+      }
+      var entry = { role: isErr ? 'bot' : 'bot', text: String(text), meta: meta, isError: isErr, at: Date.now(), id: 'bgm_' + Math.random().toString(36).slice(2, 10), knowledge: false, background: true };
+      if (job.chatId && job.chatId === currentChatId) {
+        // Still on the origin chat → render inline now + savings strip.
+        addMsg('bot', entry.text, meta, isErr);
+        if (meta) { try { updateSavingsStrip(normalizeMeta(meta)); } catch (e) {} }
+      } else if (job.chatId) {
+        // User moved away → append to the origin chat's stored history + badge.
+        try {
+          var msgs = loadChatMessages(job.chatId);
+          msgs.push(entry); if (msgs.length > 200) msgs = msgs.slice(-200);
+          saveChatMessages(job.chatId, msgs);
+        } catch (e) {}
+        bgReady.push({ chatId: job.chatId, at: Date.now() });
+      } else {
+        // No origin chat id (shouldn't happen) → show wherever we are.
+        addMsg('bot', entry.text, meta, isErr);
+      }
+    }
+
+    // On load / chat switch, drop any ready-badge entries for the chat now open.
+    function clearBgReadyFor(chatId) {
+      bgReady = bgReady.filter(function (r) { return r.chatId !== chatId; });
+      updateBgBadge();
+    }
+
     /** Epoch: only count chat turns saved after this (Reset). Chats stay; stats restart. */
     var RUN_STATS_EPOCH_KEY = 'pp_run_stats_epoch_v1';
     function getRunStatsEpoch() {
@@ -2504,6 +2585,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
     function switchChat(id) {
       if (currentChatId) persistCurrentChat(); currentChatId = id; currentMessages = loadChatMessages(id); try { localStorage.setItem(HIST_ACTIVE_KEY, id); } catch (e) {}
+      try { clearBgReadyFor(id); } catch (e) {}
       const idx = loadIndex(); const row = idx.find(function (c) { return c.id === id; }); if (chatTitleEl) {
         chatTitleEl.textContent = (row && row.title) || 'Chat'; chatTitleEl.title = 'Click to rename chat'; }
       if (currentMessages.length) {
@@ -4881,6 +4963,33 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         } catch (e) { /* ignore */ }
         if (images.length && !optOnly) {
           payload.images = images; }
+
+        // 0.30 Background handoff: turns likely to run long (implement/act, or a
+        // large attachment) run in a detached child process server-side so the
+        // single-threaded local server stays free and YOU can keep chatting.
+        // The result lands back in THIS chat when done. Quick turns stay inline.
+        var goBackground = !optOnly && (actLike || (context && context.length > 6000) || images.length > 0);
+        if (goBackground) {
+          payload.background = true;
+          if (timer) clearTimeout(timer);
+          const bgRes = await fetch('/api/chat', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const bgRaw = await bgRes.text(); var bgData = {}; try { bgData = bgRaw ? JSON.parse(bgRaw) : {}; } catch (e) { bgData = {}; }
+          var jobId = bgData.job_id || bgData.jobId;
+          if (bgRes.ok && jobId) {
+            beginBackgroundJob(jobId, currentChatId, prompt);
+            // Unblock immediately — remove waiting bubble, restore composer, keep chatting.
+            const wq = document.getElementById('waiting'); if (wq) wq.remove();
+            if (timer) clearTimeout(timer); for (var cq = 0; cq < thinkTimers.length; cq++) clearTimeout(thinkTimers[cq]);
+            if (attachments.length > 0) clearComposerAttachments('post-send');
+            sendBtn.disabled = false; sendBtn.textContent = 'Send'; inputEl.focus();
+            return; // background path owns the rest; poller injects the result
+          }
+          // Couldn't start a background job → fall through to inline as a fallback.
+          delete payload.background;
+        }
 
         const res = await fetch('/api/chat', {
           method: 'POST',
