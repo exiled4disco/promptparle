@@ -9,6 +9,19 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.13] - 2026-07-12
+
+### Changed
+- Invitations are now code-free referrals (signup is open). The invite email
+  no longer shows a PP-XXXX code — it shows who invited you, their personal
+  message, and a "Create your free account" link. The post-signup welcome
+  email likewise dropped the "enter invitation code in the installer"
+  language for the current create-account → license-key-per-desktop flow.
+- User invite is a modal (email + message → Send) opened from the Invites
+  page; the sent list now shows the message, status, and whether they joined.
+- Admin Invitations view swapped the Code column for "Invited by" and relabeled
+  Note → Message, so admins see every invite and who sent it.
+
 ## [0.32.12] - 2026-07-12
 
 ### Added

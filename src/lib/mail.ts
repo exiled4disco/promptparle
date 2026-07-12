@@ -250,67 +250,66 @@ Trim the prompt. Keep the signal.
 
 export async function sendInvitationEmail(opts: {
   to: string;
-  inviteUrl: string;
-  expiresAt: Date;
-  codePreview: string;
+  /** Display name of the person sending the invite. */
+  inviterName?: string | null;
+  /** Optional personal message the sender wrote. */
+  message?: string | null;
+  /** Convenience one-click link (still works; no code). */
+  inviteUrl?: string | null;
 }): Promise<void> {
-  const { to, inviteUrl, expiresAt, codePreview } = opts;
-  const exp = expiresAt.toUTCString();
-
+  const { to } = opts;
+  const inviter = (opts.inviterName || "").trim();
+  const who = inviter ? inviter : "Someone";
+  const message = (opts.message || "").trim();
   const registerUrl = `${appUrl()}/register`;
+  const joinUrl = (opts.inviteUrl || "").trim() || registerUrl;
+  const subject = inviter
+    ? `${inviter} invited you to PromptParle`
+    : "You're invited to PromptParle";
 
-  const text = `You're invited to PromptParle (it's free)
+  const text = `${who} invited you to PromptParle (it's free).
 
-A friend invited you to PromptParle, the AI context optimization gateway. PromptParle is free for everyone, this invite just gives you a warm one-click start.
+PromptParle is the AI context optimization gateway — trim the prompt, keep the signal, and cut token cost on the models you already use.
+${message ? `\nTheir message:\n"${message}"\n` : ""}
+Create your free account:
+${joinUrl}
 
-YOUR INVITE CODE (optional, pre-fills your signup)
-${codePreview}
-
-Option A (one click):
-${inviteUrl}
-
-Option B (on the website):
-1) Go to ${registerUrl}
-2) The invite code above pre-fills, or just sign up directly (it's open)
-3) Set your name and password
-
-This invite link expires ${exp}.
-After you create your account, we'll email desktop install steps.
+Signup is open — it takes a minute, then you'll get desktop install steps.
 
 PromptParle
 Trim the prompt. Keep the signal.
 `;
+
+  const messageBlock = message
+    ? `<div style="background:#0d111a;border-left:3px solid #5b8cff;border-radius:6px;padding:12px 16px;margin:0 0 22px;color:#c7d7f5;font-style:italic;">${escapeHtml(message)}</div>`
+    : "";
 
   const html = `<!DOCTYPE html>
 <html>
 <body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
   <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
     <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
-    <p style="color:#8b9bb8;margin:0 0 20px;">You're invited (it's free)</p>
-    <p style="margin:0 0 12px;color:#c7d7f5;">A friend invited you to PromptParle. It's free for everyone, this is just a warm one-click start.</p>
-    <p style="margin:0 0 10px;color:#8b9bb8;font-size:14px;">Your invite code (optional, pre-fills your signup):</p>
-    <div style="background:#0d111a;border:1px solid #2a3a55;border-radius:10px;padding:14px 16px;margin:0 0 22px;text-align:center;">
-      <code style="font-size:20px;letter-spacing:0.12em;font-weight:700;color:#93b4ff;">${codePreview}</code>
-    </div>
-    <p style="margin:0 0 28px;">
-      <a href="${inviteUrl}"
+    <p style="color:#8b9bb8;margin:0 0 18px;"><strong style="color:#e8eef8;">${escapeHtml(who)}</strong> invited you (it's free)</p>
+    <p style="margin:0 0 18px;color:#c7d7f5;">PromptParle is the AI context optimization gateway — trim the prompt, keep the signal, and cut token cost on the models you already use.</p>
+    ${messageBlock}
+    <p style="margin:0 0 24px;">
+      <a href="${joinUrl}"
          style="display:inline-block;background:linear-gradient(135deg,#5b8cff,#3d6ef5);color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px;">
-        Accept invitation
+        Create your free account
       </a>
     </p>
-    <p style="font-size:13px;color:#8b9bb8;margin:0 0 8px;">Or go to <a href="${registerUrl}" style="color:#93b4ff;">${registerUrl}</a> and sign up directly, the code above pre-fills if you use the link.</p>
-    <p style="font-size:12px;color:#5c6b86;margin:0;">Invite link expires ${exp}. After signup you get desktop install steps by email.</p>
+    <p style="font-size:13px;color:#8b9bb8;margin:0;">Or go to <a href="${registerUrl}" style="color:#93b4ff;">${registerUrl}</a>. Signup is open — no code needed. After you sign up you'll get desktop install steps.</p>
   </div>
 </body>
 </html>`;
 
   if (process.env.MAIL_DEBUG === "true") {
-    console.info(`[mail-debug] invitation for ${to}: ${inviteUrl}`);
+    console.info(`[mail-debug] invitation for ${to} from ${who}`);
   }
 
   await sendMail({
     to,
-    subject: "You're invited to PromptParle",
+    subject,
     text,
     html,
   });
@@ -319,7 +318,6 @@ Trim the prompt. Keep the signal.
 export async function sendInvitationWelcomeEmail(opts: {
   to: string;
   name?: string | null;
-  code: string;
 }): Promise<void> {
   const greeting = opts.name ? `Hi ${opts.name},` : "Hi,";
   const portal = appUrl();
@@ -328,42 +326,28 @@ export async function sendInvitationWelcomeEmail(opts: {
 
   const text = `${greeting}
 
-Your PromptParle account is ready. Here is your one-time invitation code and install guide.
+Your PromptParle account is ready. Here's how to get the desktop client running.
 
-════════════════════════════════════
-  INVITATION CODE (enter during install)
-  ${opts.code}
-════════════════════════════════════
+PORTAL (once)
+1) Sign in: ${portal}/login  (${opts.to})
+2) Licenses → create a desktop license key → copy the pp_live_… value (shown once).
+   Each desktop needs its own key.
 
 INSTALL (Windows PowerShell)
-
-1) Open PowerShell
-2) Run:
-   ${installCmdWin}
-3) When asked, enter invitation code: ${opts.code}
-4) Finish portal setup (below), then paste your desktop API key.
+1) Open PowerShell as Administrator
+2) Run: ${installCmdWin}
+3) Paste your pp_live_ license key when prompted.
 
 INSTALL (Linux / macOS)
-
 1) Install PowerShell 7+ (pwsh) if needed
-2) Run:
-   ${installCmdLinux}
-3) When asked, enter invitation code: ${opts.code}
-4) Finish portal setup (below), then paste your desktop API key.
+2) Run: ${installCmdLinux}
+3) Paste your pp_live_ license key when prompted.
 
-PORTAL SETUP (required once)
+THEN, on the desktop
+• Providers → add your AI provider key (OpenAI / Claude / Gemini / Grok).
+  Keys stay on your PC (BYOK); spend is on your provider account.
 
-1) Sign in: ${portal}/login
-   Email: ${opts.to}
-2) Providers → add your AI provider key (OpenAI / Claude / Gemini / Grok)
-   Keys stay encrypted; spend is on YOUR provider account (BYOK).
-3) API Keys → Create desktop key → copy the full pp_live_… value (shown once)
-4) Return to the installer and paste that key.
-
-SECURITY NOTES
-• Invitation codes are single-use for onboarding
-• Desktop UI runs only on your PC (127.0.0.1)
-• SSH/git credentials never leave your machine
+Signup is open and free — no invitation code needed.
 
 Need help? Reply to this email or visit ${portal}
 
@@ -376,43 +360,42 @@ Trim the prompt. Keep the signal.
 <body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
   <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
     <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
-    <p style="color:#8b9bb8;margin:0 0 16px;">Account ready: install next</p>
-    <p style="margin:0 0 16px;">${greeting}</p>
-    <p style="margin:0 0 12px;color:#c7d7f5;">Your one-time invitation code (enter this in the desktop installer):</p>
-    <div style="background:#0d111a;border:1px solid #2a3a55;border-radius:10px;padding:16px 18px;margin:0 0 24px;text-align:center;">
-      <code style="font-size:22px;letter-spacing:0.12em;font-weight:700;color:#93b4ff;">${opts.code}</code>
-    </div>
+    <p style="color:#8b9bb8;margin:0 0 16px;">Account ready — install next</p>
+    <p style="margin:0 0 20px;">${greeting}</p>
 
-    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">1 · Install (Windows)</h3>
-    <ol style="margin:0 0 16px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
-      <li>Open PowerShell</li>
-      <li>Run: <code style="color:#93b4ff;background:#0d111a;padding:2px 6px;border-radius:4px;">${installCmdWin}</code></li>
-      <li>Enter invitation code <strong style="color:#e8eef8;">${opts.code}</strong> when prompted</li>
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">1 · Get a license key (portal)</h3>
+    <ol style="margin:0 0 20px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
+      <li>Sign in at <a href="${portal}/login" style="color:#93b4ff;">${portal}/login</a> (${opts.to})</li>
+      <li><strong style="color:#e8eef8;">Licenses</strong> → create a desktop key → copy <code style="color:#93b4ff;">pp_live_…</code> (shown once). Each desktop needs its own.</li>
     </ol>
 
-    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">1b · Install (Linux / macOS)</h3>
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">2 · Install (Windows)</h3>
+    <ol style="margin:0 0 16px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
+      <li>Open PowerShell as Administrator</li>
+      <li>Run: <code style="color:#93b4ff;background:#0d111a;padding:2px 6px;border-radius:4px;">${installCmdWin}</code></li>
+      <li>Paste your <code style="color:#93b4ff;">pp_live_</code> key when prompted</li>
+    </ol>
+
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">2b · Install (Linux / macOS)</h3>
     <ol style="margin:0 0 20px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
       <li>Install PowerShell 7+ (<code style="color:#93b4ff;">pwsh</code>) if needed</li>
       <li>Run: <code style="color:#93b4ff;background:#0d111a;padding:2px 6px;border-radius:4px;">${installCmdLinux}</code></li>
-      <li>Enter invitation code <strong style="color:#e8eef8;">${opts.code}</strong> when prompted</li>
+      <li>Paste your <code style="color:#93b4ff;">pp_live_</code> key when prompted</li>
     </ol>
 
-    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">2 · Portal setup</h3>
-    <ol style="margin:0 0 20px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
-      <li>Sign in at <a href="${portal}/login" style="color:#93b4ff;">${portal}/login</a> (${opts.to})</li>
-      <li><strong style="color:#e8eef8;">Providers</strong> → add your AI API key (BYOK: your provider bill)</li>
-      <li><strong style="color:#e8eef8;">API Keys</strong> → create desktop key → copy <code style="color:#93b4ff;">pp_live_…</code> (shown once)</li>
-      <li>Return to the installer and paste the desktop key</li>
-    </ol>
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">3 · Add your AI keys (on the desktop)</h3>
+    <p style="margin:0 0 20px;padding-left:2px;color:#8b9bb8;font-size:14px;line-height:1.55;">
+      Providers → paste your OpenAI / Claude / Gemini / Grok key. Keys stay on your PC (BYOK); spend is on your provider account.
+    </p>
 
-    <p style="font-size:12px;color:#5c6b86;margin:0;">Code is single-use for onboarding. Local UI stays on your PC. SSH/git credentials never leave your machine.</p>
+    <p style="font-size:12px;color:#5c6b86;margin:0;">Signup is open and free — no invitation code needed. Local UI stays on your PC (127.0.0.1). SSH/git credentials never leave your machine.</p>
   </div>
 </body>
 </html>`;
 
   await sendMail({
     to: opts.to,
-    subject: `PromptParle install guide (code ${opts.code})`,
+    subject: "PromptParle install guide",
     text,
     html,
   });

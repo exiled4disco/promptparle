@@ -154,10 +154,10 @@ export function InvitationsClient() {
           <thead className="border-b border-[var(--border)] text-xs text-[var(--text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium">Email</th>
-              <th className="px-3 py-2 font-medium">Code</th>
+              <th className="px-3 py-2 font-medium">Invited by</th>
               <th className="px-3 py-2 font-medium">Status</th>
               <th className="px-3 py-2 font-medium">Created</th>
-              <th className="px-3 py-2 font-medium">Note</th>
+              <th className="px-3 py-2 font-medium">Message</th>
               <th className="px-3 py-2 font-medium" />
             </tr>
           </thead>
@@ -189,8 +189,8 @@ export function InvitationsClient() {
                     </div>
                   )}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs tracking-wide">
-                  {r.code}
+                <td className="px-3 py-2 text-xs text-[var(--text-muted)]">
+                  {r.invitedBy || "-"}
                 </td>
                 <td className="px-3 py-2">
                   <StatusBadge status={r.status} />
@@ -219,12 +219,11 @@ export function InvitationsClient() {
       </div>
 
       <div className="rounded-lg border border-[var(--border)] px-3 py-2.5 text-xs leading-relaxed text-[var(--text-muted)]">
-        <strong className="text-[var(--text)]">Customer flow:</strong> email
-        with invitation code + link →{" "}
-        <code className="text-[10px]">/register</code> (code first) or accept
-        link → set password → portal Providers + API Keys →{" "}
-        <code className="text-[10px]">irm https://promptparle.com/install.ps1 | iex</code>{" "}
-        → same code → paste <code className="text-[10px]">pp_live_…</code>.
+        <strong className="text-[var(--text)]">How invites work:</strong> any
+        user (or an admin here) can invite someone by email — they get a
+        friendly email with the sender&apos;s message and a link to{" "}
+        <code className="text-[10px]">/register</code>. Signup is open and free
+        (no codes). This table shows every invite and who sent it.
       </div>
     </div>
   );

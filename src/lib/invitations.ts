@@ -42,6 +42,7 @@ export function generateInviteCode(): string {
 export async function createInvitation(opts: {
   email: string;
   invitedById: string;
+  /** The sender's personal message (stored on note; shown in the email + lists). */
   note?: string | null;
 }): Promise<{
   invitation: {
@@ -90,6 +91,7 @@ export async function createInvitation(opts: {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + INVITE_TTL_DAYS);
 
+  const message = opts.note?.trim() || null;
   const invitation = await prisma.invitation.create({
     data: {
       email,
@@ -97,18 +99,31 @@ export async function createInvitation(opts: {
       tokenHash: sha256(rawToken),
       status: "pending",
       invitedById: opts.invitedById,
-      note: opts.note?.trim() || null,
+      note: message,
       expiresAt,
     },
   });
 
+  // Who is inviting (for the email + admin visibility).
+  let inviterName: string | null = null;
+  try {
+    const inviter = await prisma.user.findUnique({
+      where: { id: opts.invitedById },
+      select: { name: true, email: true },
+    });
+    inviterName = inviter?.name || inviter?.email || null;
+  } catch {
+    /* non-fatal */
+  }
+
+  // Convenience one-click link (still valid); signup is open, no code shown.
   const inviteUrl = `${appUrl()}/invite/${rawToken}`;
 
   await sendInvitationEmail({
     to: email,
+    inviterName,
+    message,
     inviteUrl,
-    expiresAt,
-    codePreview: code,
   });
 
   return {
@@ -284,7 +299,6 @@ async function completeInvitationAccept(opts: {
   await sendInvitationWelcomeEmail({
     to: user.email,
     name: user.name,
-    code: inv.code,
   });
 
   const sessionToken = await createSession(user.id);

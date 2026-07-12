@@ -25,6 +25,7 @@ export async function GET() {
         id: r.id,
         email: r.email,
         status: r.status,
+        message: r.note,
         expiresAt: r.expiresAt,
         createdAt: r.createdAt,
         acceptedAt: r.acceptedAt,
