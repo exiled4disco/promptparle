@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.30.0'
+    $ver = '0.30.1'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -2089,7 +2089,7 @@ function Get-PromptParleChatSystemPrompt {
         'FORBIDDEN in the user-visible answer: toolcall/tool_call/function_call XML, HTML tool tags, markdown hands fences, [HANDS] packs, hands# logs, "Client ran tools", or any method homework. Only a final conversational answer (or a real ```file deliverable when owed).',
         'When evidence is enough: answer the question. NEVER answer with the method (no run-ls homework). NEVER Generating-now without a file fence body for user documents.',
         'MUTATE: apply path=rel full files under source_root when a product bind exists (client writes, backups). Never invent a product root. run allowlisted pipeline only.',
-        'DELIVER: only when the user asked for a downloadable document (one-pager, executive summary, pdf/docx, "write me a report"). Chat reviews ("tell me about", "review site.com", "newest movies") are prose answers — do NOT invent a file obligation.',
+        'DELIVER: when the user asks for a downloadable document (one-pager, executive summary, pdf/docx, "write me a report") OR asks you to create/build/make/generate an artifact ("create me a web form", "build a page/app/script/tool"), emit a ```file name=...``` with the FULL working body so the client produces a real download — do NOT paste the whole thing as an inline code block and stop. Chat reviews ("tell me about", "review site.com", "newest movies") are prose answers — do NOT invent a file obligation.',
         'RESEARCH HONESTY: [SESSION WEB] lists pages this client already fetched. If the user asks "did you research X?", answer from that list. Never claim "Not yet" when the domain is listed.',
         'SESSIONS: Chat history is the desktop sidebar (localStorage) + optional ~/.promptparle/chat-memory — never a project .parle/sessions folder. Catch-up this chat from [MEM]/[KNOW]; project catch-up from git/HANDOFF/README via tools — never invent session dirs.',
         'Trust [SELF][CONN][PROJECT][MEM][KNOW][OBSERVE][WEB][SESSION WEB][SSH] live evidence over invention. Opaque outcomes are bugs: tool result, apply/run/file, or one hard blocker.'
@@ -7018,6 +7018,14 @@ function Resolve-PromptParleTurnObligation {
 
     # Explicit document deliver only — "review X.com" / "tell me about" are chat answers, not downloads.
     $wantDeliver = [bool]($p -match '(?i)\b(one[\s-]?page|one[\s-]?pager|executive summary|write me (a |an )?(article|summary|brief|report|pdf|docx|document)|deliverable|download(able)?|as (a )?(pdf|docx|markdown|md)\b)')
+    # Artifact ask: "create/build/make/generate/write me a <form|app|page|script|
+    # component|website|tool|file|html|template>" → the user wants a usable file,
+    # not code pasted in chat. Default to a downloadable deliverable (0.30.1).
+    if (-not $wantDeliver -and
+        $p -match '(?i)\b(create|build|make|generate|write|scaffold|give me)\b' -and
+        $p -match '(?i)\b(web\s?form|form|web\s?page|webpage|page|app|application|script|component|website|site|landing\s?page|tool|utility|file|html|template|dashboard|widget|snippet|program|calculator|spreadsheet)\b') {
+        $wantDeliver = $true
+    }
     # Sticky document continues ONLY with clear regenerate language (not bare "now" / incidental web).
     if ($open.kind -eq 'document' -and -not $wantDeliver) {
         if ($p -match '(?i)\b(from the website|from (their|the) site|generate (the )?(doc|document|summary|report|one[\s-]?pager)|do (the )?(doc|document|summary)|again (as |with )?(a )?(pdf|docx|md|file)|updated (summary|report|one[\s-]?pager|document)|strictly from)\b') {
@@ -7042,6 +7050,16 @@ function Resolve-PromptParleTurnObligation {
         if ($tk -eq 'implement') { $wantMutate = $true }
     } catch { }
     if ($p -match '(?i)\b(implement|apply path|ship it|get it done|fix the|add the|wire up)\b') { $wantMutate = $true }
+
+    # Mutate needs somewhere to write. With NO bound workspace/source, an
+    # artifact ask ("create me a web form") can't mutate a project — it should
+    # produce a downloadable file instead. Gate mutate on a real bind so these
+    # turns become deliver, not code-pasted-in-chat. (0.30.1)
+    $hasBoundSource = $false
+    try { $wsB = Get-PromptParleWorkspace; $hasBoundSource = [bool]($wsB -and $wsB.exists) } catch { $hasBoundSource = $false }
+    if ($wantMutate -and -not $hasBoundSource -and $wantDeliver) {
+        $wantMutate = $false
+    }
 
     # Primary mode priority: mutate > deliver > observe > reason
     $mode = 'reason'
@@ -8736,13 +8754,28 @@ function Invoke-PromptParleAgentLocalPrep {
         [void]$notes.Add('conn-skip')
     }
 
-    # 0a) Always-on [SELF] — identity, capabilities, portal, help (0.22.4)
+    # 0a) [SELF] — identity, capabilities, portal, help. Memoized (0.30.1): full
+    # card only on turn 1 of a session; on later turns the model already has it in
+    # history, so send a 1-line pointer. Saves ~1.4k chars/turn on continued chats
+    # and stops tiny prompts from reading as "expanded". Counterfactual: without
+    # memoization we would re-send the full card, so credit the difference as saved.
     try {
-        $selfCard = Get-PromptParleSelfCard
-        if ($selfCard -and $ctx -notmatch '(?m)^\[SELF\]') {
+        $selfCardFull = Get-PromptParleSelfCard
+        if ($selfCardFull -and $ctx -notmatch '(?m)^\[SELF\]') {
+            $priorTurns = ($histChars -gt 0)
+            if ($priorTurns) {
+                $selfCard = '[SELF] PromptParle desktop client (identity/tools/paths already established earlier this chat — unchanged).'
+                # Savings: full card would have been re-sent; only the pointer goes out.
+                if ($selfCardFull.Length -gt $selfCard.Length) {
+                    & $recordToolSaving 'framing' $selfCardFull.Length $selfCard.Length 'measured'
+                }
+                [void]$notes.Add('self-card:memoized')
+            } else {
+                $selfCard = $selfCardFull
+                [void]$notes.Add('self-card')
+            }
             if ($ctx) { $ctx = $selfCard + "`n`n" + $ctx } else { $ctx = $selfCard }
             $framingInjected += $selfCard.Length
-            [void]$notes.Add('self-card')
         }
     } catch {
         [void]$notes.Add('self-card-skip')
@@ -8912,7 +8945,6 @@ function Invoke-PromptParleAgentLocalPrep {
         $charsBeforeOff = $charsWire + [Math]::Max(0, [int]$memRollingCredit) + [Math]::Max(0, [int]$framingInjected)
         $tokInOff = if ($charsBeforeOff -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsBeforeOff / 4.0)) }
         $tokOutOff = if ($charsOutOff -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsOutOff / 4.0)) }
-        if ($framingInjected -gt 0) { & $recordToolSaving 'framing' $framingInjected $framingInjected 'measured' }
         return ,([pscustomobject]@{
             prompt           = $pr
             context          = $ctx
@@ -8967,7 +8999,6 @@ function Invoke-PromptParleAgentLocalPrep {
             [void]$notes.Add("local −${pctS}%")
         }
         [void]$notes.Add(("prep-tokens:{0}->{1}" -f $tokBeforeS, $tokAfterS))
-        if ($framingInjected -gt 0) { & $recordToolSaving 'framing' $framingInjected $framingInjected 'measured' }
         return ,([pscustomobject]@{
             prompt           = $pr
             context          = $ctx
@@ -9418,10 +9449,8 @@ function Invoke-PromptParleAgentLocalPrep {
         [void]$notes.Add('fidelity ok')
     }
 
-    # Framing memoization ledger entry (measured): today framing is re-sent, so
-    # without==with and saving is 0 (honest). When memoization lands (send once,
-    # pointer after), chars_with drops and this becomes a real per-turn saving.
-    if ($framingInjected -gt 0) { & $recordToolSaving 'framing' $framingInjected $framingInjected 'measured' }
+    # Framing memoization (0.30.1): the [SELF] card saving is recorded inline at
+    # injection time (turn 2+ sends a pointer, not the full card) — see section 0a.
 
     return ,([pscustomobject]@{
         prompt           = $pr

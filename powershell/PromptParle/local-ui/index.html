@@ -1904,8 +1904,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
 
     function beginBackgroundJob(jobId, chatId, promptText) {
-      addMsg('sys', '⏳ Working in the background — you can keep chatting. This turn’s answer will land here when it’s ready.', null, false);
-      bgJobs[jobId] = { chatId: chatId, prompt: promptText };
+      // Visible pending bubble in the chat pane (NOT a sys note — those go to the
+      // Activity log). We update this same element in place when the result lands.
+      var pending = document.createElement('div');
+      pending.className = 'msg bot bg-pending';
+      pending.setAttribute('data-bg-job', jobId);
+      pending.style.whiteSpace = 'pre-wrap';
+      pending.innerHTML = '<span class="think-dots">⏳ Working in the background</span>' +
+        '<div class="think-note" style="margin-top:4px">You can keep chatting — this answer lands here when it’s ready.</div>';
+      chat.appendChild(pending); scrollChatToBottom();
+      bgJobs[jobId] = { chatId: chatId, prompt: promptText, el: pending };
       updateBgBadge();
       pollBackgroundJob(jobId);
     }
@@ -1936,9 +1944,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         text = (j.response && String(j.response)) || '(empty response)';
         meta = j.metadata || null;
       }
-      var entry = { role: isErr ? 'bot' : 'bot', text: String(text), meta: meta, isError: isErr, at: Date.now(), id: 'bgm_' + Math.random().toString(36).slice(2, 10), knowledge: false, background: true };
+      var entry = { role: 'bot', text: String(text), meta: meta, isError: isErr, at: Date.now(), id: 'bgm_' + Math.random().toString(36).slice(2, 10), knowledge: false, background: true };
+      // Remove the pending bubble (if the origin chat is on screen).
+      if (job.el && job.el.parentNode) { try { job.el.parentNode.removeChild(job.el); } catch (e) {} }
       if (job.chatId && job.chatId === currentChatId) {
-        // Still on the origin chat → render inline now + savings strip.
+        // Still on the origin chat → render the real answer now + savings strip + persist.
         addMsg('bot', entry.text, meta, isErr);
         if (meta) { try { updateSavingsStrip(normalizeMeta(meta)); } catch (e) {} }
       } else if (job.chatId) {
@@ -1950,7 +1960,6 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         } catch (e) {}
         bgReady.push({ chatId: job.chatId, at: Date.now() });
       } else {
-        // No origin chat id (shouldn't happen) → show wherever we are.
         addMsg('bot', entry.text, meta, isErr);
       }
     }
