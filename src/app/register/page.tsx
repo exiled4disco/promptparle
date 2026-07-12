@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import { getSessionUser } from "@/lib/auth";
+import { OAuthButtons } from "@/components/OAuthButtons";
 import { RegisterForm } from "./RegisterForm";
 
 export const metadata = { title: "Create account" };
@@ -27,6 +28,7 @@ export default async function RegisterPage() {
             for each desktop you install it on.
           </p>
           <div className="mt-6">
+            <OAuthButtons next="/app" mode="signup" />
             <RegisterForm />
           </div>
           <p className="mt-6 text-center text-sm text-[var(--text-muted)]">

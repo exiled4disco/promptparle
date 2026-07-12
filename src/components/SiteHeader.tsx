@@ -199,24 +199,6 @@ export function SiteHeader({ user = null }: { user?: SiteHeaderUser }) {
 
   return (
     <header className="sticky top-0 z-30 isolate border-b border-[var(--border)] bg-[var(--bg)]">
-      {/* Free + open signup banner, stays put with the nav while scrolling */}
-      <div className="border-b border-[rgba(91,140,255,0.35)] bg-[var(--bg-elevated)]">
-        <div className="container flex flex-col items-center justify-center gap-2 py-2 text-center sm:flex-row sm:gap-3">
-          <p className="text-sm text-[var(--text)]">
-            <strong className="font-semibold">Free for everyone.</strong>{" "}
-            Create an account and start optimizing your prompts. No invite needed.
-          </p>
-          {!sessionUser && (
-            <Link
-              href="/register"
-              className="inline-flex shrink-0 items-center rounded-full border border-[rgba(91,140,255,0.45)] bg-[var(--bg)] px-3 py-1 text-sm font-medium text-[var(--accent-strong)] hover:border-[var(--accent)] hover:text-[var(--text)]"
-            >
-              Create free account
-            </Link>
-          )}
-        </div>
-      </div>
-
       <div className="bg-[var(--bg)]">
         <div className="container flex items-center justify-between gap-3 py-3">
           <div className="flex min-w-0 items-center gap-6">
