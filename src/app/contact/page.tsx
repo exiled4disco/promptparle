@@ -25,7 +25,7 @@ export default function ContactPage() {
           </div>
         </div>
       </main>
-      <SiteFooter showBrand={false} />
+      <SiteFooter showBrand={false} hideContact />
     </div>
   );
 }

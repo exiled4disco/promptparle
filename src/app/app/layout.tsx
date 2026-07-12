@@ -71,7 +71,7 @@ export default async function AppLayout({
         </div>
       </header>
       <main className="container flex-1 py-8">{children}</main>
-      <SiteFooter showBrand={false} className="py-5" />
+      <SiteFooter showBrand={false} hideContact className="py-5" />
       {/* Outside header so fixed FAB/modal never get clipped by sticky chrome */}
       <FeedbackButton />
     </div>

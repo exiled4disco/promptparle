@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { GitHubSponsorButton } from "@/components/GitHubSponsors";
+import { FloatingContact } from "@/components/FloatingContact";
 import { Logo } from "@/components/Logo";
 import {
   COPYRIGHT_LINE,
@@ -12,13 +13,24 @@ type SiteFooterProps = {
   /** Show logo + tagline row (landing). Auth/app can use compact legal-only. */
   showBrand?: boolean;
   className?: string;
+  /**
+   * Hide the floating "Contact us" button. Set true in the portal (logged-in
+   * users have the FeedbackButton) and on the /contact page itself. Default:
+   * the button shows on all public marketing + auth pages.
+   */
+  hideContact?: boolean;
 };
 
 export function SiteFooter({
   showBrand = true,
   className = "",
+  hideContact = false,
 }: SiteFooterProps) {
   return (
+    <>
+      {/* Floating Contact-us button on public pages. Suppressed in the portal
+          (FeedbackButton there) and on /contact itself via hideContact. */}
+      {hideContact ? null : <FloatingContact />}
     <footer
       className={`border-t border-[var(--border)] py-8 ${className}`.trim()}
     >
@@ -102,5 +114,6 @@ export function SiteFooter({
         </div>
       </div>
     </footer>
+    </>
   );
 }
