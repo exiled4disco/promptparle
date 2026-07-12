@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.19'
+    $ver = '0.32.20'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -5967,6 +5967,33 @@ function Invoke-PromptParleLegacyTextHandsTurn {
     $prepEvidence = if ($Context) { [string]$Context } else { '' }
     $evidenceSpine = ''
     try { $evidenceSpine = Get-PromptParleEvidenceSpine -Context $prepEvidence -MaxChars 3200 } catch { $evidenceSpine = '' }
+
+    # 0.32.20 — Attached-doc read/summarize is NOT a tool task. When the prep
+    # flagged KeepDocFidelity (composer-attached document + read/summarize intent),
+    # the document's full text is ALREADY in $Context — there is nothing for the
+    # hands loop to fetch. Entering the loop is actively harmful: the model, seeing
+    # the hands catalog, tool-theaters instead of answering, and rounds 2+ then
+    # replace the full docs with the 3,200-char evidence spine → the model receives
+    # an 847-token stub and says "I don't have the contents." Short-circuit to a
+    # single-shot answer over the full-fidelity context (no catalog, no spine).
+    if ($script:PromptParleKeepDocFidelity -and $Context) {
+        Write-Host '  agent: attached-doc summarize — single-shot over full-fidelity context (no hands loop)' -ForegroundColor DarkCyan
+        $ssParams = @{
+            Prompt           = $Prompt
+            Context          = $Context
+            System           = $System
+            Runtime          = $baseRuntime
+            Provider         = $Provider
+            Profile          = $Profile
+            CompressionLevel = $CompressionLevel
+            Quiet            = $true
+            Raw              = $true
+        }
+        if ($Model) { $ssParams.Model = $Model }
+        if ($Images) { $ssParams.Images = $Images }
+        $ssResult = Invoke-PromptParle @ssParams
+        return $ssResult
+    }
 
     $roundContext = $Context
     if ($roundContext) {

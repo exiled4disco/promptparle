@@ -9,6 +9,20 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.20] - 2026-07-12
+
+### Fixed
+- Attaching documents and asking for a summary still returned *"I don't have the
+  contents of the attached files"* on turns that ran in agent/tools mode. The
+  document's full text was ingested and kept at high fidelity through prep
+  (0.32.18), but the multi-round agent loop then (a) treated "summarize these
+  files" as a tool task — so the model requested tools for files it already had
+  instead of answering — and (b) from round 2 on replaced the full documents with
+  a 3,200-character "evidence spine," leaving the model an ~847-token stub. An
+  attached-document read/summarize ask has no tool need: it now answers in a
+  single shot over the full-fidelity document context, skipping the hands loop
+  entirely. Turns that genuinely need tools are unchanged.
+
 ## [0.32.19] - 2026-07-12
 
 ### Fixed
