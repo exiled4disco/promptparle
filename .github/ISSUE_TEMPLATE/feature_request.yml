@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement or new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case or pain point, not just the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed idea
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Optimization / savings
+        - Desktop chat / UI
+        - Providers (OpenAI / Claude / Gemini / Grok)
+        - Portal (account, license keys, stats)
+        - Installer / update
+        - Other

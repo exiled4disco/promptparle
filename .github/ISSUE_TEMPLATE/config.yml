@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contact / support
+    url: https://promptparle.com/contact
+    about: General questions or support — we'll reply to your email.
+  - name: Security report
+    url: https://github.com/exiled4disco/promptparle/security/policy
+    about: Report a security issue privately (see SECURITY.md).

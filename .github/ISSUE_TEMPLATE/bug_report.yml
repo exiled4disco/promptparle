@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in PromptParle isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve PromptParle. **Never paste API keys, provider keys, or private prompt contents** — the whole point of PromptParle is that those stay on your PC.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Client version (shown in the top-right of the app) or portal version.
+      placeholder: "0.32.7"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - Desktop client (PowerShell)
+        - Portal (promptparle.com)
+        - Installer
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / PowerShell
+      placeholder: "Windows 11 / PowerShell 5.1  —  or  Ubuntu / pwsh 7.4"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+        3. …
