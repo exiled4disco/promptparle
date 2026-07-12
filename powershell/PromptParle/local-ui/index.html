@@ -154,10 +154,12 @@
     .side-section-body { min-width: 0; }
     .side-section.is-collapsed > .side-section-body { display: none !important; }
     .side-section.hist-section {
-      /* Stay at the top with the chat column; do not flex-grow and leave a gap */
-      flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; }
+      /* Keep its natural height — do NOT let flex shrink it when the sections below
+         (Chat/Connections/Knowledge/SSH/Git) are all expanded, or they visually
+         "step on" Chat History. The whole sidebar scrolls instead (overflow-y:auto). */
+      flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
     .side-section.hist-section > .side-section-body {
-      flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column;
+      flex: 0 0 auto; min-height: 0; display: flex; flex-direction: column;
     }
     .side-section.hist-section.is-collapsed {
       flex: 0 0 auto;
@@ -510,7 +512,7 @@
     body.chat-style-term .msg .wow {
       font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin-left: 3.2rem; }
     body.chat-style-term .msg .meta.meta-savings {
-      margin-top: .2rem; margin-left: 3.2rem; font-size: .7rem; padding: .28rem .45rem; }
+      margin-top: .2rem; margin-left: 0; font-size: .7rem; padding: .28rem .45rem; }
     body.chat-style-term .composer {
       background: #05070c; border-color: #152033; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     body.chat-style-term .composer-prompt { display: block; }
@@ -547,7 +549,7 @@
       display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; font-weight: 600;
       color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
     .dl-link:hover { color: var(--text); }
-    body.chat-style-term .dl-row { margin-left: 3.2rem; }
+    body.chat-style-term .dl-row { margin-left: 0; }
     .msg .send-meta {
       margin-top: .3rem; font-size: .68rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: center; }
     .msg .send-meta .model-tag {
