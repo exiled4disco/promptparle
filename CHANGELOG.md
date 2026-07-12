@@ -9,6 +9,20 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.17] - 2026-07-12
+
+### Added
+- **Attach documents to chat — PDF, DOCX, XLSX.** Attach a document and the
+  AI reads it. Text is extracted **locally on your PC** (via the local server's
+  `/api/extract`; the file never leaves the machine) and fed through the normal
+  optimize → model path.
+  - DOCX + XLSX: zero-dependency OOXML (ZIP+XML) extraction; XLSX resolves
+    shared strings into a tab/newline grid across all sheets.
+  - PDF: best-effort text extraction (content-stream text operators, inflates
+    FlateDecode streams). Scanned/image-only PDFs report clearly that no text
+    could be extracted rather than attaching garbage.
+  Works on Windows PowerShell 5.1 and PS 7.
+
 ## [0.32.16] - 2026-07-12
 
 ### Fixed

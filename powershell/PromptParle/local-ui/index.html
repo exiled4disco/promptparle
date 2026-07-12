@@ -1393,7 +1393,7 @@
           <div class="slash-menu-list" id="slashMenuList"></div>
         </div>
         <input type="file" id="fileInput" multiple
-          accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
+          accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,.pdf,.docx,.xlsx,image/png,image/jpeg,image/webp,image/gif,text/*" />
         <!-- Unified input box: attachment chips on top, textarea, then a toolbar with
              upload (left) + send (right) all inside the same bordered box. -->
         <div class="input-box" id="inputBox">
@@ -3123,6 +3123,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (file.type && file.type.indexOf('text/') === 0) return true; if (file.type === 'application/json' || file.type === 'application/xml') return true; const n = (file.name || '').toLowerCase(); const base = n.split(/[\\/]/).pop() || n; if (base === 'dockerfile' || base === 'makefile') return true; const ext = base.includes('.') ? base.split('.').pop() : ''; return TEXT_EXT.has(ext); }
     function isImageFile(file) {
       if (file.type && file.type.indexOf('image/') === 0) return true; return /\.(png|jpe?g|webp|gif)$/i.test(file.name || ''); }
+    /** Binary docs we extract text from on the local server (never uploaded to PromptParle). */
+    function isDocFile(file) {
+      return /\.(pdf|docx|xlsx)$/i.test(file.name || ''); }
+    /** Read a File as base64 (no data: prefix). */
+    function readAsBase64(file) {
+      return new Promise(function (resolve, reject) {
+        const r = new FileReader();
+        r.onload = function () {
+          const s = String(r.result || '');
+          const comma = s.indexOf(',');
+          resolve(comma >= 0 ? s.slice(comma + 1) : s);
+        };
+        r.onerror = function () { reject(new Error('Failed to read ' + file.name)); };
+        r.readAsDataURL(file);
+      }); }
+    /** Extract text from a doc via the local server. Returns {ok,text,note}. */
+    async function extractDocText(file) {
+      const b64 = await readAsBase64(file);
+      const res = await fetch('/api/extract', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name || 'document', data_base64: b64 })
+      });
+      const data = await res.json().catch(function () { return {}; });
+      return data; }
     function readAsText(file) {
       return new Promise(function (resolve, reject) {
         const r = new FileReader(); r.onload = function () { resolve(String(r.result || '')); }; r.onerror = function () { reject(new Error('Failed to read ' + file.name)); }; r.readAsText(file); }); }
@@ -3167,7 +3191,25 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
               text = text.slice(0, MAX_TEXT_CHARS) + '\n\n…[truncated local attach limit]'; }
             attachments.push({
               id: 'a' + (idSeq++), kind: 'text', name: file.name || 'file.txt', text: text
-            }); added++; } else {
+            }); added++; } else if (isDocFile(file)) {
+            // PDF / DOCX / XLSX → extract text locally, attach as text.
+            addMsg('sys', 'Reading ' + file.name + '…', null, false);
+            let ex;
+            try { ex = await extractDocText(file); }
+            catch (e) { ex = { ok: false, note: 'Could not read the file locally.' }; }
+            if (epochAtStart !== attachEpoch) return;
+            if (ex && ex.ok && ex.text) {
+              let dtext = ex.text;
+              if (dtext.length > MAX_TEXT_CHARS) { dtext = dtext.slice(0, MAX_TEXT_CHARS) + '\n\n…[truncated local attach limit]'; }
+              attachments.push({
+                id: 'a' + (idSeq++), kind: 'text', name: file.name || 'document',
+                text: '[Extracted from ' + (file.name || 'document') + ']\n' + dtext
+              }); added++;
+              if (ex.capped) addMsg('sys', file.name + ': large document — attached the first part.', null, false);
+            } else {
+              addMsg('sys', (ex && ex.note) ? (file.name + ': ' + ex.note) : ('Could not extract text from ' + file.name), null, true);
+            }
+          } else {
             addMsg('sys', 'Skipped binary: ' + file.name, null, true); }
         } catch (err) {
           if (epochAtStart !== attachEpoch) return; addMsg('sys', String(err.message || err), null, true); }

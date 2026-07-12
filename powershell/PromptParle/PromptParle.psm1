@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.16'
+    $ver = '0.32.17'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -12398,6 +12398,173 @@ function New-PromptParlePdfBytes {
     return [System.Text.Encoding]::ASCII.GetBytes($sb.ToString())
 }
 
+function Get-PromptParleZipEntryText {
+    <# Read one entry out of a zip (OOXML) as UTF-8 text. Empty string if missing. #>
+    param([Parameter(Mandatory)][string]$ZipPath, [Parameter(Mandatory)][string]$EntryName)
+    try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch { }
+    $zip = $null
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        $entry = $zip.Entries | Where-Object { $_.FullName -eq $EntryName } | Select-Object -First 1
+        if (-not $entry) { return '' }
+        $sr = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
+        try { return $sr.ReadToEnd() } finally { $sr.Dispose() }
+    } catch { return '' } finally { if ($zip) { $zip.Dispose() } }
+}
+
+function Get-PromptParleZipEntryNames {
+    param([Parameter(Mandatory)][string]$ZipPath)
+    try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch { }
+    $zip = $null
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        return @($zip.Entries | ForEach-Object { $_.FullName })
+    } catch { return @() } finally { if ($zip) { $zip.Dispose() } }
+}
+
+function ConvertFrom-PromptParleXmlEntities {
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    return ($Text -replace '&amp;', '&' -replace '&lt;', '<' -replace '&gt;', '>' -replace '&quot;', '"' -replace '&#39;', "'" -replace '&apos;', "'")
+}
+
+function Get-PromptParleDocxText {
+    <# Extract readable text from a .docx (OOXML word/document.xml). #>
+    param([Parameter(Mandatory)][string]$Path)
+    $xml = Get-PromptParleZipEntryText -ZipPath $Path -EntryName 'word/document.xml'
+    if (-not $xml) { return '' }
+    # paragraph + line-break markers → newlines/tabs, then strip all tags (keeps text nodes)
+    $t = [regex]::Replace($xml, '</w:p>', "`n")
+    $t = [regex]::Replace($t, '<w:br[^>]*/>', "`n")
+    $t = [regex]::Replace($t, '<w:tab[^>]*/>', "`t")
+    $t = [regex]::Replace($t, '(?s)<[^>]+>', '')
+    return (ConvertFrom-PromptParleXmlEntities $t).Trim()
+}
+
+function Get-PromptParleXlsxText {
+    <# Extract sheet text from a .xlsx: resolve shared strings, emit tab/newline grid. #>
+    param([Parameter(Mandatory)][string]$Path)
+    $shared = New-Object System.Collections.ArrayList
+    $ss = Get-PromptParleZipEntryText -ZipPath $Path -EntryName 'xl/sharedStrings.xml'
+    if ($ss) {
+        foreach ($si in [regex]::Matches($ss, '(?s)<si>(.*?)</si>')) {
+            $parts = [regex]::Matches($si.Groups[1].Value, '(?s)<t[^>]*>(.*?)</t>') | ForEach-Object { $_.Groups[1].Value }
+            [void]$shared.Add((ConvertFrom-PromptParleXmlEntities (-join $parts)))
+        }
+    }
+    $out = New-Object System.Text.StringBuilder
+    # every worksheet in the book
+    $sheets = @(Get-PromptParleZipEntryNames -ZipPath $Path | Where-Object { $_ -match '^xl/worksheets/sheet\d+\.xml$' } | Sort-Object)
+    if (-not $sheets.Count) { $sheets = @('xl/worksheets/sheet1.xml') }
+    foreach ($sheetName in $sheets) {
+        $sheet = Get-PromptParleZipEntryText -ZipPath $Path -EntryName $sheetName
+        if (-not $sheet) { continue }
+        if ($sheets.Count -gt 1) { [void]$out.AppendLine("## " + ($sheetName -replace '^xl/worksheets/','' -replace '\.xml$','')) }
+        foreach ($row in [regex]::Matches($sheet, '(?s)<row[^>]*>(.*?)</row>')) {
+            $cells = New-Object System.Collections.ArrayList
+            foreach ($c in [regex]::Matches($row.Groups[1].Value, '(?s)<c\b([^>]*)>(.*?)</c>')) {
+                $attrs = $c.Groups[1].Value; $inner = $c.Groups[2].Value
+                $vm = [regex]::Match($inner, '(?s)<v>(.*?)</v>')
+                if (-not $vm.Success) {
+                    # inline string?
+                    $im = [regex]::Match($inner, '(?s)<t[^>]*>(.*?)</t>')
+                    if ($im.Success) { [void]$cells.Add((ConvertFrom-PromptParleXmlEntities $im.Groups[1].Value)) } else { [void]$cells.Add('') }
+                    continue
+                }
+                $v = $vm.Groups[1].Value
+                if ($attrs -match 't="s"') {
+                    $i = 0; [void][int]::TryParse($v, [ref]$i)
+                    [void]$cells.Add($(if ($i -lt $shared.Count) { $shared[$i] } else { '' }))
+                } else {
+                    [void]$cells.Add((ConvertFrom-PromptParleXmlEntities $v))
+                }
+            }
+            if ($cells.Count) { [void]$out.AppendLine(($cells.ToArray() -join "`t")) }
+        }
+    }
+    return $out.ToString().Trim()
+}
+
+function Get-PromptParlePdfText {
+    <#
+    .SYNOPSIS
+      Best-effort PDF text extraction (no external dependency). Pulls text-showing
+      operators (Tj / TJ) from content streams, inflating FlateDecode streams.
+      Returns $null when nothing extractable (scanned/image-only PDF) so the
+      caller can tell the user honestly.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $latin = [System.Text.Encoding]::GetEncoding(28591)
+    $raw = $latin.GetString($bytes)
+
+    # Collect candidate content: any FlateDecode streams (inflated) + raw (for uncompressed PDFs).
+    $chunks = New-Object System.Collections.ArrayList
+    [void]$chunks.Add($raw)
+    foreach ($sm in [regex]::Matches($raw, '(?s)stream\r?\n(.*?)\r?\nendstream')) {
+        $data = $sm.Groups[1].Value
+        try {
+            $sbytes = $latin.GetBytes($data)
+            # skip 2-byte zlib header → raw DEFLATE
+            $ms = New-Object System.IO.MemoryStream(,$sbytes)
+            $ms.Position = 2
+            $ds = New-Object System.IO.Compression.DeflateStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+            $sr = New-Object System.IO.StreamReader($ds, $latin)
+            $inflated = $sr.ReadToEnd(); $sr.Dispose()
+            if ($inflated) { [void]$chunks.Add($inflated) }
+        } catch { }
+    }
+
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($content in $chunks) {
+        # (string) Tj
+        foreach ($m in [regex]::Matches($content, '\((?:\\.|[^\\()])*\)\s*Tj')) {
+            $s = [regex]::Match($m.Value, '(?s)\((.*)\)\s*Tj').Groups[1].Value
+            $s = $s -replace '\\\(', '(' -replace '\\\)', ')' -replace '\\\\', '\'
+            if ($s.Trim()) { [void]$sb.AppendLine($s) }
+        }
+        # [ (a) (b) ] TJ
+        foreach ($m in [regex]::Matches($content, '(?s)\[(.*?)\]\s*TJ')) {
+            $line = New-Object System.Text.StringBuilder
+            foreach ($p in [regex]::Matches($m.Groups[1].Value, '\((?:\\.|[^\\()])*\)')) {
+                $seg = $p.Value.Substring(1, $p.Value.Length - 2) -replace '\\\(', '(' -replace '\\\)', ')' -replace '\\\\', '\'
+                [void]$line.Append($seg)
+            }
+            if ($line.ToString().Trim()) { [void]$sb.AppendLine($line.ToString()) }
+        }
+    }
+    $text = $sb.ToString().Trim()
+    if (-not $text) { return $null }
+    return $text
+}
+
+function Get-PromptParleDocumentText {
+    <#
+    .SYNOPSIS
+      Extract readable text from a document by extension. Local-first: runs on
+      this PC, the file never leaves. Supports .docx .xlsx .pdf (best-effort).
+      Returns an object: { ok, text, kind, note }.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [string]$Name = '')
+    $nm = if ($Name) { $Name } else { [System.IO.Path]::GetFileName($Path) }
+    $ext = ([System.IO.Path]::GetExtension($nm)).ToLowerInvariant()
+    try {
+        switch ($ext) {
+            '.docx' { $t = Get-PromptParleDocxText -Path $Path; return [pscustomobject]@{ ok = [bool]$t; text = [string]$t; kind = 'docx'; note = $(if ($t) { '' } else { 'No text found in this DOCX.' }) } }
+            '.xlsx' { $t = Get-PromptParleXlsxText -Path $Path; return [pscustomobject]@{ ok = [bool]$t; text = [string]$t; kind = 'xlsx'; note = $(if ($t) { '' } else { 'No cell text found in this XLSX.' }) } }
+            '.pdf'  {
+                $t = Get-PromptParlePdfText -Path $Path
+                if ($null -eq $t) { return [pscustomobject]@{ ok = $false; text = ''; kind = 'pdf'; note = "Couldn't extract text from this PDF — it may be scanned/image-only. Try exporting it as text or a .docx." } }
+                return [pscustomobject]@{ ok = $true; text = [string]$t; kind = 'pdf'; note = '' }
+            }
+            default { return [pscustomobject]@{ ok = $false; text = ''; kind = $ext.TrimStart('.'); note = "Unsupported document type: $ext" } }
+        }
+    } catch {
+        return [pscustomobject]@{ ok = $false; text = ''; kind = $ext.TrimStart('.'); note = "Extraction failed: $($_.Exception.Message)" }
+    }
+}
+
 function New-PromptParleDocumentBytes {
     param(
         [Parameter(Mandatory)][string]$FileName,
@@ -17629,6 +17796,39 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
                     } catch {
                         $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                # Local document text extraction (pdf/docx/xlsx). File bytes come in
+                # base64; extraction runs on THIS PC and the file is deleted right after.
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/extract') {
+                    try {
+                        $enc = $req.ContentEncoding; if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
+                        $reader = New-Object System.IO.StreamReader($req.InputStream, $enc)
+                        $rawBody = $reader.ReadToEnd(); $reader.Close()
+                        $body = ConvertFrom-PromptParleJson -Json $rawBody
+                        $name = [string](Get-PromptParleProp $body 'name' (Get-PromptParleProp $body 'filename' 'document'))
+                        $b64 = [string](Get-PromptParleProp $body 'data_base64' (Get-PromptParleProp $body 'dataBase64' ''))
+                        if (-not $b64) {
+                            Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body (ConvertTo-PromptParleJson -InputObject @{ ok = $false; error = 'data_base64 required' } -Depth 4)
+                            continue
+                        }
+                        $safe = ConvertTo-PromptParleSafeFileName -Name $name
+                        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('pp-extract-' + [Guid]::NewGuid().ToString('N') + '-' + $safe)
+                        [System.IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String($b64))
+                        try {
+                            $res = Get-PromptParleDocumentText -Path $tmp -Name $safe
+                        } finally {
+                            try { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } catch { }
+                        }
+                        $textOut = [string]$res.text
+                        $capped = $false
+                        if ($textOut.Length -gt 200000) { $textOut = $textOut.Substring(0, 200000); $capped = $true }
+                        $payloadOut = @{ ok = [bool]$res.ok; text = $textOut; kind = [string]$res.kind; note = [string]$res.note; chars = $textOut.Length; capped = $capped }
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body (ConvertTo-PromptParleJson -InputObject $payloadOut -Depth 4)
+                    } catch {
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body (ConvertTo-PromptParleJson -InputObject @{ ok = $false; error = "$_" } -Depth 4)
                     }
                     continue
                 }
