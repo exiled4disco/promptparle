@@ -9,6 +9,30 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.8] - 2026-07-12
+
+### Added
+- Release automation: pushing a `vX.Y.Z` tag creates a GitHub Release and
+  attaches the desktop client artifacts (`PromptParle-PowerShell.tgz`,
+  `PromptParle.psd1`, version files). The workflow verifies `version.txt`
+  matches the tag before releasing.
+- Community files: issue templates (bug / feature), a Sponsor button
+  (`FUNDING.yml`), and template config routing support questions to the
+  `/contact` form and security reports to `SECURITY.md`.
+
+## [0.32.7] - 2026-07-12
+
+### Changed
+- Privacy/repo hygiene: removed hardcoded company special-cases from the
+  desktop client's web-search logic; genericized sample references; made the
+  edit-check hook's PATH portable. The public repo now contains only the
+  application and user-facing docs; internal development files live in a
+  separate private workspace.
+
+### Fixed
+- Content-Security-Policy allows the official GitHub Sponsors iframes
+  (`frame-src https://github.com`) on routes that carry a CSP.
+
 ## [0.32.6] - 2026-07-12
 
 ### Added

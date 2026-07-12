@@ -83,3 +83,4 @@ next-env.d.ts
 # stray root copies of desktop artifacts (canonical copies live in public/)
 /PromptParle-PowerShell.tgz
 /PromptParle.psd1
+RELEASING.md
