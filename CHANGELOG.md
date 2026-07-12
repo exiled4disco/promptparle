@@ -9,6 +9,16 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.16] - 2026-07-12
+
+### Fixed
+- Savings row missing on some replies in web-chat mode. The per-message
+  savings meter only rendered when the turn had top-level original/optimized
+  token counts — but agent / web-search / tool turns keep their savings in
+  `tool_breakdown` / `agent_cost_tokens`, so the row silently vanished. The
+  render gate now also shows for agent turns and any turn with a tool
+  breakdown, so the savings line appears consistently.
+
 ## [0.32.15] - 2026-07-12
 
 ### Fixed

@@ -2619,7 +2619,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             ? '<span style="display:block;margin-top:.25rem;font-size:.78rem;color:var(--muted)">' +
               files.map(function (f) { return String(f); }).join('<br>') + '</span>'
             : ''); div.appendChild(ab); }
-      if (nmeta && (nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy)) {
+      // Render the savings row for any turn that carries usable meter signal —
+      // single-shot (original/optimized tokens), an agent/tool turn (is_agent_turn
+      // / agent_cost_tokens / tool_breakdown), or a strategy tag. A web-search or
+      // agent reply keeps its savings in tool_breakdown/agent_cost, not the
+      // top-level token fields, so those must count too (else the row vanishes).
+      if (nmeta && (
+        nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy ||
+        nmeta.is_agent_turn || (nmeta.agent_cost_tokens > 0) ||
+        (Array.isArray(nmeta.tool_breakdown) && nmeta.tool_breakdown.length > 0)
+      )) {
         // Prefer response model; fall back to what the UI selected this turn
         if (!nmeta.model && modelEl && modelEl.value) nmeta.model = modelEl.value; if (!nmeta.provider && providerEl && providerEl.value) nmeta.provider = providerEl.value; const s = buildSavingsExplain(nmeta); const m = document.createElement('div'); m.className = 'meta meta-savings' + (s.flat ? ' flat-save' : ''); m.title =
           'Token optimization summary.\n' +
