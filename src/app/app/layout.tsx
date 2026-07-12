@@ -27,6 +27,11 @@ export default async function AppLayout({
   if (!user.emailVerifiedAt) {
     redirect(`/verify-email?email=${encodeURIComponent(user.email)}`);
   }
+  // First-run: send new (verified) users through the setup walkthrough once.
+  // They can skip; either way it sets onboardedAt so this fires only once.
+  if (!user.onboardedAt) {
+    redirect("/welcome");
+  }
 
   const nav = user.isAdmin
     ? [

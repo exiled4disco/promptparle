@@ -9,6 +9,16 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.11] - 2026-07-12
+
+### Added
+- First-run setup walkthrough (portal): new verified users are guided through
+  a 5-step wizard at `/welcome` — welcome + pick Windows/Linux, create a license
+  key, copy the install command + key (shown separately), the on-desktop steps
+  (Run PowerShell as admin / open a terminal → paste → paste key), and a
+  "look around + support the project" finish. Skippable; sets `onboardedAt` so
+  it appears only once. Existing accounts are backfilled as already onboarded.
+
 ## [0.32.10] - 2026-07-12
 
 ### Fixed

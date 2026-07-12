@@ -19,6 +19,8 @@ model User {
   /** Portal administrator (invitation manager, etc.). */
   isAdmin         Boolean   @default(false) @map("is_admin")
   emailVerifiedAt DateTime? @map("email_verified_at")
+  /** Set when the user finishes or skips the setup walkthrough. Null = show it. */
+  onboardedAt     DateTime? @map("onboarded_at")
   /** Last observed client IP (portal login or desktop API). */
   lastIp          String?   @map("last_ip")
   lastCountry     String?   @map("last_country")

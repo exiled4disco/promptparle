@@ -13,6 +13,7 @@ export type SessionUser = {
   retentionPolicy: string;
   storePrompts: boolean;
   emailVerifiedAt: Date | null;
+  onboardedAt: Date | null;
   featProjectPc: boolean;
   featProjectSsh: boolean;
   featProjectGit: boolean;
@@ -107,6 +108,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
           retentionPolicy: true,
           storePrompts: true,
           emailVerifiedAt: true,
+          onboardedAt: true,
           featProjectPc: true,
           featProjectSsh: true,
           featProjectGit: true,
