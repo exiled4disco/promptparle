@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.17'
+    $ver = '0.32.18'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -8682,6 +8682,8 @@ function Invoke-PromptParleAgentLocalPrep {
     )
     # ArrayList — List[string].Add throws "Argument types do not match" with PS string wrappers
     $notes = New-Object System.Collections.ArrayList
+    # Reset per-turn: high-fidelity-keep flag for a read/summarize ask on an attached doc.
+    $script:PromptParleKeepDocFidelity = $false
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
     # Wire baseline ONLY (prompt + attach context + history as received) — never inflate with fleet/KNOW
@@ -9072,7 +9074,27 @@ function Invoke-PromptParleAgentLocalPrep {
         }
         if ($restCtx.Length -gt 200) {
             $room = [Math]::Max(800, $budget - $headKeep.Length - 80)
-            $fleet = Invoke-PromptParleFidelityContextLocal -Text $restCtx -Prompt $pr -MaxChars $room -Dial $Dial
+            # A composer-attached document that the user asked us to READ/SUMMARIZE is the
+            # PRIMARY EVIDENCE for the ask — pre-summarizing it here would summarize a
+            # summary and leave the model saying "I don't have the contents." When we see
+            # an attached FILE block AND a read/summarize/extract intent, give the fleet a
+            # much larger budget so the document reaches the model largely intact.
+            $hasAttachDoc = ($restCtx -match '(?m)^===== FILE:')
+            $readIntent = ($pr -match '(?i)\b(summar|summarize|summary|read (this|the|it)|what.?s in|contents? of|review (this|the) (doc|document|file|attach)|go over|walk through|extract|key points|tl;?dr|brief me|executive (summary|brief)|analyze (this|the) (doc|document|file))\b')
+            if ($hasAttachDoc -and $readIntent) {
+                $script:PromptParleKeepDocFidelity = $true
+                # High-fidelity pass-through: keep the attached doc nearly whole (cap only
+                # to avoid an absurd payload), skip the brief/summarize step.
+                $docCap = [Math]::Max($room, 120000)
+                if ($restCtx.Length -le $docCap) {
+                    $fleet = [pscustomobject]@{ text = $restCtx; notes = @('attached document kept at full fidelity for a read/summarize ask'); chars_in = $restCtx.Length; chars_out = $restCtx.Length }
+                } else {
+                    $trimmed = Get-PromptParleFidelityTrim -Text $restCtx -MaxChars $docCap -Marker '…[document trimmed to fit]…'
+                    $fleet = [pscustomobject]@{ text = $trimmed; notes = @('attached document kept at high fidelity (trimmed to fit) for a read/summarize ask'); chars_in = $restCtx.Length; chars_out = $trimmed.Length }
+                }
+            } else {
+                $fleet = Invoke-PromptParleFidelityContextLocal -Text $restCtx -Prompt $pr -MaxChars $room -Dial $Dial
+            }
             $restCtx = $fleet.text
             foreach ($n in @($fleet.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
             $fleetTool = 'fleet'
@@ -9412,6 +9434,12 @@ function Invoke-PromptParleAgentLocalPrep {
     }
 
     # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM/KNOW; protect PROVENANCE/GROUNDING
+    # A read/summarize ask on a composer-attached document already had its content
+    # kept at high fidelity above — lift the final cap to match so it isn't chopped
+    # back to the dial budget (which would leave the model a stub).
+    if ($script:PromptParleKeepDocFidelity) {
+        $budget = [Math]::Max($budget, 140000)
+    }
     if ($ctx.Length -gt $budget) {
         $budgetCapBefore = $ctx.Length
         $protected = New-Object System.Collections.Generic.List[string]

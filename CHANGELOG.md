@@ -9,6 +9,18 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.18] - 2026-07-12
+
+### Fixed
+- "Summarize this document" said *"I don't have the document's contents"* even
+  though the file was attached. The attached doc's text WAS ingested, but the
+  fidelity fleet then summarized it down to a stub before the model saw it
+  (7.2k → 758 tokens), so the model had nothing to summarize. Now, when a
+  composer-attached document is present AND the ask is to read/summarize/extract
+  from it, the document is kept at high fidelity (the budget cap is lifted to
+  match) so the model receives the real content. Unrelated asks with an attached
+  doc still compress normally.
+
 ## [0.32.17] - 2026-07-12
 
 ### Added
