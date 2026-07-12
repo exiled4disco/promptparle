@@ -51,40 +51,35 @@ export async function getUsageSummary(
     _count: true,
   });
 
-  // Request History UI only — soft-hidden rows stay out of the list.
+  // Request History UI only: soft-hidden rows stay out of the list.
   const recentPromise = includeRecent
     ? prisma.promptRequest.findMany({
         where: { userId, historyHiddenAt: null },
         orderBy: { createdAt: "desc" },
         take: recentTake,
-        select: includePromptBodies
-          ? {
-              id: true,
-              provider: true,
-              model: true,
-              optimizationProfile: true,
-              originalTokens: true,
-              optimizedTokens: true,
-              status: true,
-              createdAt: true,
-              promptPreview: true,
-              originalText: true,
-              optimizedText: true,
-              originalTruncated: true,
-              optimizedTruncated: true,
-              errorMessage: true,
-            }
-          : {
-              id: true,
-              provider: true,
-              model: true,
-              optimizationProfile: true,
-              originalTokens: true,
-              optimizedTokens: true,
-              status: true,
-              createdAt: true,
-              promptPreview: true,
-            },
+        // Stats + session titles only (prompt bodies no longer stored)
+        select: {
+          id: true,
+          provider: true,
+          model: true,
+          optimizationProfile: true,
+          originalTokens: true,
+          optimizedTokens: true,
+          status: true,
+          createdAt: true,
+          promptPreview: true,
+          sessionTitle: true,
+          clientSessionId: true,
+          errorMessage: true,
+          ...(includePromptBodies
+            ? {
+                originalText: true,
+                optimizedText: true,
+                originalTruncated: true,
+                optimizedTruncated: true,
+              }
+            : {}),
+        },
       })
     : Promise.resolve([]);
 
@@ -128,7 +123,7 @@ export async function getUsageSummary(
       dailyRequests: limits.dailyRequests,
       maxProviders: limits.maxProviders,
     },
-    storePrompts: user?.storePrompts ?? true,
+    storePrompts: false, // product is stats-only
     retentionPolicy: user?.retentionPolicy ?? "7d",
     upgradeHint: planUpgradeHint(limits),
     recent: recent.map((row) => {
@@ -137,15 +132,20 @@ export async function getUsageSummary(
         row.originalTokens > 0
           ? Math.round((rowSaved / row.originalTokens) * 100)
           : 0;
-      const hasCompare = Boolean(
-        "originalText" in row &&
-          (row.originalText || ("optimizedText" in row && row.optimizedText))
-      );
       return {
         ...row,
         reductionPercent: pct,
         tokensSaved: rowSaved,
-        hasCompare,
+        hasCompare: false,
+        sessionTitle:
+          "sessionTitle" in row
+            ? (row as { sessionTitle?: string | null }).sessionTitle ?? null
+            : null,
+        clientSessionId:
+          "clientSessionId" in row
+            ? (row as { clientSessionId?: string | null }).clientSessionId ??
+              null
+            : null,
       };
     }),
     byProvider: byProvider.map((row) => ({

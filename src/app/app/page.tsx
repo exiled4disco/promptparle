@@ -1,61 +1,80 @@
 import Link from "next/link";
 import { getSessionUser } from "@/lib/auth";
 import { listApiKeys } from "@/lib/api-keys";
-import { listProviderCredentials } from "@/lib/providers";
 import { getUsageSummary } from "@/lib/usage";
 import { formatDate, formatNumber, providerLabel } from "@/lib/format";
 import { redirect } from "next/navigation";
+import { PageHeader } from "@/components/PageHeader";
 
 export const metadata = { title: "Dashboard" };
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ welcome?: string; code?: string }>;
+}) {
   const user = await getSessionUser();
   if (!user) redirect("/login");
+  const sp = await searchParams;
+  const showWelcome = sp.welcome === "1";
+  const inviteCode = sp.code || "";
 
-  const [usage, providers, keys] = await Promise.all([
-    // Dashboard glance only — skip prompt body columns to cut DB read I/O
+  const [usage, keys] = await Promise.all([
+    // Dashboard glance only. skip prompt body columns to cut DB read I/O
     getUsageSummary(user.id, {
       recentLimit: 8,
       includePromptBodies: false,
     }),
-    listProviderCredentials(user.id),
     listApiKeys(user.id),
   ]);
 
-  const activeProviders = providers.filter((p) => p.status === "active");
   const activeKeys = keys.filter((k) => k.status === "active");
 
   const steps = [
     {
-      done: activeProviders.length > 0,
-      title: "Add an AI provider key",
-      href: "/app/providers",
-      body: "OpenAI, Claude, Gemini, or Grok — stored encrypted.",
+      done: activeKeys.length > 0,
+      title: "Create a desktop license key",
+      href: "/app/api-keys",
+      body: "Copy the pp_live_… key (shown once) into the desktop installer. Model keys go on the PC after install.",
+    },
+    {
+      done: false,
+      title: "Install desktop + set provider keys on this PC",
+      href: "/install",
+      body: "Run the installer, then pp → ⋯ → Providers (or Set-PromptParleProviderKey). Model keys stay on the PC.",
     },
     {
       done: usage.requestCount > 0,
-      title: "Open Chat and send a message",
-      href: "/app/chat",
-      body: "Browser chat is the main experience — type normally.",
-    },
-    {
-      done: activeKeys.length > 0,
-      title: "Optional: desktop API key",
-      href: "/app/api-keys",
-      body: "Only needed for PowerShell automation / CLI.",
+      title: "Chat locally",
+      href: "/install",
+      body: "Local UI on 127.0.0.1. Optimize and model calls run on your machine (0.25+).",
     },
   ];
 
   return (
     <div className="grid gap-8">
-      <div>
-        <h1 className="page-title">
-          {user.name ? `Hello, ${user.name}` : "Dashboard"}
-        </h1>
-        <p className="page-sub">
-          Account overview, token savings, and setup status.
-        </p>
-      </div>
+      <PageHeader
+        title={user.name ? `Hello, ${user.name}` : "Dashboard"}
+        description="Account overview, token savings, and setup status."
+      />
+
+      {showWelcome && (
+        <div className="alert alert-info text-sm leading-relaxed">
+          <strong className="text-[var(--text)]">Account created.</strong> Check
+          your email for install steps
+          {inviteCode ? (
+            <>
+              {" "}
+              and code{" "}
+              <code className="rounded bg-black/30 px-1.5 py-0.5 font-mono tracking-wider text-[#93b4ff]">
+                {inviteCode}
+              </code>
+            </>
+          ) : null}
+. Next: create a desktop license key (pp_live_…), run the installer,
+          then set OpenAI/Claude/Gemini/Grok keys in the local UI (⋯ → Providers).
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -72,8 +91,8 @@ export default async function DashboardPage() {
           value={`${usage.reductionPercent}%`}
         />
         <StatCard
-          label="Active providers"
-          value={String(activeProviders.length)}
+          label="Desktop keys"
+          value={String(activeKeys.length)}
         />
       </div>
 

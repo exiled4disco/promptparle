@@ -7,9 +7,10 @@ Local desktop client for [PromptParle](https://promptparle.com): optimize contex
 | What | Where it runs |
 |------|----------------|
 | Chat UI | **Your PC** (`http://127.0.0.1:7788`) |
-| Optimize + route API | promptparle.com |
-| AI provider keys | Encrypted in your portal account |
-| Desktop API key | On your PC (`~/.promptparle/config.json`) |
+| Optimize + model calls | **Your PC** (local-first 0.25+) |
+| AI provider keys (OpenAI / Claude / Gemini / Grok) | **Your PC only** (DPAPI when available) |
+| Desktop license key `pp_live_…` | On your PC; hash on portal (licensing) |
+| Portal | Invitations, plan, desktop license key — **not** a model-key vault |
 | SSH / git credentials | **Never leave your PC** |
 
 ---
@@ -18,52 +19,74 @@ Local desktop client for [PromptParle](https://promptparle.com): optimize contex
 
 Do these **in order**. Skipping a step is the #1 support issue.
 
-### 1. Account + provider key (portal)
+### 1. Account + desktop license key (portal)
 
 1. Create an account: https://promptparle.com/register  
 2. **Verify your email** (required before sign-in works fully).  
-3. Sign in → **Providers** → add at least one AI key (OpenAI / Claude / Gemini / Grok).  
-4. **API Keys** → create a desktop key → copy `pp_live_...` (shown **once**).
+3. Sign in → **API Keys** → create a desktop license key → copy `pp_live_...` (shown **once**).  
+4. **Do not** put OpenAI/Claude/Gemini/Grok keys in the portal for desktop chat — those go on the PC in step 3.
 
-### 2. Install the module (Windows)
+### 2. Install the module
 
-**Prerequisites**
+#### Windows
 
-- Windows 10/11  
-- PowerShell 5.1 (built-in) **or** PowerShell 7+  
-- [Git for Windows](https://git-scm.com/download/win)  
-- Network access to `https://promptparle.com` and GitHub  
-
-**Recommended (one line)**
-
-Open **PowerShell** and run:
+**Prerequisites:** Windows 10/11, PowerShell 5.1 or 7+, [Git for Windows](https://git-scm.com/download/win), network to promptparle.com and GitHub.
 
 ```powershell
 irm https://promptparle.com/install.ps1 | iex
 ```
 
-Alternate bootstrap (downloads the script to a temp file first):
+Alternate bootstrap (temp file, then run):
 
 ```powershell
 irm https://promptparle.com/get.ps1 | iex
 ```
 
-The installer will:
-
-1. Clone/update the repo (default: `%USERPROFILE%\src\promptparle`)  
-2. Copy the module into your user Modules folder  
-3. Ask for your `pp_live_...` key (or open the portal)  
-4. Verify the key  
-5. Offer to start local chat (`pp`)
-
-**Optional flags before install**
+Optional session flags before install:
 
 ```powershell
 $PromptParleStart = $true          # auto-start local chat after install
 $PromptParleSkipKeyPrompt = $true  # skip key prompt (automation)
 $PromptParleClonePath = 'D:\src\promptparle'  # custom clone path
+$PromptParleInvitationCode = 'PP-XXXX-XXXX'
 irm https://promptparle.com/install.ps1 | iex
 ```
+
+#### Linux / macOS
+
+**Prerequisites:** `git`, bash, and **PowerShell 7+** (`pwsh`).  
+Install pwsh: [Linux](https://learn.microsoft.com/powershell/scripting/install/install-linux) · [macOS](https://learn.microsoft.com/powershell/scripting/install/install-macos) (or `brew install --cask powershell`).
+
+```bash
+curl -fsSL https://promptparle.com/install.sh | bash
+```
+
+Same path as Windows: clones GitHub → runs `powershell/Install-PromptParle.ps1`.
+
+Optional env overrides:
+
+```bash
+PROMPTPARLE_INVITATION_CODE='PP-XXXX-XXXX' \
+PROMPTPARLE_START=1 \
+PROMPTPARLE_CLONE_PATH="$HOME/src/promptparle" \
+  curl -fsSL https://promptparle.com/install.sh | bash
+
+# automation
+PROMPTPARLE_SKIP_KEY=1 PROMPTPARLE_SKIP_INVITE=1 \
+  curl -fsSL https://promptparle.com/install.sh | bash
+```
+
+Clone: `~/src/promptparle` (override with `PROMPTPARLE_CLONE_PATH`)  
+Module: `~/.local/share/powershell/Modules/PromptParle`  
+Config: `~/.promptparle/config.json`
+
+#### What the installer does
+
+1. Clones or updates the GitHub repo  
+2. Validates your one-time invitation code  
+3. Copies the module into your user Modules folder  
+4. Asks for your `pp_live_...` desktop API key (or opens the portal)  
+5. Verifies the key and offers to start local chat (`pp`)
 
 ### 3. Start local chat
 
@@ -141,7 +164,7 @@ Import-Module PromptParle -Force
 
 ### Site tarball
 
-https://promptparle.com/PromptParle-PowerShell.tgz — extract and copy the `PromptParle` folder into your Modules path (paths above).
+https://promptparle.com/PromptParle-PowerShell.tgz: extract and copy the `PromptParle` folder into your Modules path (paths above).
 
 ### Uninstall
 
@@ -167,7 +190,7 @@ pp                          # local browser chat
 |---------|----------------|
 | `pp` / `Start-PromptParle` | Local browser chat on 127.0.0.1 |
 | `Start-PromptParle -Cli` | Terminal chat |
-| `Start-PromptParle -Cloud` | Open portal web chat |
+| `Start-PromptParle -Cloud` | Open portal dashboard (chat is desktop-only) |
 | `Start-PromptParle -Port 7790` | Different local port |
 | `Set-PromptParleApiKey` | Save `pp_live_...` |
 | `Get-PromptParleConfig` | Show config (key masked) |
@@ -237,8 +260,8 @@ Or use the **sidebar buttons** (Browse / Connect / Detach) instead of slash comm
 
 | Cost | Who pays |
 |------|----------|
-| OpenAI / Claude / Gemini / Grok tokens | **You** (keys under Providers) |
-| Local chat UI | Free — runs on your PC |
+| OpenAI / Claude / Gemini / Grok tokens | **You** (keys on this PC: ⋯ → Providers) |
+| Local chat UI | Free: runs on your PC |
 | PromptParle optimize + route + usage | PromptParle API (small) |
 
 ---
@@ -309,7 +332,10 @@ Get-PromptParleProvider   # should list providers without error
 
 ### “No provider keys” / provider not configured
 
-Portal → **Providers** → add OpenAI / Claude / Gemini / Grok.  
+Local UI: **⋯ → Providers** → paste key → **Save on this PC**.  
+Or: `Set-PromptParleProviderKey -Provider openai -ApiKey '…'`.  
+(Do **not** use the portal Providers page for desktop chat keys.)  
+
 Local chat uses those keys; the desktop key only authorizes *this PC* to call PromptParle.
 
 ### Browser does not open / blank page
@@ -364,7 +390,7 @@ Start-PromptParle -Port 7790
 
 ### Attach folder: “Argument types do not match”
 
-Fixed in **0.10.2+**. Update the client (see above). Prefer **Browse** in the sidebar over hand-typed paths if issues persist.
+Fixed again in **0.26.7** (session load was casting OrderedDictionary → PSCustomObject). Update with `Update-PromptParleClient -Force`, restart `pp`, confirm badge **v0.26.7**. Prefer **Browse** in the sidebar over hand-typed paths if issues persist.
 
 ### SSH / Git / GitHub not working
 
@@ -397,7 +423,8 @@ Check spam for the verification link, or use **resend verification** on the port
 2. `Get-PromptParleUpdateStatus`  
 3. `Get-PromptParleClientVersion`  
 4. Note the exact error text from the PowerShell window (local server logs print there)  
-5. Confirm portal: Providers + API Keys + verified email  
+5. Confirm portal: API Keys (pp_live_) + verified email; model keys on PC via ⋯ → Providers  
+
 
 ---
 
@@ -434,5 +461,6 @@ Also see `powershell/examples/quickstart.ps1` and `demo-savings.ps1` in the repo
 - PowerShell 5.1+ or PowerShell 7+  
 - Network access to `https://promptparle.com`  
 - Verified PromptParle account + desktop API key (`pp_live_...`)  
-- At least one provider key in the portal (for full AI calls)  
+- At least one provider key on this PC (`Set-PromptParleProviderKey` or ⋯ → Providers)  
+
 - Git (for the recommended installer and git features)  

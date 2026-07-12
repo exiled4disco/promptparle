@@ -13,15 +13,26 @@ model User {
   id              String    @id @default(cuid())
   email           String    @unique
   name            String?
-  passwordHash    String    @map("password_hash")
+  /** Null for OAuth-only accounts (Google / GitHub). */
+  passwordHash    String?   @map("password_hash")
   plan            String    @default("free")
+  /** Portal administrator (invitation manager, etc.). */
+  isAdmin         Boolean   @default(false) @map("is_admin")
   emailVerifiedAt DateTime? @map("email_verified_at")
+  /** Last observed client IP (portal login or desktop API). */
+  lastIp          String?   @map("last_ip")
+  lastCountry     String?   @map("last_country")
+  lastCountryCode String?   @map("last_country_code")
+  lastIpAt        DateTime? @map("last_ip_at")
+  /** When set, account cannot sign in or use API keys. */
+  disabledAt      DateTime? @map("disabled_at")
+  disabledReason  String?   @map("disabled_reason")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
   retentionPolicy String  @default("7d") @map("retention_policy")
-  // Default on so portal can show before/after; user can opt out in Settings
-  storePrompts    Boolean @default(true) @map("store_prompts")
+  // Stats-only by default: never store prompt/context bodies (session titles only)
+  storePrompts    Boolean @default(false) @map("store_prompts")
 
   // Preferred AI routing (portal ↔ desktop sync)
   preferredProvider     String?  @map("preferred_provider")
@@ -47,9 +58,132 @@ model User {
   promptRequests       PromptRequest[]
   sessions             Session[]
   emailVerifications   EmailVerificationToken[]
+  passwordResetTokens  PasswordResetToken[]
   desktopClients       DesktopClient[]
+  oauthAccounts        OAuthAccount[]
+  invitationsSent      Invitation[] @relation("InvitationsSent")
+  invitationAccepted   Invitation?  @relation("InvitationAccepted")
+  feedbackSubmissions  FeedbackSubmission[]
 
   @@map("users")
+}
+
+/**
+ * Bug reports and product suggestions from portal or desktop.
+ * status: new | read | closed
+ * kind: bug | suggest
+ * source: portal | desktop
+ */
+model FeedbackSubmission {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  kind      String   @default("suggest")
+  title     String
+  body      String   @db.Text
+  source    String   @default("portal")
+  email     String?
+  name      String?
+  ip        String?
+  country   String?
+  userAgent String?  @map("user_agent")
+  status    String   @default("new")
+  adminNote String?  @map("admin_note") @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([userId])
+  @@map("feedback_submissions")
+}
+
+/**
+ * One-time customer invitation.
+ * Flow: admin creates → email with URL → customer completes form →
+ * welcome email with code → desktop install validates code → API key → redeemed.
+ * status: pending | accepted | redeemed | revoked
+ */
+model Invitation {
+  id              String    @id @default(cuid())
+  email           String
+  /** Human-readable one-time code, e.g. PP-AB12-CD34 */
+  code            String    @unique
+  /** Hashed URL token for /invite/[token] (raw token only in email). */
+  tokenHash       String    @unique @map("token_hash")
+  status          String    @default("pending")
+  invitedById     String    @map("invited_by_id")
+  acceptedUserId  String?   @unique @map("accepted_user_id")
+  note            String?
+  expiresAt       DateTime  @map("expires_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  redeemedAt      DateTime? @map("redeemed_at")
+  revokedAt       DateTime? @map("revoked_at")
+
+  invitedBy    User  @relation("InvitationsSent", fields: [invitedById], references: [id], onDelete: Cascade)
+  acceptedUser User? @relation("InvitationAccepted", fields: [acceptedUserId], references: [id], onDelete: SetNull)
+
+  @@index([email])
+  @@index([status, createdAt])
+  @@map("invitations")
+}
+
+/** One-time password reset links (hashed token, short TTL). */
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  usedAt    DateTime? @map("used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/** Linked Google / GitHub identities (simple signup, no password required). */
+model OAuthAccount {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  provider       String
+  providerUserId String   @map("provider_user_id")
+  email          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+/** Password login failure / lockout tracking. */
+model LoginAttempt {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  fails       Int       @default(0)
+  lockedUntil DateTime? @map("locked_until")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("login_attempts")
+}
+
+/** Security-relevant events (no secrets). */
+model AuditEvent {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  action    String
+  ip        String?
+  meta      String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_events")
 }
 
 /** Concurrent desktop UI seats (Free plan = 1 active client). */
@@ -145,11 +279,15 @@ model PromptRequest {
   originalTokens      Int      @default(0) @map("original_tokens")
   optimizedTokens     Int      @default(0) @map("optimized_tokens")
   status              String   @default("completed")
-  /** Short list snippet */
+  /** Short list snippet (deprecated: stats-only mode leaves this null) */
   promptPreview       String?  @map("prompt_preview")
-  /** Full (plan-capped) original input for portal before view */
+  /** Desktop chat/session title (not prompt body). */
+  sessionTitle        String?  @map("session_title")
+  /** Client chat id for grouping (local UI). */
+  clientSessionId     String?  @map("client_session_id")
+  /** Full original input — product no longer stores bodies (always null). */
   originalText        String?  @map("original_text") @db.Text
-  /** Full (plan-capped) optimized prompt for portal after view */
+  /** Full optimized prompt — product no longer stores bodies (always null). */
   optimizedText       String?  @map("optimized_text") @db.Text
   originalTruncated   Boolean  @default(false) @map("original_truncated")
   optimizedTruncated  Boolean  @default(false) @map("optimized_truncated")
@@ -165,5 +303,6 @@ model PromptRequest {
 
   @@index([userId, createdAt])
   @@index([userId, historyHiddenAt])
+  @@index([userId, sessionTitle])
   @@map("prompt_requests")
 }

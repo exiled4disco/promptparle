@@ -1,6 +1,7 @@
 /**
- * Plan tiers control how much before/after prompt text is stored and shown.
- * Token metadata is always retained; full text is plan-capped.
+ * Plan tiers — product subscription is flat (see pricing.ts).
+ * These limits are fair-use / product shape, not the public price model.
+ * Token metadata is always retained; prompt bodies are not stored (stats-only).
  */
 
 export type PlanId = "free" | "pro" | "team";
@@ -8,19 +9,22 @@ export type PlanId = "free" | "pro" | "team";
 export type PlanLimits = {
   id: PlanId;
   label: string;
-  /** Max characters stored/shown for original (before) text */
+  /** Max characters stored/shown for original (before) text (legacy field; bodies not stored) */
   originalChars: number;
-  /** Max characters stored/shown for optimized (after) text */
+  /** Max characters stored/shown for optimized (after) text (legacy field; bodies not stored) */
   optimizedChars: number;
   /** Recent request rows returned in portal usage */
   historyLimit: number;
-  /** Max completed API / chat requests allowed per UTC day */
+  /**
+   * Soft fair-use cap on completed API / chat requests per UTC day.
+   * Not the public pricing model — subscriptions are flat monthly/yearly.
+   */
   dailyRequests: number;
   /** Max AI provider credentials (carriers) the account may attach */
   maxProviders: number;
   /**
    * Max concurrent desktop clients (local UI) with recent heartbeat.
-   * Free GTM: 1 seat so one free account ≠ unlimited machines.
+   * Team plan = 5 seats (matches public Team of 5 pricing).
    */
   maxDesktopClients: number;
 };
@@ -32,7 +36,7 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     originalChars: 2_000,
     optimizedChars: 2_000,
     historyLimit: 25,
-    dailyRequests: 25,
+    dailyRequests: 40,
     maxProviders: 1,
     maxDesktopClients: 1,
   },
@@ -42,9 +46,9 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     originalChars: 50_000,
     optimizedChars: 50_000,
     historyLimit: 100,
-    dailyRequests: 500,
+    dailyRequests: 2_000,
     maxProviders: 4,
-    maxDesktopClients: 3,
+    maxDesktopClients: 2,
   },
   team: {
     id: "team",
@@ -52,13 +56,13 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
     originalChars: 200_000,
     optimizedChars: 200_000,
     historyLimit: 200,
-    dailyRequests: 5_000,
+    dailyRequests: 10_000,
     maxProviders: 4,
-    maxDesktopClients: 10,
+    maxDesktopClients: 5,
   },
 };
 
-/** Heartbeat window — clients not seen within this interval free a seat. */
+/** Heartbeat window: clients not seen within this interval free a seat. */
 export const DESKTOP_CLIENT_ACTIVE_MS = 2 * 60 * 1000;
 
 export function normalizePlan(plan: string | null | undefined): PlanId {

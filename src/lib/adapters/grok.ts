@@ -2,7 +2,7 @@ import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
 import { normalizeAdapterImages } from "./types";
 import { combineSystemMessage } from "../system-framing";
 
-/** xAI Grok — OpenAI-compatible chat completions API (vision when images present) */
+/** xAI Grok: OpenAI-compatible chat completions API (vision when images present) */
 export const grokAdapter: ProviderAdapter = {
   id: "grok",
   async complete(req: AdapterRequest): Promise<AdapterResponse> {

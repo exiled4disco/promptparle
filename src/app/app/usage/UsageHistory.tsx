@@ -14,7 +14,8 @@ export type UsageRow = {
   status: string;
   createdAt: string | Date;
   promptPreview: string | null;
-  /** Present only when portal loads with includePromptBodies */
+  sessionTitle?: string | null;
+  /** Present only when portal loads with includePromptBodies (legacy) */
   originalText?: string | null;
   optimizedText?: string | null;
   originalTruncated?: boolean;
@@ -61,7 +62,7 @@ export function UsageHistory({
     if (busyId || clearing) return;
     if (
       !confirm(
-        "Remove this request from history? Token stats stay; before/after text is cleared."
+        "Remove this request from history? Token stats stay in the totals above."
       )
     ) {
       return;
@@ -91,7 +92,7 @@ export function UsageHistory({
     if (busyId || clearing || rows.length === 0) return;
     if (
       !confirm(
-        `Clear all request history (${rows.length} listed)? Token totals and savings stats stay. Before/after text is cleared from history.`
+        `Clear all request history (${rows.length} listed)? Token totals and savings stats stay.`
       )
     ) {
       return;
@@ -124,8 +125,8 @@ export function UsageHistory({
           </div>
         )}
         <p className="p-5 text-sm text-[var(--text-muted)]">
-          No request history. Send a request from the desktop client or portal
-          chat, then refresh this page to see before/after text.
+          No request history. Send a chat from the desktop client (pp), then
+          refresh to see session titles and token savings.
         </p>
       </div>
     );
@@ -140,16 +141,10 @@ export function UsageHistory({
           {error}
         </div>
       )}
-      {(!storePrompts || retentionPolicy === "none") && (
-        <div className="border-b border-[var(--border)] bg-[var(--warning)]/10 px-4 py-2.5 text-xs text-[var(--warning)] sm:px-5">
-          Prompt text storage is off. Token counts still appear, but before/after
-          text will not. Enable storage under{" "}
-          <a href="/app/settings" className="underline">
-            Settings
-          </a>
-          .
-        </div>
-      )}
+      <div className="border-b border-[var(--border)] bg-[var(--accent-soft)]/40 px-4 py-2.5 text-xs text-[var(--text-muted)] sm:px-5">
+        Stats only: session title, provider, model, tokens. Prompt and context
+        text are never stored.
+      </div>
       {upgradeHint && (
         <div className="border-b border-[var(--border)] bg-[var(--accent-soft)] px-4 py-2.5 text-xs text-[var(--text-muted)] sm:px-5">
           <span className="font-medium text-[var(--text)]">{planLabel} plan.</span>{" "}
@@ -159,7 +154,7 @@ export function UsageHistory({
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] px-4 py-2 sm:px-5">
         <p className="text-xs text-[var(--text-dim)]">
-          {rows.length} listed · click a row for before/after
+          {rows.length} listed · session titles from desktop chats
         </p>
         <button
           type="button"
@@ -190,11 +185,14 @@ export function UsageHistory({
                   <span className="whitespace-nowrap text-xs text-[var(--text-muted)]">
                     {formatDate(row.createdAt)}
                   </span>
-                  <span className="text-sm font-medium">
+                  <span className="min-w-0 max-w-[14rem] truncate text-sm font-medium text-[var(--text)]">
+                    {row.sessionTitle || "Untitled session"}
+                  </span>
+                  <span className="text-sm text-[var(--text-muted)]">
                     {providerLabel(row.provider)}
                   </span>
                   <span className="mono text-[0.7rem] text-[var(--text-dim)]">
-                    {row.model || "—"}
+                    {row.model || "-"}
                   </span>
                   <span className="badge text-[0.65rem]">
                     {row.optimizationProfile}
@@ -217,7 +215,7 @@ export function UsageHistory({
                   ) : (
                     <span
                       className="badge text-[0.65rem]"
-                      title="Already compact — unique prose/docs often show 0%. Savings show up on noisy logs, dupes, and filler."
+                      title="Already compact: unique prose/docs often show 0%. Savings show up on noisy logs, dupes, and filler."
                     >
                       0%
                     </span>
@@ -245,36 +243,49 @@ export function UsageHistory({
               </div>
 
               {open && (
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <ComparePane
-                    title="Before"
-                    subtitle={`${formatNumber(row.originalTokens)} tok`}
-                    text={row.originalText ?? null}
-                    truncated={Boolean(row.originalTruncated)}
-                    truncNote={truncNoteFor(planId, planLabel, originalCharsLimit)}
-                    emptyHint="No original text stored for this request."
-                    compact={compact}
-                  />
-                  <ComparePane
-                    title="After"
-                    subtitle={`${formatNumber(row.optimizedTokens)} tok · −${formatNumber(row.tokensSaved)}`}
-                    text={row.optimizedText ?? null}
-                    truncated={Boolean(row.optimizedTruncated)}
-                    truncNote={truncNoteFor(planId, planLabel, originalCharsLimit)}
-                    emptyHint="No optimized text stored for this request."
-                    accent
-                    compact={compact}
-                  />
+                <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--bg-soft)] p-3 text-sm text-[var(--text-muted)]">
+                  <div className="grid gap-1.5 sm:grid-cols-2">
+                    <div>
+                      <span className="text-xs text-[var(--text-dim)]">
+                        Session
+                      </span>
+                      <div className="font-medium text-[var(--text)]">
+                        {row.sessionTitle || "Untitled session"}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-xs text-[var(--text-dim)]">
+                        Profile
+                      </span>
+                      <div>{row.optimizationProfile}</div>
+                    </div>
+                    <div>
+                      <span className="text-xs text-[var(--text-dim)]">
+                        Original tokens
+                      </span>
+                      <div className="mono">
+                        {formatNumber(row.originalTokens)}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-xs text-[var(--text-dim)]">
+                        Optimized / saved
+                      </span>
+                      <div className="mono">
+                        {formatNumber(row.optimizedTokens)} · −
+                        {formatNumber(row.tokensSaved)} ({row.reductionPercent}
+                        %)
+                      </div>
+                    </div>
+                  </div>
                   {row.errorMessage && (
-                    <div className="md:col-span-2 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-3 text-sm text-[var(--danger)]">
+                    <div className="mt-2 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-2 text-sm text-[var(--danger)]">
                       Error: {row.errorMessage}
                     </div>
                   )}
-                  {row.promptPreview && !row.originalText && (
-                    <div className="md:col-span-2 text-xs text-[var(--text-dim)]">
-                      Preview: {row.promptPreview}
-                    </div>
-                  )}
+                  <p className="mt-2 text-xs text-[var(--text-dim)]">
+                    Prompt and context text are not stored on the portal.
+                  </p>
                 </div>
               )}
             </div>

@@ -40,13 +40,57 @@ $script:PromptParleShouldStop = $false
 $script:PromptParleStopAnnounced = $false
 $script:PromptParleListener = $null
 $script:PromptParleExitProcessAfterStop = $false
+$script:PromptParleConsoleRestart = $false
+$script:PromptParleConsoleBusy = $false
+$script:PromptParlePostStopExit = $false
+$script:PromptParlePostStopRestart = $false
+$script:PromptParlePostStopPort = 7788
 
 #region Private helpers
+
+function ConvertTo-PromptParleCustomObject {
+    <#
+    .SYNOPSIS
+      Hashtable / OrderedDictionary → PSCustomObject without cast.
+      [pscustomobject]$orderedDict throws System.ArgumentException
+      "Argument types do not match" on Windows PS 5.1 and PS 7.x.
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) { return $Value }
+    # Already a pure PSObject with note properties (not a dictionary wrapper)
+    if ($Value -is [System.Management.Automation.PSObject] -and -not ($Value -is [System.Collections.IDictionary])) {
+        # If it already behaves like a bag of note props, keep it
+        if ($Value.PSObject -and $Value.PSObject.Properties -and @($Value.PSObject.Properties).Count -gt 0) {
+            return $Value
+        }
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $o = New-Object -TypeName System.Management.Automation.PSObject
+        foreach ($key in @($Value.Keys)) {
+            if ($null -eq $key) { continue }
+            $name = [string]$key
+            if ([string]::IsNullOrEmpty($name)) { continue }
+            $val = $null
+            try { $val = $Value[$key] } catch {
+                try { $val = $Value[$name] } catch { $val = $null }
+            }
+            try {
+                Add-Member -InputObject $o -MemberType NoteProperty -Name $name -Value $val -Force -ErrorAction Stop
+            } catch {
+                # Skip bad key/value pairs rather than fail the whole session load
+            }
+        }
+        return $o
+    }
+    return $Value
+}
 
 function Get-PromptParleProp {
     <#
     .SYNOPSIS
       Read a note property under Set-StrictMode (missing props must not throw).
+      Also supports IDictionary / OrderedDictionary (session state builders).
     #>
     param(
         $Object,
@@ -54,9 +98,38 @@ function Get-PromptParleProp {
         $Default = $null
     )
     if ($null -eq $Object) { return $Default }
-    $prop = $Object.PSObject.Properties[$Name]
-    if ($null -eq $prop) { return $Default }
-    return $prop.Value
+    try {
+        # Hashtable / OrderedDictionary / Dictionary — do not use PSObject.Properties alone
+        if ($Object -is [System.Collections.IDictionary]) {
+            # Prefer ContainsKey when present (generic Dictionary); Contains can throw on key type mismatch
+            $has = $false
+            try {
+                if ($Object -is [System.Collections.IDictionary]) {
+                    foreach ($k in @($Object.Keys)) {
+                        if ([string]$k -eq $Name) {
+                            return $Object[$k]
+                        }
+                    }
+                    return $Default
+                }
+            } catch {
+                return $Default
+            }
+            return $Default
+        }
+        $prop = $null
+        try { $prop = $Object.PSObject.Properties[$Name] } catch { $prop = $null }
+        if ($null -eq $prop) {
+            # Case-insensitive fallback
+            foreach ($p in @($Object.PSObject.Properties)) {
+                if ($p -and [string]$p.Name -eq $Name) { return $p.Value }
+            }
+            return $Default
+        }
+        return $prop.Value
+    } catch {
+        return $Default
+    }
 }
 
 function ConvertFrom-PromptParleJson {
@@ -163,13 +236,13 @@ function ConvertTo-PromptParlePsObject {
     param($Value)
     if ($null -eq $Value) { return $null }
 
-    # Dictionary from JavaScriptSerializer
+    # Dictionary from JavaScriptSerializer — never [pscustomobject]$ordered (Argument types do not match)
     if ($Value -is [System.Collections.IDictionary]) {
-        $o = [ordered]@{}
+        $ht = @{}
         foreach ($key in $Value.Keys) {
-            $o[[string]$key] = ConvertTo-PromptParlePsObject $Value[$key]
+            $ht[[string]$key] = ConvertTo-PromptParlePsObject $Value[$key]
         }
-        return [pscustomobject]$o
+        return (ConvertTo-PromptParleCustomObject $ht)
     }
 
     if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
@@ -186,17 +259,18 @@ function ConvertTo-PromptParlePsObject {
 function ConvertTo-PromptParleImageList {
     <#
     .SYNOPSIS
-      Normalize UI/API image objects into a flat Object[] of hashtables.
+      Normalize UI/API image objects into a flat object[] of hashtables.
       Do NOT use unary-comma return — that nests as [[img,img]] after @() wrap
       and Zod rejects with "images: expected object, received array".
+      ArrayList only — List[hashtable].Add throws on PS 5.1 with some wrappers.
     #>
     param($Images)
 
-    $out = New-Object System.Collections.Generic.List[hashtable]
+    $out = New-Object System.Collections.ArrayList
     if ($null -eq $Images) { return @() }
 
     # Flatten one nesting level (PS often wraps arrays)
-    $items = New-Object System.Collections.Generic.List[object]
+    $items = New-Object System.Collections.ArrayList
     foreach ($x in @($Images)) {
         if ($null -eq $x) { continue }
         if ($x -is [System.Array]) {
@@ -219,16 +293,111 @@ function ConvertTo-PromptParleImageList {
         if (-not $data) { $data = Get-PromptParleProp $img 'data' $null }
         if (-not $data) { continue }
         $name = Get-PromptParleProp $img 'name' $null
-        $entry = @{
-            media_type  = [string]$mediaType
-            data_base64 = [string]$data
-        }
-        if ($name) { $entry.name = [string]$name }
+        $entry = @{}
+        $entry['media_type'] = [string]$mediaType
+        $entry['data_base64'] = [string]$data
+        if ($name) { $entry['name'] = [string]$name }
         [void]$out.Add($entry)
         if ($out.Count -ge 6) { break }
     }
     # Flat array of hashtables (pipeline-unroll is OK — callers use @())
-    return $out.ToArray()
+    return @($out.ToArray())
+}
+
+function Protect-PromptParleSecret {
+    <#
+    .SYNOPSIS
+      Protect a secret for local disk storage (Windows DPAPI CurrentUser; else plain).
+    #>
+    param([Parameter(Mandatory)][string]$PlainText)
+    if (-not $script:PromptParleIsWindows) { return $PlainText }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($PlainText)
+        $protected = [System.Security.Cryptography.ProtectedData]::Protect(
+            $bytes,
+            $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return 'dpapi:' + [Convert]::ToBase64String($protected)
+    } catch {
+        Write-Warning "DPAPI protect failed; storing key with file ACL only: $_"
+        return $PlainText
+    }
+}
+
+function Unprotect-PromptParleSecret {
+    <#
+    .SYNOPSIS
+      Reverse Protect-PromptParleSecret. Plain values (legacy) pass through.
+    #>
+    param([Parameter(Mandatory)][string]$Stored)
+    if (-not $Stored) { return $Stored }
+    if (-not $Stored.StartsWith('dpapi:')) { return $Stored }
+    if (-not $script:PromptParleIsWindows) {
+        Write-Warning 'Encrypted API key found but DPAPI is Windows-only.'
+        return $null
+    }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+        $b64 = $Stored.Substring(6)
+        $protected = [Convert]::FromBase64String($b64)
+        $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $protected,
+            $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [System.Text.Encoding]::UTF8.GetString($bytes)
+    } catch {
+        Write-Warning "Could not decrypt API key (DPAPI). Re-run Set-PromptParleApiKey. $_"
+        return $null
+    }
+}
+
+# Local-first: provider keys + optimize + direct provider calls (portal = licensing only)
+$script:PromptParleLocalFirstPath = Join-Path $PSScriptRoot 'LocalFirst.ps1'
+if (Test-Path -LiteralPath $script:PromptParleLocalFirstPath) {
+    . $script:PromptParleLocalFirstPath
+} else {
+    Write-Warning "LocalFirst.ps1 missing at $($script:PromptParleLocalFirstPath) — local provider path unavailable"
+}
+
+function Set-PromptParleConfigAcl {
+    <#
+      Restrict config/token file to current user on Windows.
+      Best-effort only: some sessions lack SeSecurityPrivilege (Set-Acl noise).
+      Never write console errors — profile NTFS defaults are acceptable fallback.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ($script:PromptParleIsWindows) {
+        try {
+            $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+            $acl.SetAccessRuleProtection($true, $false)
+            $rules = @($acl.Access)
+            foreach ($r in $rules) {
+                try { [void]$acl.RemoveAccessRule($r) } catch { }
+            }
+            $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $user, 'FullControl', 'Allow'
+            )
+            $acl.AddAccessRule($rule)
+            # -ErrorAction Stop so PrivilegeNotHeld is caught (non-terminating by default)
+            Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+        } catch {
+            # Fallback: icacls (still best-effort; silence all output)
+            try {
+                $userName = $env:USERNAME
+                if ($userName) {
+                    $null = & icacls.exe $Path /inheritance:r /grant:r "${userName}:(F)" 2>&1
+                }
+            } catch { }
+            Write-Verbose ("Set-PromptParleConfigAcl: best-effort ACL skipped for {0}: {1}" -f $Path, $_)
+        }
+    } else {
+        try { chmod 600 $Path 2>$null } catch { }
+    }
 }
 
 function Get-PromptParleConfigInternal {
@@ -244,7 +413,22 @@ function Get-PromptParleConfigInternal {
         try {
             $raw = Get-Content -LiteralPath $script:PromptParleConfigPath -Raw -ErrorAction Stop
             $json = $raw | ConvertFrom-Json
-            if ($json.ApiKey)  { $config.ApiKey  = [string]$json.ApiKey }
+            if ($json.ApiKey) {
+                $stored = [string]$json.ApiKey
+                $config.ApiKey = Unprotect-PromptParleSecret -Stored $stored
+                # Migrate legacy plaintext → DPAPI on next successful read (Windows)
+                if (
+                    $script:PromptParleIsWindows -and
+                    $config.ApiKey -and
+                    -not $stored.StartsWith('dpapi:')
+                ) {
+                    try {
+                        $base = if ($json.BaseUrl) { [string]$json.BaseUrl } else { $script:DefaultBaseUrl }
+                        $cid = [string](Get-PromptParleProp $json 'DesktopClientId' '')
+                        Save-PromptParleConfigInternal -ApiKey $config.ApiKey -BaseUrl $base -DesktopClientId $cid
+                    } catch { }
+                }
+            }
             if ($json.BaseUrl) { $config.BaseUrl = [string]$json.BaseUrl.TrimEnd('/') }
         } catch {
             Write-Warning "Could not read PromptParle config at $($script:PromptParleConfigPath): $_"
@@ -258,7 +442,7 @@ function Get-PromptParleConfigInternal {
         $config.BaseUrl = $env:PROMPTPARLE_BASE_URL.TrimEnd('/')
     }
 
-    return [pscustomobject]$config
+    return (ConvertTo-PromptParleCustomObject $config)
 }
 
 function Save-PromptParleConfigInternal {
@@ -276,29 +460,39 @@ function Save-PromptParleConfigInternal {
         New-Item -ItemType Directory -Path $script:PromptParleConfigDir -Force | Out-Null
     }
 
-    # Preserve existing desktop client id when not explicitly passed
+    # Preserve existing desktop client id + local provider keys (Local-first)
     $existingClientId = ''
-    if (-not $DesktopClientId -and (Test-Path -LiteralPath $script:PromptParleConfigPath)) {
+    $existingProviders = $null
+    $existingSecretPolicy = 'strict'
+    if (Test-Path -LiteralPath $script:PromptParleConfigPath) {
         try {
             $prev = Get-Content -LiteralPath $script:PromptParleConfigPath -Raw | ConvertFrom-Json
-            $existingClientId = [string](Get-PromptParleProp $prev 'DesktopClientId' '')
+            if (-not $DesktopClientId) {
+                $existingClientId = [string](Get-PromptParleProp $prev 'DesktopClientId' '')
+            }
+            $existingProviders = Get-PromptParleProp $prev 'Providers' $null
+            $sp = [string](Get-PromptParleProp $prev 'SecretPolicy' 'strict')
+            if ($sp) { $existingSecretPolicy = $sp }
         } catch { }
     }
     $clientId = if ($DesktopClientId) { $DesktopClientId } else { $existingClientId }
 
+    $protectedKey = Protect-PromptParleSecret -PlainText $ApiKey
     $obj = [ordered]@{
-        ApiKey           = $ApiKey
+        ApiKey           = $protectedKey
         BaseUrl          = $BaseUrl.TrimEnd('/')
         DesktopClientId  = $clientId
         UpdatedAt        = (Get-Date).ToUniversalTime().ToString('o')
+        KeyProtection    = $(if ($protectedKey.StartsWith('dpapi:')) { 'dpapi-currentuser' } else { 'file-acl' })
+        SecretPolicy     = $existingSecretPolicy
+        LocalFirst       = $true
+    }
+    if ($null -ne $existingProviders) {
+        $obj['Providers'] = $existingProviders
     }
 
-    $obj | ConvertTo-Json | Set-Content -LiteralPath $script:PromptParleConfigPath -Encoding UTF8
-
-    # Restrict permissions on Unix-like systems
-    if (-not $script:PromptParleIsWindows) {
-        try { chmod 600 $script:PromptParleConfigPath 2>$null } catch { }
-    }
+    $obj | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:PromptParleConfigPath -Encoding UTF8
+    Set-PromptParleConfigAcl -Path $script:PromptParleConfigPath
 }
 
 function Get-PromptParleDesktopClientId {
@@ -490,8 +684,9 @@ function Select-PromptParleProviderInteractive {
     $configured = @($Providers | Where-Object { $_.Configured })
     if ($configured.Count -eq 0) {
         Write-Host ''
-        Write-Host 'No AI providers configured yet.' -ForegroundColor Yellow
-        Write-Host 'Add a key at https://promptparle.com/app/providers' -ForegroundColor Yellow
+        Write-Host 'No AI provider keys on this PC yet.' -ForegroundColor Yellow
+        Write-Host "Run: Set-PromptParleProviderKey -Provider openai -ApiKey 'sk-...'" -ForegroundColor Yellow
+        Write-Host '(Keys stay local. Portal is licensing only.)' -ForegroundColor DarkGray
         Write-Host 'Then run: Start-PromptParle' -ForegroundColor Cyan
         return $null
     }
@@ -553,6 +748,256 @@ function Get-PromptParleAgentsDir {
 
 function Get-PromptParleSessionStatePath {
     return (Join-Path $script:PromptParleConfigDir 'session.json')
+}
+
+# --- 0.26 multi-connection + on-disk catalog (token-cheap) ---
+$script:PromptParleMaxLocalConnections = 5
+$script:PromptParleMaxKnowledgeConnections = 2
+$script:PromptParleCatalogMaxFiles = 2000
+
+function Get-PromptParleCatalogDir {
+    $dir = Join-Path $script:PromptParleConfigDir 'catalog'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
+function New-PromptParleConnectionId {
+    param([string]$Prefix = 'c')
+    $p = if ($Prefix) { $Prefix } else { 'c' }
+    return ('{0}_{1}' -f $p, ([guid]::NewGuid().ToString('N').Substring(0, 10)))
+}
+
+function ConvertTo-PromptParleBool {
+    param($Value, [bool]$Default = $false)
+    if ($null -eq $Value) { return $Default }
+    try {
+        if ($Value -is [bool]) { return $Value }
+        if ($Value -is [int] -or $Value -is [long]) { return ($Value -ne 0) }
+        $s = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($s)) { return $Default }
+        if ($s -eq '1' -or $s -eq 'true' -or $s -eq 'True' -or $s -eq 'TRUE' -or $s -eq 'yes') { return $true }
+        if ($s -eq '0' -or $s -eq 'false' -or $s -eq 'False' -or $s -eq 'FALSE' -or $s -eq 'no') { return $false }
+        return [System.Convert]::ToBoolean($Value)
+    } catch {
+        return $Default
+    }
+}
+
+function ConvertTo-PromptParleConnectionObject {
+    param($Item)
+    if ($null -eq $Item) { return $null }
+    try {
+        $kind = [string](Get-PromptParleProp $Item 'kind' 'local')
+        if ([string]::IsNullOrWhiteSpace($kind)) { $kind = 'local' }
+        $kind = $kind.Trim().ToLowerInvariant()
+        if ($kind -ne 'local' -and $kind -ne 'knowledge' -and $kind -ne 'ssh' -and $kind -ne 'git') { $kind = 'local' }
+        $id = [string](Get-PromptParleProp $Item 'id' '')
+        if ([string]::IsNullOrWhiteSpace($id)) {
+            $pref = if ($kind -eq 'knowledge') { 'kn' } else { 'pc' }
+            $id = New-PromptParleConnectionId -Prefix $pref
+        }
+        $label = [string](Get-PromptParleProp $Item 'label' '')
+        $path = [string](Get-PromptParleProp $Item 'path' '')
+        $source = [string](Get-PromptParleProp $Item 'source' 'local')
+        if ([string]::IsNullOrWhiteSpace($source)) { $source = 'local' }
+        $source = $source.Trim().ToLowerInvariant()
+        if ($source -ne 'ssh') { $source = 'local' }
+        $active = ConvertTo-PromptParleBool -Value (Get-PromptParleProp $Item 'active' $false) -Default $false
+        $readonly = ($kind -eq 'knowledge')
+        if ($null -ne (Get-PromptParleProp $Item 'readonly' $null)) {
+            $readonly = ConvertTo-PromptParleBool -Value (Get-PromptParleProp $Item 'readonly' $readonly) -Default $readonly
+        }
+        if ($kind -eq 'knowledge') { $readonly = $true }
+        # Inline port/count — do not call helpers that may not be defined yet / throw binder errors
+        $portRaw = Get-PromptParleProp $Item 'ssh_port' 22
+        $portN = 22
+        try {
+            if ($portRaw -is [int]) { $portN = $portRaw }
+            elseif ($portRaw -is [long]) { $portN = [int]$portRaw }
+            else {
+                $ps = [string]$portRaw
+                if (-not [string]::IsNullOrWhiteSpace($ps)) { $portN = [Convert]::ToInt32($ps.Trim(), 10) }
+            }
+            if ($portN -lt 1 -or $portN -gt 65535) { $portN = 22 }
+        } catch { $portN = 22 }
+        $fcN = 0
+        try {
+            $fcRaw = Get-PromptParleProp $Item 'file_count' 0
+            if ($fcRaw -is [int]) { $fcN = $fcRaw }
+            elseif ($fcRaw -is [long]) { $fcN = [int]$fcRaw }
+            else {
+                $fs = [string]$fcRaw
+                if (-not [string]::IsNullOrWhiteSpace($fs)) { $fcN = [Convert]::ToInt32($fs.Trim(), 10) }
+            }
+        } catch { $fcN = 0 }
+        $cat = [string](Get-PromptParleProp $Item 'catalog_id' $id)
+        if ([string]::IsNullOrWhiteSpace($cat)) { $cat = $id }
+        return [pscustomobject]@{
+            id         = $id
+            kind       = $kind
+            label      = $label
+            path       = $path
+            active     = $active
+            readonly   = $readonly
+            source     = $source
+            ssh_target = [string](Get-PromptParleProp $Item 'ssh_target' '')
+            ssh_port   = $portN
+            ssh_cwd    = [string](Get-PromptParleProp $Item 'ssh_cwd' '')
+            ssh_name   = [string](Get-PromptParleProp $Item 'ssh_name' '')
+            catalog_id = $cat
+            indexed_at = [string](Get-PromptParleProp $Item 'indexed_at' '')
+            file_count = $fcN
+        }
+    } catch {
+        Write-PromptParleDebugLog ("ConvertTo-PromptParleConnectionObject FAIL: " + $_.Exception.ToString())
+        return $null
+    }
+}
+
+function ConvertTo-PromptParleConnectionList {
+    param($InputObject)
+    $acc = New-Object System.Collections.ArrayList
+    if ($null -eq $InputObject) { return @() }
+    try {
+        foreach ($item in @($InputObject)) {
+            if ($null -eq $item) { continue }
+            # Skip scalar noise if JSON had a bad shape
+            if ($item -is [string] -or $item -is [int] -or $item -is [long] -or $item -is [bool] -or $item -is [double]) { continue }
+            $c = ConvertTo-PromptParleConnectionObject -Item $item
+            if ($null -ne $c) { [void]$acc.Add($c) }
+        }
+    } catch {
+        Write-PromptParleDebugLog ("ConvertTo-PromptParleConnectionList FAIL: " + $_.Exception.ToString())
+    }
+    return @($acc.ToArray())
+}
+
+function Ensure-PromptParleConnectionsMigrated {
+    param($State)
+    try {
+        $list = @(ConvertTo-PromptParleConnectionList -InputObject (Get-PromptParleProp $State 'connections' @()))
+        if ($list.Count -gt 0) {
+            # Exactly one active local when any local exists
+            $locals = @($list | Where-Object { $_.kind -eq 'local' })
+            $actives = @($locals | Where-Object { $_.active -eq $true })
+            if ($locals.Count -gt 0 -and $actives.Count -eq 0) {
+                $locals[0].active = $true
+            } elseif ($actives.Count -gt 1) {
+                $first = $true
+                foreach ($c in $list) {
+                    if ($c.kind -ne 'local') { continue }
+                    if ($first -and $c.active) { $first = $false; continue }
+                    if ($c.active) { $c.active = $false }
+                }
+            }
+            return @($list)
+        }
+        $path = [string](Get-PromptParleProp $State 'workspace_path' '')
+        if ($path) {
+            $kind = [string](Get-PromptParleProp $State 'workspace_kind' 'local')
+            if ($kind -eq 'none' -or -not $kind) { $kind = 'local' }
+            if ($kind -eq 'git') { $kind = 'local' }
+            $leaf = ''
+            try { $leaf = [string](Split-Path -Leaf $path) } catch { $leaf = '' }
+            if (-not $leaf) { $leaf = 'This PC' }
+            $newId = New-PromptParleConnectionId -Prefix 'pc'
+            $row = [pscustomobject]@{
+                id         = $newId
+                kind       = 'local'
+                label      = $leaf
+                path       = $path
+                active     = $true
+                readonly   = $false
+                source     = 'local'
+                ssh_target = ''
+                ssh_port   = 22
+                ssh_cwd    = ''
+                ssh_name   = ''
+                catalog_id = $newId
+                indexed_at = ''
+                file_count = 0
+            }
+            return @($row)
+        }
+        return @()
+    } catch {
+        Write-PromptParleDebugLog ("Ensure-PromptParleConnectionsMigrated FAIL: " + $_.Exception.ToString())
+        return @()
+    }
+}
+
+function Sync-PromptParleLegacyWorkspaceFromConnections {
+    param($State)
+    $list = @(Ensure-PromptParleConnectionsMigrated -State $State)
+    $active = $null
+    foreach ($c in $list) {
+        if ($c.kind -eq 'local' -and $c.active) { $active = $c; break }
+    }
+    if (-not $active) {
+        foreach ($c in $list) {
+            if ($c.kind -eq 'local') { $active = $c; $c.active = $true; break }
+        }
+    }
+    $path = if ($active) { [string]$active.path } else { '' }
+    $wkind = 'none'
+    if ($path) {
+        $wkind = if (Test-PromptParlePathIsGitRepo -Path $path) { 'git' } else { 'local' }
+    }
+    return [pscustomobject]@{
+        connections    = @($list)
+        workspace_path = $path
+        workspace_kind = $wkind
+    }
+}
+
+function Get-PromptParleConnections {
+    try {
+        $state = Get-PromptParleSessionState
+        return @(Ensure-PromptParleConnectionsMigrated -State $state)
+    } catch {
+        Write-PromptParleDebugLog ("Get-PromptParleConnections FAIL: " + $_.Exception.ToString())
+        return @()
+    }
+}
+
+function Get-PromptParleActiveLocalConnection {
+    foreach ($c in @(Get-PromptParleConnections)) {
+        if ($c.kind -eq 'local' -and $c.active) { return $c }
+    }
+    foreach ($c in @(Get-PromptParleConnections)) {
+        if ($c.kind -eq 'local') { return $c }
+    }
+    return $null
+}
+
+function Save-PromptParleConnectionsState {
+    param(
+        [Parameter(Mandatory)]$Connections,
+        $WorkspaceRecent = $null
+    )
+    $list = @(ConvertTo-PromptParleConnectionList -InputObject $Connections)
+    $synced = Sync-PromptParleLegacyWorkspaceFromConnections -State ([pscustomobject]@{
+            connections    = $list
+            workspace_path = ''
+            workspace_kind = 'none'
+        })
+    $state = Get-PromptParleSessionState
+    if ($null -ne $WorkspaceRecent) {
+        $state = New-PromptParleSessionSnapshot -Base $state `
+            -WorkspacePath $synced.workspace_path `
+            -WorkspaceKind $synced.workspace_kind `
+            -Connections $synced.connections `
+            -WorkspaceRecent $WorkspaceRecent
+    } else {
+        $state = New-PromptParleSessionSnapshot -Base $state `
+            -WorkspacePath $synced.workspace_path `
+            -WorkspaceKind $synced.workspace_kind `
+            -Connections $synced.connections
+    }
+    Save-PromptParleSessionState -State $state
+    return $state
 }
 
 function ConvertTo-PromptParleAgentId {
@@ -843,75 +1288,105 @@ function Get-PromptParleActiveAgentId {
 
 function Get-PromptParleSessionState {
     $path = Get-PromptParleSessionStatePath
-    $state = [ordered]@{
-        active_agent      = 'none'
-        provider          = 'openai'
-        profile           = 'general'
-        dial              = 3
-        model             = $null
-        optimize_only     = $false
-        tools_enabled     = $true
-        workspace_path    = ''
-        workspace_kind    = 'none'
-        workspace_recent  = @()
-        ssh_target        = ''
-        ssh_port          = 22
-        ssh_cwd           = ''
-        # 0.15: durable product bind (monorepo root + live deploy) — not per-turn keyword packs
-        product_root      = ''
-        product_live      = ''
-        # 0.18 sticky open obligation (document/implement contract across short follow-ups)
+    # Build a plain Hashtable first — avoid OrderedDictionary → [pscustomobject] cast issues
+    $state = @{
+        active_agent               = 'none'
+        provider                   = 'openai'
+        profile                    = 'general'
+        dial                       = 3
+        model                      = $null
+        optimize_only              = $false
+        tools_enabled              = $true
+        workspace_path             = ''
+        workspace_kind             = 'none'
+        workspace_recent           = @()
+        ssh_target                 = ''
+        ssh_port                   = 22
+        ssh_cwd                    = ''
+        ssh_name                   = ''
+        product_root               = ''
+        product_live               = ''
         open_obligation_kind       = ''
         open_obligation_artifact   = ''
         open_obligation_source     = ''
         open_obligation_source_ref = ''
+        connections                = @()
     }
     if (Test-Path -LiteralPath $path) {
         try {
-            $s = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd', 'product_root', 'product_live', 'open_obligation_kind', 'open_obligation_artifact', 'open_obligation_source', 'open_obligation_source_ref')) {
-                $v = Get-PromptParleProp $s $k
-                if ($null -ne $v -and "$v" -ne '') { $state[$k] = [string]$v }
-            }
-            $d = Get-PromptParleProp $s 'dial'
-            if ($null -ne $d) { try { $state.dial = [int]$d } catch { } }
-            $o = Get-PromptParleProp $s 'optimize_only'
-            if ($null -ne $o) { $state.optimize_only = [bool]$o }
-            # Default ON when key missing (older session.json)
-            $te = Get-PromptParleProp $s 'tools_enabled' $null
-            if ($null -ne $te) { $state.tools_enabled = [bool]$te } else { $state.tools_enabled = $true }
-            $sp = Get-PromptParleProp $s 'ssh_port'
-            if ($null -ne $sp) { try { $state.ssh_port = [int]$sp } catch { } }
-            $rec = Get-PromptParleProp $s 'workspace_recent'
-            if ($null -ne $rec) {
-                $list = @()
-                foreach ($item in @($rec)) {
-                    if ($item -and "$item".Trim()) { $list += [string]$item }
+            $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+            if ($raw) {
+                $s = $raw | ConvertFrom-Json
+                foreach ($k in @('active_agent', 'provider', 'profile', 'model', 'workspace_path', 'workspace_kind', 'ssh_target', 'ssh_cwd', 'ssh_name', 'product_root', 'product_live', 'open_obligation_kind', 'open_obligation_artifact', 'open_obligation_source', 'open_obligation_source_ref')) {
+                    $v = Get-PromptParleProp $s $k
+                    if ($null -ne $v -and "$v" -ne '') { $state[$k] = [string]$v }
                 }
-                $state.workspace_recent = $list
+                $d = Get-PromptParleProp $s 'dial'
+                if ($null -ne $d) {
+                    try { $state['dial'] = [Convert]::ToInt32([string]$d, 10) } catch { $state['dial'] = 3 }
+                }
+                $o = Get-PromptParleProp $s 'optimize_only'
+                if ($null -ne $o) { $state['optimize_only'] = ConvertTo-PromptParleBool -Value $o -Default $false }
+                $te = Get-PromptParleProp $s 'tools_enabled' $null
+                if ($null -ne $te) { $state['tools_enabled'] = ConvertTo-PromptParleBool -Value $te -Default $true } else { $state['tools_enabled'] = $true }
+                $sp = Get-PromptParleProp $s 'ssh_port'
+                if ($null -ne $sp) {
+                    try {
+                        $pn = [Convert]::ToInt32([string]$sp, 10)
+                        if ($pn -ge 1 -and $pn -le 65535) { $state['ssh_port'] = $pn }
+                    } catch { }
+                }
+                $rec = Get-PromptParleProp $s 'workspace_recent'
+                if ($null -ne $rec) {
+                    $rlist = New-Object System.Collections.ArrayList
+                    foreach ($item in @($rec)) {
+                        $rs = [string](ConvertTo-PromptParleSingleString $item)
+                        if (-not [string]::IsNullOrWhiteSpace($rs)) { [void]$rlist.Add($rs) }
+                    }
+                    $state['workspace_recent'] = @($rlist.ToArray())
+                }
+                $connRaw = Get-PromptParleProp $s 'connections'
+                if ($null -ne $connRaw) {
+                    $state['connections'] = @(ConvertTo-PromptParleConnectionList -InputObject $connRaw)
+                }
             }
-        } catch { }
-    }
-    # Deterministic default is Auto (legacy sessions with 'default' promote to auto)
-    # Agents retired 0.14 — keep active_agent field for old session JSON only
-    if (-not $state.active_agent) {
-        $state.active_agent = 'none'
-    }
-    # Never let a stored agent override dial/profile (dial is the only aggressiveness knob)
-    $agent = $null
-    try { $agent = Get-PromptParleAgent -Name $state.active_agent } catch { $agent = $null }
-    if ($agent) {
-        $state.agent = [ordered]@{
-            id          = $agent.id
-            name        = $agent.name
-            description = $agent.description
-            system      = $agent.system
-            profile     = 'general'
-            dial        = $state.dial
-            commands    = $agent.commands
+        } catch {
+            Write-PromptParleDebugLog ("Get-PromptParleSessionState read FAIL: " + $_.Exception.ToString())
         }
     }
-    return [pscustomobject]$state
+    # Migrate single workspace_path → connections[] when list empty (pass hashtable; Get-PromptParleProp supports IDictionary)
+    try {
+        $state['connections'] = @(Ensure-PromptParleConnectionsMigrated -State $state)
+    } catch {
+        Write-PromptParleDebugLog ("Get-PromptParleSessionState migrate FAIL: " + $_.Exception.ToString())
+        if (-not $state['connections']) { $state['connections'] = @() }
+    }
+    if (-not $state['active_agent']) {
+        $state['active_agent'] = 'none'
+    }
+    # Safe bag → PSCustomObject (never cast OrderedDictionary / raw IDictionary)
+    try {
+        return (ConvertTo-PromptParleCustomObject $state)
+    } catch {
+        Write-PromptParleDebugLog ("Get-PromptParleSessionState cast FAIL: " + $_.Exception.ToString())
+        return [pscustomobject]@{
+            active_agent     = 'none'
+            provider         = 'openai'
+            profile          = 'general'
+            dial             = 3
+            model            = $null
+            optimize_only    = $false
+            tools_enabled    = $true
+            workspace_path   = ''
+            workspace_kind   = 'none'
+            workspace_recent = @()
+            ssh_target       = ''
+            ssh_port         = 22
+            ssh_cwd          = ''
+            ssh_name         = ''
+            connections      = @()
+        }
+    }
 }
 
 function New-PromptParleSessionSnapshot {
@@ -934,12 +1409,14 @@ function New-PromptParleSessionSnapshot {
         [string]$SshTarget,
         $SshPort = $null,
         [string]$SshCwd,
+        [string]$SshName,
         [string]$ProductRoot,
         [string]$ProductLive,
         [string]$OpenObligationKind,
         [string]$OpenObligationArtifact,
         [string]$OpenObligationSource,
-        [string]$OpenObligationSourceRef
+        [string]$OpenObligationSourceRef,
+        $Connections = $null
     )
     if (-not $Base) { $Base = Get-PromptParleSessionState }
     $recent = @()
@@ -957,33 +1434,48 @@ function New-PromptParleSessionSnapshot {
     }
     $toolsEn = $true
     if ($null -ne $ToolsEnabled) {
-        $toolsEn = [bool]$ToolsEnabled
+        $toolsEn = ConvertTo-PromptParleBool -Value $ToolsEnabled -Default $true
     } else {
         $baseTe = Get-PromptParleProp $Base 'tools_enabled' $null
-        if ($null -ne $baseTe) { $toolsEn = [bool]$baseTe } else { $toolsEn = $true }
+        if ($null -ne $baseTe) { $toolsEn = ConvertTo-PromptParleBool -Value $baseTe -Default $true } else { $toolsEn = $true }
     }
-    $out = [ordered]@{
+    $connList = @()
+    if ($PSBoundParameters.ContainsKey('Connections') -and $null -ne $Connections) {
+        $connList = @(ConvertTo-PromptParleConnectionList -InputObject $Connections)
+    } else {
+        $connList = @(ConvertTo-PromptParleConnectionList -InputObject (Get-PromptParleProp $Base 'connections' @()))
+    }
+    $optOnly = $false
+    if ($null -ne $OptimizeOnly) {
+        $optOnly = ConvertTo-PromptParleBool -Value $OptimizeOnly -Default $false
+    } else {
+        $optOnly = ConvertTo-PromptParleBool -Value (Get-PromptParleProp $Base 'optimize_only' $false) -Default $false
+    }
+    # Plain Hashtable only — [pscustomobject]$ordered throws "Argument types do not match"
+    $out = @{
         active_agent     = if ($PSBoundParameters.ContainsKey('ActiveAgent') -and $ActiveAgent) { $ActiveAgent } else { [string](Get-PromptParleProp $Base 'active_agent' 'default') }
         provider         = if ($PSBoundParameters.ContainsKey('Provider') -and $Provider) { $Provider } else { [string](Get-PromptParleProp $Base 'provider' 'openai') }
         profile          = if ($PSBoundParameters.ContainsKey('Profile') -and $Profile) { $Profile } else { [string](Get-PromptParleProp $Base 'profile' 'general') }
-        dial             = if ($Dial -ge 1) { $Dial } else { [int](Get-PromptParleProp $Base 'dial' 3) }
+        dial             = if ($Dial -ge 1) { ConvertTo-PromptParleInt32 -Value $Dial -Default 3 } else { ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $Base 'dial' 3) -Default 3 }
         model            = if ($PSBoundParameters.ContainsKey('Model')) { $Model } else { Get-PromptParleProp $Base 'model' $null }
-        optimize_only    = if ($null -ne $OptimizeOnly) { [bool]$OptimizeOnly } else { [bool](Get-PromptParleProp $Base 'optimize_only' $false) }
+        optimize_only    = $optOnly
         tools_enabled    = $toolsEn
         workspace_path   = if ($PSBoundParameters.ContainsKey('WorkspacePath')) { [string]$WorkspacePath } else { [string](Get-PromptParleProp $Base 'workspace_path' '') }
         workspace_kind   = if ($PSBoundParameters.ContainsKey('WorkspaceKind')) { [string]$WorkspaceKind } else { [string](Get-PromptParleProp $Base 'workspace_kind' 'none') }
         workspace_recent = $recent
         ssh_target       = if ($PSBoundParameters.ContainsKey('SshTarget')) { [string]$SshTarget } else { [string](Get-PromptParleProp $Base 'ssh_target' '') }
-        ssh_port         = if ($null -ne $SshPort) { [int]$SshPort } else { [int](Get-PromptParleProp $Base 'ssh_port' 22) }
+        ssh_port         = if ($null -ne $SshPort) { ConvertTo-PromptParleSshPort -Value $SshPort } else { ConvertTo-PromptParleSshPort -Value (Get-PromptParleProp $Base 'ssh_port' 22) }
         ssh_cwd          = if ($PSBoundParameters.ContainsKey('SshCwd')) { [string]$SshCwd } else { [string](Get-PromptParleProp $Base 'ssh_cwd' '') }
+        ssh_name         = if ($PSBoundParameters.ContainsKey('SshName')) { [string]$SshName } else { [string](Get-PromptParleProp $Base 'ssh_name' '') }
         product_root     = if ($PSBoundParameters.ContainsKey('ProductRoot')) { [string]$ProductRoot } else { [string](Get-PromptParleProp $Base 'product_root' '') }
         product_live     = if ($PSBoundParameters.ContainsKey('ProductLive')) { [string]$ProductLive } else { [string](Get-PromptParleProp $Base 'product_live' '') }
         open_obligation_kind       = if ($PSBoundParameters.ContainsKey('OpenObligationKind')) { [string]$OpenObligationKind } else { [string](Get-PromptParleProp $Base 'open_obligation_kind' '') }
         open_obligation_artifact   = if ($PSBoundParameters.ContainsKey('OpenObligationArtifact')) { [string]$OpenObligationArtifact } else { [string](Get-PromptParleProp $Base 'open_obligation_artifact' '') }
         open_obligation_source     = if ($PSBoundParameters.ContainsKey('OpenObligationSource')) { [string]$OpenObligationSource } else { [string](Get-PromptParleProp $Base 'open_obligation_source' '') }
         open_obligation_source_ref = if ($PSBoundParameters.ContainsKey('OpenObligationSourceRef')) { [string]$OpenObligationSourceRef } else { [string](Get-PromptParleProp $Base 'open_obligation_source_ref' '') }
+        connections      = $connList
     }
-    return [pscustomobject]$out
+    return (ConvertTo-PromptParleCustomObject $out)
 }
 
 function Save-PromptParleSessionState {
@@ -993,38 +1485,89 @@ function Save-PromptParleSessionState {
     if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
-    $recent = @()
+    $recent = New-Object System.Collections.ArrayList
     $recRaw = Get-PromptParleProp $State 'workspace_recent'
     if ($null -ne $recRaw) {
         foreach ($item in @($recRaw)) {
-            if ($item -and "$item".Trim()) { $recent += [string]$item }
+            $s = [string](ConvertTo-PromptParleSingleString $item)
+            if (-not [string]::IsNullOrWhiteSpace($s)) { [void]$recent.Add($s) }
         }
     }
     $toolsEnSave = Get-PromptParleProp $State 'tools_enabled' $null
-    if ($null -eq $toolsEnSave) { $toolsEnSave = $true } else { $toolsEnSave = [bool]$toolsEnSave }
-    $out = [ordered]@{
-        active_agent     = [string](Get-PromptParleProp $State 'active_agent' 'default')
-        provider         = [string](Get-PromptParleProp $State 'provider' 'openai')
-        profile          = [string](Get-PromptParleProp $State 'profile' 'general')
-        dial             = [int](Get-PromptParleProp $State 'dial' 3)
-        model            = Get-PromptParleProp $State 'model' $null
-        optimize_only    = [bool](Get-PromptParleProp $State 'optimize_only' $false)
-        tools_enabled    = $toolsEnSave
-        workspace_path   = [string](Get-PromptParleProp $State 'workspace_path' '')
-        workspace_kind   = [string](Get-PromptParleProp $State 'workspace_kind' 'none')
-        workspace_recent = $recent
-        ssh_target       = [string](Get-PromptParleProp $State 'ssh_target' '')
-        ssh_port         = [int](Get-PromptParleProp $State 'ssh_port' 22)
-        ssh_cwd          = [string](Get-PromptParleProp $State 'ssh_cwd' '')
-        product_root     = [string](Get-PromptParleProp $State 'product_root' '')
-        product_live     = [string](Get-PromptParleProp $State 'product_live' '')
+    if ($null -eq $toolsEnSave) { $toolsEnSave = $true } else {
+        try { $toolsEnSave = [System.Convert]::ToBoolean($toolsEnSave) } catch { $toolsEnSave = $true }
+    }
+    $optOnly = $false
+    try { $optOnly = [System.Convert]::ToBoolean((Get-PromptParleProp $State 'optimize_only' $false)) } catch { $optOnly = $false }
+
+    # Plain hashtables only — avoids PSCustomObject/ConvertTo-Json method-bind issues
+    $connArr = New-Object System.Collections.ArrayList
+    foreach ($c in @(ConvertTo-PromptParleConnectionList -InputObject (Get-PromptParleProp $State 'connections' @()))) {
+        if (-not $c) { continue }
+        $portN = ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $c 'ssh_port' 22) -Default 22
+        if ($portN -lt 1 -or $portN -gt 65535) { $portN = 22 }
+        $activeB = $false
+        try { $activeB = [System.Convert]::ToBoolean((Get-PromptParleProp $c 'active' $false)) } catch { $activeB = $false }
+        $roB = $false
+        try { $roB = [System.Convert]::ToBoolean((Get-PromptParleProp $c 'readonly' $false)) } catch { $roB = $false }
+        [void]$connArr.Add(@{
+                id         = [string](Get-PromptParleProp $c 'id' '')
+                kind       = [string](Get-PromptParleProp $c 'kind' 'local')
+                label      = [string](Get-PromptParleProp $c 'label' '')
+                path       = [string](Get-PromptParleProp $c 'path' '')
+                active     = $activeB
+                readonly   = $roB
+                source     = [string](Get-PromptParleProp $c 'source' 'local')
+                ssh_target = [string](Get-PromptParleProp $c 'ssh_target' '')
+                ssh_port   = $portN
+                ssh_cwd    = [string](Get-PromptParleProp $c 'ssh_cwd' '')
+                ssh_name   = [string](Get-PromptParleProp $c 'ssh_name' '')
+                catalog_id = [string](Get-PromptParleProp $c 'catalog_id' '')
+                indexed_at = [string](Get-PromptParleProp $c 'indexed_at' '')
+                file_count = ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $c 'file_count' 0) -Default 0
+            })
+    }
+
+    $sshPortSave = ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $State 'ssh_port' 22) -Default 22
+    if ($sshPortSave -lt 1 -or $sshPortSave -gt 65535) { $sshPortSave = 22 }
+    $dialSave = ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $State 'dial' 3) -Default 3
+    if ($dialSave -lt 1 -or $dialSave -gt 5) { $dialSave = 3 }
+
+    $modelVal = Get-PromptParleProp $State 'model' $null
+    if ($null -ne $modelVal) { $modelVal = [string]$modelVal }
+
+    $out = @{
+        active_agent               = [string](Get-PromptParleProp $State 'active_agent' 'default')
+        provider                   = [string](Get-PromptParleProp $State 'provider' 'openai')
+        profile                    = [string](Get-PromptParleProp $State 'profile' 'general')
+        dial                       = $dialSave
+        model                      = $modelVal
+        optimize_only              = $optOnly
+        tools_enabled              = $toolsEnSave
+        workspace_path             = [string](Get-PromptParleProp $State 'workspace_path' '')
+        workspace_kind             = [string](Get-PromptParleProp $State 'workspace_kind' 'none')
+        workspace_recent           = @($recent.ToArray())
+        ssh_target                 = [string](Get-PromptParleProp $State 'ssh_target' '')
+        ssh_port                   = $sshPortSave
+        ssh_cwd                    = [string](Get-PromptParleProp $State 'ssh_cwd' '')
+        ssh_name                   = [string](Get-PromptParleProp $State 'ssh_name' '')
+        product_root               = [string](Get-PromptParleProp $State 'product_root' '')
+        product_live               = [string](Get-PromptParleProp $State 'product_live' '')
         open_obligation_kind       = [string](Get-PromptParleProp $State 'open_obligation_kind' '')
         open_obligation_artifact   = [string](Get-PromptParleProp $State 'open_obligation_artifact' '')
         open_obligation_source     = [string](Get-PromptParleProp $State 'open_obligation_source' '')
         open_obligation_source_ref = [string](Get-PromptParleProp $State 'open_obligation_source_ref' '')
-        updated_at       = (Get-Date).ToString('o')
+        connections                = @($connArr.ToArray())
+        updated_at                 = (Get-Date).ToString('o')
     }
-    ($out | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
+    try {
+        $json = ConvertTo-Json -InputObject $out -Depth 8 -Compress
+        if (-not $json) { throw 'ConvertTo-Json returned empty' }
+        [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+    } catch {
+        Write-PromptParleDebugLog ("Save-PromptParleSessionState FAIL: " + $_.Exception.ToString())
+        throw "Save session state failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+    }
 }
 
 function Set-PromptParleActiveAgent {
@@ -1158,10 +1701,10 @@ function Resolve-PromptParleTurnLens {
 function Get-PromptParleSelfCard {
     <#
     .SYNOPSIS
-      0.22.4: compact self-knowledge — what PromptParle is, desktop hands, portal, help.
-      Always-on so the model does not invent a wrong host or hardcode foreign paths.
+      Compact self-knowledge — product identity, hands, session storage truth, portal.
+      Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.23.4'
+    $ver = '0.27.2'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -1173,15 +1716,18 @@ function Get-PromptParleSelfCard {
         } catch { }
     }
     $os = if ($script:PromptParleIsWindows) { 'Windows' } else { 'Linux/macOS' }
+    $cfgHint = if ($script:PromptParleIsWindows) { '%USERPROFILE%\.promptparle\' } else { '~/.promptparle/' }
     $lines = @(
         "[SELF] PromptParle desktop client v$ver on $os (this PC is the hands)",
         'Identity: multi-AI eng client — portal optimizes/routes; THIS machine runs tools and holds keys/paths.',
         'Local (this PC): local_list any path (C:\, /home, …), workspace attach, git, file_index, tree_pack, terminal. Paths never leave the PC for listing.',
         'Remote (only if SSH connected AND user means remote): ssh_list, ssh_read, ssh_run.',
         'Web: web_search, web_page. Docs: ```file name=…``` deliverables. Mutate: ```apply path=``` under bound source only.',
+        'Chat history (sessions): lives in THIS desktop UI — sidebar Chat history (browser localStorage on this PC). Rolling densify store: ' + $cfgHint + 'chat-memory/<id>.json. NOT inside project trees. There is NO .parle/sessions/ folder in repos — never invent one.',
+        'Catch-up: "latest session / get caught up" on THIS chat → answer from [MEM]/[KNOW]/history. Other chats → user opens them in the sidebar. Project catch-up (path/repo) → git status, HANDOFF/AGENTS/README, recent commits — not a fictional sessions dir.',
         'Portal: https://promptparle.com — Providers, API keys, Usage (before/after context), Settings, plan.',
         'Help: /help · /status · /workspace · /ssh · /search · /dial · UI Browse folders + Activity log.',
-        'Routing: "on this PC" / drive letters (C:\) = LOCAL tools. Do not list a remote product root unless asked. Never invent directory listings — use [OBSERVE] results.'
+        'Routing: "on this PC" / drive letters (C:\) = LOCAL tools. Do not list a remote product root unless asked. Never invent directory listings — use [OBSERVE]/[MEM] results.'
     )
     return ($lines -join "`n")
 }
@@ -1193,16 +1739,52 @@ function Get-PromptParleChatSystemPrompt {
       Pass-through first; optimization is deferred. Know yourself (see [SELF]).
     #>
     return @(
-        'You are PromptParle''s engineering assistant in a continuous connected session (same feel as Grok Build / Claude / Cursor). Natural language only — no modes for the user.',
-        'BRAIN + HANDS: You are the brain (this API call). PromptParle desktop on the user''s PC executes tools: local filesystem, optional SSH, web fetch, apply/run, document deliver.',
-        'NATIVE TOOLS: web_search, web_page, local_list (THIS PC directories), ssh_list/ssh_read/ssh_run (remote only), workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Prefer tools over guessing.',
+        'You are PromptParle — a conversational assistant in a continuous chat (same feel as Grok / Claude / ChatGPT). Talk like a helpful person: clear prose, short lists when useful, natural follow-ups. No modes for the user.',
+        'BRAIN + HANDS: You are the brain (this API call). PromptParle desktop on the user''s PC executes tools: local filesystem, optional SSH, web fetch, apply/run, document deliver. The user never sees tool protocol.',
+        'NATIVE TOOLS: web_search, web_page, local_list (THIS PC directories), ssh_list/ssh_read/ssh_run (remote only), workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Prefer tools over guessing — then answer in plain language.',
         'HOST ROUTING: "on this PC" / Windows paths (C:\) / local folders → local_list or workspace tools. SSH/product host only when the user means remote or [CONN] shows an SSH target they asked about. Never substitute a hardcoded server path for a local request.',
-        'FORBIDDEN: never emit toolcall/tool_call/function_call XML, HTML tool tags, markdown hands fences, or fake tool theater as the user-visible answer. Only real tool calls or a final prose answer.',
-        'When evidence is enough: answer clearly. NEVER answer with the method (no run-ls homework). NEVER Generating-now without a file fence body for user documents.',
+        'FORBIDDEN in the user-visible answer: toolcall/tool_call/function_call XML, HTML tool tags, markdown hands fences, [HANDS] packs, hands# logs, "Client ran tools", or any method homework. Only a final conversational answer (or a real ```file deliverable when owed).',
+        'When evidence is enough: answer the question. NEVER answer with the method (no run-ls homework). NEVER Generating-now without a file fence body for user documents.',
         'MUTATE: apply path=rel full files under source_root when a product bind exists (client writes, backups). Never invent a product root. run allowlisted pipeline only.',
-        'DELIVER: user docs need ```file name=Report.md``` (pdf/docx/xlsx/csv/md/txt/html/json) with FULL body. Client builds download.',
-        'Trust [SELF][CONN][PROJECT][OBSERVE][WEB][SSH] live evidence over invention. Opaque outcomes are bugs: tool result, apply/run/file, or one hard blocker.'
+        'DELIVER: only when the user asked for a downloadable document (one-pager, executive summary, pdf/docx, "write me a report"). Chat reviews ("tell me about", "review site.com", "newest movies") are prose answers — do NOT invent a file obligation.',
+        'RESEARCH HONESTY: [SESSION WEB] lists pages this client already fetched. If the user asks "did you research X?", answer from that list. Never claim "Not yet" when the domain is listed.',
+        'SESSIONS: Chat history is the desktop sidebar (localStorage) + optional ~/.promptparle/chat-memory — never a project .parle/sessions folder. Catch-up this chat from [MEM]/[KNOW]; project catch-up from git/HANDOFF/README via tools — never invent session dirs.',
+        'Trust [SELF][CONN][PROJECT][MEM][KNOW][OBSERVE][WEB][SESSION WEB][SSH] live evidence over invention. Opaque outcomes are bugs: tool result, apply/run/file, or one hard blocker.'
     ) -join ' '
+}
+
+function Test-PromptParleSessionCatchUpIntent {
+    <#
+    .SYNOPSIS
+      True when user wants chat/work continuity ("get caught up", "latest session"),
+      not a request to invent a sessions directory under a project path.
+    #>
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    if (-not $p) { return $false }
+    if ($p -match '(?i)\b(get caught up|catch me up|catch up|where we left off|what were we (doing|working)|pick up where|continue (from|where)|resume (the )?(chat|work|session))\b') {
+        return $true
+    }
+    if ($p -match '(?i)\b(latest|last|prior|previous|this)\s+session\b') { return $true }
+    if ($p -match '(?i)\bread (the )?(latest |last )?(session|chat|conversation)\b') { return $true }
+    if ($p -match '(?i)\b(session history|chat history|prior (chat|work|turns))\b') { return $true }
+    return $false
+}
+
+function Test-PromptParleProjectCatchUpIntent {
+    <# True when catch-up is about repo/project state (path/git/handoff), not UI chat history alone. #>
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    if (-not $p) { return $false }
+    if ($p -match '(?i)\b(project|repo|codebase|handoff|git (log|status|history)|what.?s (on|in) (disk|server|remote))\b') {
+        return $true
+    }
+    if ($p -match '(?i)(?:^|[\s`"''(])(?:/home/|/var/www/|/etc/|[A-Za-z]:\\|\./)[\w./\\-]+') {
+        # Path + catch-up language → project state
+        if (Test-PromptParleSessionCatchUpIntent -Prompt $p) { return $true }
+        if ($p -match '(?i)\b(status|state|what.?s going on|orient|overview)\b') { return $true }
+    }
+    return $false
 }
 
 function Get-PromptParleTurnKind {
@@ -1502,8 +2084,26 @@ function Get-PromptParleToolCatalog {
         [pscustomobject]@{
             id = 'connections'; name = 'Project connections'
             category = 'project'; local = $true
-            description = 'Ultra-brief PC / Git / SSH session map (always injected).'
+            description = 'Skinny PC / KNOW / SSH map only (catalog on disk; not a file dump).'
             auto = $true
+        },
+        [pscustomobject]@{
+            id = 'conn_index'; name = 'Connection index'
+            category = 'project'; local = $true
+            description = 'On-demand structure for one connection (top dirs, ext counts, samples).'
+            auto = $false
+        },
+        [pscustomobject]@{
+            id = 'know_search'; name = 'Knowledge search'
+            category = 'project'; local = $true
+            description = 'Search knowledge indexes (paths/titles only). Then know_read for text.'
+            auto = $false
+        },
+        [pscustomobject]@{
+            id = 'know_read'; name = 'Knowledge read'
+            category = 'project'; local = $true
+            description = 'Read one knowledge file (readonly). Never writes.'
+            auto = $false
         },
         [pscustomobject]@{
             id = 'web_search'; name = 'Web search'
@@ -1540,7 +2140,7 @@ function Get-PromptParleShortPath {
     try {
         $home = Get-PromptParleHomePath
         if ($home -and $p.StartsWith($home, [StringComparison]::OrdinalIgnoreCase)) {
-            $rest = $p.Substring($home.Length).TrimStart('\', '/')
+            $rest = $p.Substring($home.Length).TrimStart([char]0x5C, [char]0x2F)
             if ($rest) { return "~/$rest".Replace('\', '/') }
             return '~'
         }
@@ -1548,8 +2148,8 @@ function Get-PromptParleShortPath {
     # Prefer leaf + parent for long paths
     try {
         if ($p.Length -gt 48) {
-            $leaf = [IO.Path]::GetFileName($p.TrimEnd('\', '/'))
-            $parent = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($p.TrimEnd('\', '/')))
+            $leaf = [IO.Path]::GetFileName($p.TrimEnd([char]0x5C, [char]0x2F))
+            $parent = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($p.TrimEnd([char]0x5C, [char]0x2F)))
             if ($parent -and $leaf) { return ".../$parent/$leaf" }
             if ($leaf) { return ".../$leaf" }
         }
@@ -1570,15 +2170,16 @@ function Get-PromptParleProjectConnectionsBrief {
     )
     $ws = $null
     try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
-    $key = 'none'
-    if ($ws) {
-        $key = ("{0}|{1}|{2}|{3}|{4}" -f `
-            [string](Get-PromptParleProp $ws 'path' ''), `
-            [string](Get-PromptParleProp $ws 'ssh_target' ''), `
-            [string](Get-PromptParleProp $ws 'ssh_cwd' ''), `
-            [string](Get-PromptParleProp $ws 'ssh_port' '22'), `
-            [string](Get-PromptParleProp $ws 'branch' ''))
+    $conns = @()
+    try { $conns = @(Get-PromptParleConnections) } catch { $conns = @() }
+    $keyParts = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $conns) {
+        [void]$keyParts.Add(('{0}:{1}:{2}:{3}' -f $c.kind, $c.id, $c.active, $c.path))
     }
+    if ($ws) {
+        [void]$keyParts.Add(('{0}|{1}|{2}' -f $ws.ssh_target, $ws.ssh_cwd, $ws.ssh_port))
+    }
+    $key = if ($keyParts.Count) { ($keyParts -join ';') } else { 'none' }
     $now = [datetime]::UtcNow
     if (-not $Force -and $script:PromptParleConnBriefCache.key -eq $key -and `
         $script:PromptParleConnBriefCache.text -and `
@@ -1586,57 +2187,49 @@ function Get-PromptParleProjectConnectionsBrief {
         return [string]$script:PromptParleConnBriefCache.text
     }
 
+    # Skinny map only — catalogs stay on disk; tools pull content on demand (no token dump)
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('[CONN] Project connections (this session — local PC)')
+    $lines.Add('[CONN] map (catalog on PC; use know_search/conn_index/relevant_slice for content)')
 
-    # PC / workspace
-    if ($ws -and $ws.path) {
-        $short = Get-PromptParleShortPath -Path ([string]$ws.path)
-        $bits = New-Object System.Collections.Generic.List[string]
-        $bits.Add($short)
-        if ($ws.exists) {
-            if ($ws.is_git) {
-                $bits.Add('git')
-                if ($ws.branch) { $bits.Add([string]$ws.branch) }
-            } else {
-                $bits.Add([string](Get-PromptParleProp $ws 'kind' 'folder'))
-            }
-        } else {
-            $bits.Add('MISSING')
-        }
-        $pcLine = 'PC: ' + ($bits -join ' · ')
-        if ($ws.is_git -and $ws.remote) {
-            $rem = [string]$ws.remote
-            if ($rem.Length -gt 56) { $rem = $rem.Substring(0, 53) + '…' }
-            $pcLine += " | origin $rem"
-        }
-        $lines.Add($pcLine)
+    $locals = @($conns | Where-Object { $_.kind -eq 'local' })
+    if ($locals.Count -eq 0) {
+        $lines.Add('PC: none — Project connections / /workspace add <path>')
     } else {
-        $lines.Add('PC: none — attach via Project connections / /workspace <path>')
+        foreach ($c in $locals) {
+            $mark = if ($c.active) { 'PC[active]' } else { 'PC' }
+            $lab = if ($c.label) { $c.label } else { 'folder' }
+            $fc = if ($c.file_count -gt 0) { " · idx $($c.file_count)" } else { '' }
+            $lines.Add("${mark}: $lab$fc")
+        }
     }
 
-    # SSH
+    $knows = @($conns | Where-Object { $_.kind -eq 'knowledge' })
+    if ($knows.Count -gt 0) {
+        foreach ($c in $knows) {
+            $lab = if ($c.label) { $c.label } else { 'docs' }
+            $src = if ($c.source -eq 'ssh') { 'ssh' } else { 'local' }
+            $fc = if ($c.file_count -gt 0) { " · idx $($c.file_count)" } else { '' }
+            $lines.Add("KNOW: $lab ($src, readonly$fc)")
+        }
+    }
+
     $sshT = if ($ws) { [string](Get-PromptParleProp $ws 'ssh_target' '') } else { '' }
     if ($sshT) {
-        $port = if ($ws) { [int](Get-PromptParleProp $ws 'ssh_port' 22) } else { 22 }
+        $sshNm = if ($ws) { [string](Get-PromptParleProp $ws 'ssh_name' '') } else { '' }
         $cwd = if ($ws) { [string](Get-PromptParleProp $ws 'ssh_cwd' '') } else { '' }
-        $sshLine = "SSH: ${sshT}:$port"
-        if ($cwd) { $sshLine += " cwd $(Get-PromptParleShortPath -Path $cwd)" }
-        $lines.Add($sshLine)
+        $lab = if ($sshNm) { $sshNm } else { 'SSH' }
+        $bit = if ($cwd) { ' · remote dir set' } else { ' · login home' }
+        $lines.Add("SSH: $lab$bit")
     } else {
-        $lines.Add('SSH: none — /ssh user@host [cwd]')
+        $lines.Add('SSH: none')
     }
 
-    # Git tooling availability (not a full status dump)
     $gitOk = Test-PromptParleCommandAvailable -Name 'git'
-    $lines.Add($(if ($gitOk) { 'Git: available on this PC' } else { 'Git: not found on PATH' }))
+    $lines.Add($(if ($gitOk) { 'Git: on PATH' } else { 'Git: not on PATH' }))
+    $lines.Add('Doctrine: do not invent paths; knowledge is read-only; Term uses active PC / coding SSH.')
 
-    if ($sshT -and $cwd) {
-        $lines.Add('SSH cwd is LIVE — relative names resolve there; files named in the user message are auto-fetched into [SSH] when found.')
-    } else {
-        $lines.Add('Use attached workspace/SSH evidence; do not invent paths. Web facts → web_search.')
-    }
     $text = ($lines -join "`n")
+    if ($MaxChars -lt 200) { $MaxChars = 200 }
     if ($text.Length -gt $MaxChars) {
         $text = $text.Substring(0, $MaxChars) + "`n…[conn]"
     }
@@ -1680,7 +2273,7 @@ function Get-PromptParleWebSearchQuery {
 }
 
 function Test-PromptParleWebSearchIntent {
-    <# 0.18/0.21: structural web observe — URLs/domains/research verbs, not a phrase mole list. #>
+    <# 0.18/0.21/0.26.17: structural web observe — URLs/domains/research verbs + live/current-info asks. #>
     param([string]$Prompt)
     if (-not $Prompt) { return $false }
     $b = $Prompt.ToLowerInvariant()
@@ -1699,6 +2292,11 @@ function Test-PromptParleWebSearchIntent {
     if ($b -match '(?i)\b[\w.-]+\.(?:com|org|net|io|ai|dev)\b' -and $b -match '(?i)\b(can you|please|what|how|why|tell|show|summar|explain)\b') { return $true }
     if ($b -match '(?i)^(what is|who is|what''?s the latest|current version of)\b') { return $true }
     if ($b -match '(?i)\b(latest (news|release|version)|as of 20\d{2})\b') { return $true }
+    # Live / current-events style (no domain required) — "newest movies in theaters as of today"
+    if ($b -match '(?i)\b(as of today|as of now|right now|currently|this (week|weekend|month)|in theaters?|now playing|box office|showtimes?)\b') { return $true }
+    if ($b -match '(?i)\b(newest|latest|current)\s+(movies?|films?|releases?|news|scores?|prices?|weather|headlines?)\b') { return $true }
+    if ($b -match '(?i)\bwhat (are|is) (the )?(newest|latest|current|playing|out now)\b') { return $true }
+    if ($b -match '(?i)\b(movies?|films?)\b.{0,40}\b(theaters?|cinemas?|now playing|out now)\b') { return $true }
     return $false
 }
 
@@ -1974,6 +2572,7 @@ function Invoke-PromptParleWebSearchLocal {
             $out.Add("[OBSERVE] kind=web_page from web_search auto-fetch")
             $out.Add("url: https://$domainHit/")
             $out.Add($pb)
+            try { Add-PromptParleWebEvidence -Url ("https://{0}/" -f $domainHit) -Kind 'web_search_page' } catch { }
         }
     }
     if ($n -eq 0 -and -not $abstract -and -not $pageBlob) {
@@ -2082,16 +2681,19 @@ function Invoke-PromptParleSecretScanLocal {
     }
     $masked = 0
     $out = $Text
+    # Order matters: more specific keys before generic sk-
     $patterns = @(
-        @{ re = '(?i)(sk-[A-Za-z0-9]{20,})'; rep = 'sk-***MASKED***' },
-        @{ re = '(?i)(sk-ant-[A-Za-z0-9\-_]{20,})'; rep = 'sk-ant-***MASKED***' },
-        @{ re = '(?i)(xai-[A-Za-z0-9]{20,})'; rep = 'xai-***MASKED***' },
-        @{ re = '(?i)(AIza[0-9A-Za-z\-_]{20,})'; rep = 'AIza***MASKED***' },
-        @{ re = '(?i)(ghp_[A-Za-z0-9]{20,})'; rep = 'ghp_***MASKED***' },
-        @{ re = '(?i)(github_pat_[A-Za-z0-9_]{20,})'; rep = 'github_pat_***MASKED***' },
-        @{ re = '(?i)(pp_live_[A-Za-z0-9]{16,})'; rep = 'pp_live_***MASKED***' },
+        @{ re = '(?i)(sk-ant-[A-Za-z0-9\-_]{16,})'; rep = 'sk-ant-***MASKED***' },
+        @{ re = '(?i)\b(sk-(?!ant-)[A-Za-z0-9_-]{20,})\b'; rep = 'sk-***MASKED***' },
+        @{ re = '(?i)\b(xai-[A-Za-z0-9]{20,})\b'; rep = 'xai-***MASKED***' },
+        @{ re = '(?i)\b(AIza[0-9A-Za-z\-_]{20,})\b'; rep = 'AIza***MASKED***' },
+        @{ re = '(?i)\b(AKIA[0-9A-Z]{16})\b'; rep = 'AKIA***MASKED***' },
+        @{ re = '(?i)\b(ghp_[A-Za-z0-9]{20,})\b'; rep = 'ghp_***MASKED***' },
+        @{ re = '(?i)\b(github_pat_[A-Za-z0-9_]{20,})\b'; rep = 'github_pat_***MASKED***' },
+        @{ re = '(?i)\b(pp_live_[A-Za-z0-9]{16,})\b'; rep = 'pp_live_***MASKED***' },
+        @{ re = '(?i)(Bearer\s+)[A-Za-z0-9\-._~+/]+=*'; rep = '${1}***MASKED***' },
         @{ re = '(?i)(-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----)'; rep = '-----BEGIN PRIVATE KEY-----***MASKED***-----END PRIVATE KEY-----' },
-        @{ re = '(?i)((?:api[_-]?key|secret|password|token|passwd)\s*[=:]\s*)(["'']?)([^\s"'';]{8,})\2'; rep = '${1}${2}***MASKED***${2}' }
+        @{ re = '(?i)((?:api[_-]?key|secret|password|token|passwd|aws_secret_access_key)\s*[=:]\s*)(["'']?)([^\s"'';]{8,})\2'; rep = '${1}${2}***MASKED***${2}' }
     )
     foreach ($p in $patterns) {
         $before = $out
@@ -2420,8 +3022,8 @@ function Invoke-PromptParleErrorBriefLocal {
 function Reduce-PromptParleTurnTextForMemory {
     <#
     .SYNOPSIS
-      Strip prior deliverable bodies / apply dumps so [MEM] does not re-anchor the next document ask
-      on the previous attachment's summary (e.g. doc1 summary poisons doc2 executive brief).
+      High-fidelity first: strip only NOISE (deliverable bodies, apply dumps, hands/tool theater).
+      Real conversation prose is kept with generous caps — selection over destruction.
     #>
     param(
         [AllowEmptyString()][string]$Text = '',
@@ -2442,6 +3044,51 @@ function Reduce-PromptParleTurnTextForMemory {
     $t = [regex]::Replace($t, '(?ms)```(?:file|deliver)[^\n]*\r?\n.*?```', '[prior deliverable body omitted]')
     # Apply blocks — never keep full file contents in memory
     $t = [regex]::Replace($t, '(?ms)```apply\s+path\s*[=:][^\n]*\r?\n.*?```', '[prior apply body omitted]')
+    # Hands / tool theater dumps only (noise) — keep query + hit titles as signal
+    if ($t -match '(?i)\[HANDS\]\s*client results|Client ran tools|hands#\d|Raw toolcall') {
+        $wq = ''
+        if ($t -match '(?m)^\[WEB\]\s*q=(.+)$') { $wq = $Matches[1].Trim() }
+        elseif ($t -match '(?m)^arg:\s*(.+)$') { $wq = $Matches[1].Trim() }
+        $titles = New-Object System.Collections.Generic.List[string]
+        foreach ($m in [regex]::Matches($t, '(?m)^\d+\.\s+(.+?)(?:\s+\|\s+https?://\S+)?\s*$')) {
+            $tt = $m.Groups[1].Value.Trim()
+            if ($tt.Length -gt 100) { $tt = $tt.Substring(0, 97) + '…' }
+            [void]$titles.Add($tt)
+            if ($titles.Count -ge 6) { break }
+        }
+        $bits = New-Object System.Collections.Generic.List[string]
+        [void]$bits.Add('[prior web lookup]')
+        if ($wq) { [void]$bits.Add("q=$wq") }
+        if ($titles.Count -gt 0) { [void]$bits.Add(($titles -join '; ')) }
+        $t = ($bits -join ' · ')
+    } else {
+        $t = [regex]::Replace($t, '(?ms)\[HANDS\][^\n]*\r?\n.*?(?=\r?\n\[(?:MEM|CONN|PROJECT|WEB|OBSERVE)\]|\z)', '[prior hands omitted]')
+        $t = [regex]::Replace($t, '(?is)<\s*(tool_?call|toolcall|function_?call)\b[\s\S]*?</\s*\1\s*>', '[prior tool markup omitted]')
+        $t = [regex]::Replace($t, '(?ms)```(?:hands|tool_code|tool)[^\n]*\r?\n.*?```', '[prior tool fence omitted]')
+    }
+    # Fat [WEB] blocks: keep query + titles + summary (signal), drop raw dump
+    if ($t -match '(?m)^\[WEB\]' -and $t.Length -gt 900) {
+        $wq2 = ''
+        if ($t -match '(?m)^\[WEB\]\s*q=(.+)$') { $wq2 = $Matches[1].Trim() }
+        $sum = ''
+        if ($t -match '(?ms)^Summary:\s*(.+?)(?=\r?\n\d+\.|\r?\n---|$)') {
+            $sum = $Matches[1].Trim()
+            if ($sum.Length -gt 280) { $sum = $sum.Substring(0, 277) + '…' }
+        }
+        $titles2 = New-Object System.Collections.Generic.List[string]
+        foreach ($m in [regex]::Matches($t, '(?m)^\d+\.\s+(.+?)(?:\s+\|\s+https?://\S+)?\s*$')) {
+            $tt = $m.Groups[1].Value.Trim()
+            if ($tt.Length -gt 90) { $tt = $tt.Substring(0, 87) + '…' }
+            [void]$titles2.Add($tt)
+            if ($titles2.Count -ge 6) { break }
+        }
+        $parts = New-Object System.Collections.Generic.List[string]
+        [void]$parts.Add('[prior web]')
+        if ($wq2) { [void]$parts.Add("q=$wq2") }
+        if ($sum) { [void]$parts.Add($sum) }
+        if ($titles2.Count -gt 0) { [void]$parts.Add(($titles2 -join '; ')) }
+        $t = ($parts -join ' · ')
+    }
     # Downloads ready header block
     $t = [regex]::Replace($t, '(?ms)^## Downloads ready\r?\n.*?(?=^## |\Z)', '')
     $t = [regex]::Replace($t, '(?ms)^## What changed\r?\n.*?(?=^## |\Z)', '[prior pipeline report omitted]`n')
@@ -2454,39 +3101,359 @@ function Reduce-PromptParleTurnTextForMemory {
     if ($Role -match 'assistant|bot|ai') {
         if ($fileNames.Count -gt 0) {
             $names = ($fileNames | Select-Object -First 6) -join ', '
+            # Keep short lead-in prose if present (high-fid decisions near deliverable)
+            $lead = [regex]::Replace($t, '(?ms)\[prior[^\]]*\]', '').Trim()
+            if ($lead.Length -gt 200) { $lead = $lead.Substring(0, 197) + '…' }
             $t = "delivered: $names"
-            # keep a short non-file prose lead if any (before first fence)
-            return $t
+            if ($lead -and $lead.Length -gt 20) { $t = $t + "`n" + $lead }
+            return $t.Trim()
         }
-        # Long prior summaries without file fences still poison next doc asks — hard cap assistants in MEM
-        if ($t.Length -gt 900) {
-            $t = $t.Substring(0, 700).Trim() + '…[prior assistant compressed]'
+        # Structural: multi-fence + "run this" homework dumps (not phrase moles)
+        $fenceN = ([regex]::Matches($t, '```')).Count
+        if ($t.Length -gt 800 -and $fenceN -ge 4 -and $t -match '(?i)\b(run this|please run|npx |npm run |curl -X)\b') {
+            return '[prior homework-style dump omitted — land with ```apply path=``` / ```run```]'
+        }
+        # High-fidelity: keep substantial prior answers; only soft-cap extremes
+        if ($t.Length -gt 1400) {
+            $t = Get-PromptParleFidelityTrim -Text $t -MaxChars 1200 -Marker '…[prior assistant soft-cap]'
         }
     } else {
-        # User: keep ask, drop huge pasted bodies if any
-        if ($t.Length -gt 1500) {
-            $t = $t.Substring(0, 1200).Trim() + '…'
+        # User asks/paste: keep signal; only trim huge pastes
+        if ($t.Length -gt 2200) {
+            $t = Get-PromptParleFidelityTrim -Text $t -MaxChars 1800 -Marker '…'
         }
     }
     return $t.Trim()
 }
 
+function Get-PromptParleChatMemoryDir {
+    $dir = Join-Path $script:PromptParleConfigDir 'chat-memory'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
+function Get-PromptParleChatMemoryStorePath {
+    param([string]$SessionId = '')
+    $id = if ($SessionId) { $SessionId.Trim() } else { '' }
+    if (-not $id) { $id = 'default' }
+    # Safe filename
+    $safe = [regex]::Replace($id, '[^A-Za-z0-9._-]', '_')
+    if ($safe.Length -gt 80) { $safe = $safe.Substring(0, 80) }
+    return (Join-Path (Get-PromptParleChatMemoryDir) ($safe + '.json'))
+}
+
+function Get-PromptParleChatMemoryStore {
+    <# Load rolling durable memory for a chat/project session (local disk, 0 tokens). #>
+    param([string]$SessionId = '')
+    $empty = @{
+        session_id       = $(if ($SessionId) { $SessionId } else { 'default' })
+        turn_count       = 0
+        updated_utc      = ''
+        project_spine    = ''
+        rolling_summary  = ''
+        open_work        = ''
+        last_compact_turn = 0
+        chars_saved_est  = 0
+        priority_knowledge = @()
+    }
+    $path = Get-PromptParleChatMemoryStorePath -SessionId $SessionId
+    if (-not (Test-Path -LiteralPath $path)) { return $empty }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if (-not $raw) { return $empty }
+        $j = $raw | ConvertFrom-Json
+        $out = @{}
+        foreach ($k in @('session_id', 'project_spine', 'rolling_summary', 'open_work', 'updated_utc')) {
+            $v = Get-PromptParleProp $j $k ''
+            $out[$k] = if ($null -ne $v) { [string]$v } else { '' }
+        }
+        if (-not $out['session_id']) { $out['session_id'] = $empty.session_id }
+        try { $out['turn_count'] = [int](Get-PromptParleProp $j 'turn_count' 0) } catch { $out['turn_count'] = 0 }
+        try { $out['last_compact_turn'] = [int](Get-PromptParleProp $j 'last_compact_turn' 0) } catch { $out['last_compact_turn'] = 0 }
+        try { $out['chars_saved_est'] = [int](Get-PromptParleProp $j 'chars_saved_est' 0) } catch { $out['chars_saved_est'] = 0 }
+        $pk = New-Object System.Collections.ArrayList
+        $pkRaw = Get-PromptParleProp $j 'priority_knowledge' $null
+        if ($null -ne $pkRaw) {
+            foreach ($item in @($pkRaw)) {
+                if ($null -eq $item) { continue }
+                $txt = [string](Get-PromptParleProp $item 'text' (Get-PromptParleProp $item 'Text' ''))
+                if (-not $txt) { continue }
+                $role = [string](Get-PromptParleProp $item 'role' (Get-PromptParleProp $item 'Role' 'assistant'))
+                $kid = [string](Get-PromptParleProp $item 'id' (Get-PromptParleProp $item 'Id' ''))
+                [void]$pk.Add(@{
+                        id   = $kid
+                        role = $role
+                        text = $txt
+                    })
+            }
+        }
+        $out['priority_knowledge'] = @($pk.ToArray())
+        return $out
+    } catch {
+        return $empty
+    }
+}
+
+function Save-PromptParleChatMemoryStore {
+    param(
+        [hashtable]$Store,
+        [string]$SessionId = ''
+    )
+    if (-not $Store) { return }
+    $id = $SessionId
+    if (-not $id) { $id = [string]$Store['session_id'] }
+    if (-not $id) { $id = 'default' }
+    $Store['session_id'] = $id
+    $Store['updated_utc'] = [datetime]::UtcNow.ToString('o')
+    $path = Get-PromptParleChatMemoryStorePath -SessionId $id
+    try {
+        $pkOut = New-Object System.Collections.ArrayList
+        foreach ($item in @($Store['priority_knowledge'])) {
+            if ($null -eq $item) { continue }
+            $txt = [string](Get-PromptParleProp $item 'text' (Get-PromptParleProp $item 'Text' ''))
+            if (-not $txt) { continue }
+            if ($txt.Length -gt 4000) { $txt = $txt.Substring(0, 3997) + '…' }
+            $role = [string](Get-PromptParleProp $item 'role' 'assistant')
+            $kid = [string](Get-PromptParleProp $item 'id' '')
+            [void]$pkOut.Add([ordered]@{
+                    id   = $kid
+                    role = $role
+                    text = $txt
+                })
+            if ($pkOut.Count -ge 12) { break }
+        }
+        $payload = [ordered]@{
+            session_id         = [string]$Store['session_id']
+            turn_count         = [int]$Store['turn_count']
+            updated_utc        = [string]$Store['updated_utc']
+            project_spine      = [string]$Store['project_spine']
+            rolling_summary    = [string]$Store['rolling_summary']
+            open_work          = [string]$Store['open_work']
+            last_compact_turn  = [int]$Store['last_compact_turn']
+            chars_saved_est    = [int]$Store['chars_saved_est']
+            priority_knowledge = @($pkOut.ToArray())
+        }
+        $json = $payload | ConvertTo-Json -Compress -Depth 6
+        [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+    } catch {
+        Write-PromptParleDebugLog ("Save-PromptParleChatMemoryStore FAIL: " + $_.Exception.ToString())
+    }
+}
+
+function Format-PromptParlePriorityKnowledgeBlock {
+    <#
+    .SYNOPSIS
+      User-pinned session knowledge — highest priority in-session facts (never densify away).
+    #>
+    param(
+        [object[]]$Items = @(),
+        [int]$MaxChars = 4800,
+        [int]$MaxItems = 8
+    )
+    if (-not $Items -or $Items.Count -eq 0) { return '' }
+    if ($MaxItems -lt 1) { $MaxItems = 8 }
+    if ($MaxChars -lt 400) { $MaxChars = 400 }
+    $lines = New-Object System.Collections.ArrayList
+    [void]$lines.Add('[KNOW] user-pinned session knowledge (priority — treat as session truth; prefer over older [MEM] when they conflict)')
+    $n = 0
+    $used = ($lines[0]).Length
+    foreach ($item in @($Items)) {
+        if ($null -eq $item) { continue }
+        if ($n -ge $MaxItems) { break }
+        $txt = [string](Get-PromptParleProp $item 'text' (Get-PromptParleProp $item 'Text' ''))
+        if (-not $txt) { continue }
+        $txt = $txt.Trim()
+        if (-not $txt) { continue }
+        $role = [string](Get-PromptParleProp $item 'role' (Get-PromptParleProp $item 'Role' 'assistant'))
+        $role = $role.ToLowerInvariant()
+        if ($role -match 'bot|ai|model') { $role = 'assistant' }
+        elseif ($role -notmatch 'user|assistant') { $role = 'assistant' }
+        # Per-pin soft cap — keep signal, avoid dumping whole essays into every turn
+        $pinCap = 1400
+        if ($txt.Length -gt $pinCap) {
+            $txt = Get-PromptParleFidelityTrim -Text $txt -MaxChars $pinCap -Marker '…[know cap]…'
+        }
+        $n++
+        $block = ("{0}. ({1}) {2}" -f $n, $role, $txt)
+        if (($used + $block.Length + 2) -gt $MaxChars -and $n -gt 1) { break }
+        if (($used + $block.Length + 2) -gt $MaxChars) {
+            $room = $MaxChars - $used - 40
+            if ($room -lt 80) { break }
+            $block = ("{0}. ({1}) {2}" -f $n, $role, (Get-PromptParleFidelityTrim -Text $txt -MaxChars $room -Marker '…'))
+        }
+        [void]$lines.Add($block)
+        $used += $block.Length + 1
+    }
+    if ($n -eq 0) { return '' }
+    return (($lines.ToArray()) -join "`n")
+}
+
+function Merge-PromptParlePriorityKnowledge {
+    <# Merge UI pins + disk store; UI order wins; dedupe by id then text prefix. #>
+    param(
+        [object[]]$FromUi = @(),
+        [object[]]$FromStore = @(),
+        [int]$MaxItems = 12
+    )
+    $out = New-Object System.Collections.ArrayList
+    $seenId = @{}
+    $seenText = @{}
+    foreach ($src in @(@($FromUi), @($FromStore))) {
+        foreach ($item in @($src)) {
+            if ($null -eq $item) { continue }
+            $txt = [string](Get-PromptParleProp $item 'text' '')
+            if (-not $txt) { continue }
+            $kid = [string](Get-PromptParleProp $item 'id' '')
+            if ($kid -and $seenId.ContainsKey($kid)) { continue }
+            $tk = $txt.Trim().ToLowerInvariant()
+            if ($tk.Length -gt 120) { $tk = $tk.Substring(0, 120) }
+            if ($seenText.ContainsKey($tk)) { continue }
+            if ($kid) { $seenId[$kid] = $true }
+            $seenText[$tk] = $true
+            $role = [string](Get-PromptParleProp $item 'role' 'assistant')
+            [void]$out.Add(@{
+                    id   = $kid
+                    role = $role
+                    text = $txt.Trim()
+                })
+            if ($out.Count -ge $MaxItems) { break }
+        }
+        if ($out.Count -ge $MaxItems) { break }
+    }
+    return @($out.ToArray())
+}
+
+function Update-PromptParleChatMemoryStore {
+    <#
+    .SYNOPSIS
+      Rolling project memory — fold ONLY older turns into durable spine/summary.
+      High fidelity is paramount: densify noise and age, never gut recent signal.
+      Extractive only (0 model tokens for compaction).
+    #>
+    param(
+        [hashtable]$Store,
+        [object[]]$Turns = @(),
+        [int]$Dial = 3
+    )
+    if (-not $Store) { $Store = @{} }
+    $list = @($Turns)
+    if ($list.Count -eq 0) { return $Store }
+
+    $prevTurns = 0
+    try { $prevTurns = [int]$Store['turn_count'] } catch { $prevTurns = 0 }
+    $Store['turn_count'] = $list.Count
+
+    # Spine: merge window extract with prior store (UI only sends last N turns —
+    # must not wipe durable project facts from earlier in the session)
+    $spineMax = if ($Dial -ge 4) { 520 } elseif ($Dial -le 2) { 900 } else { 720 }
+    $spineNew = Get-PromptParleMemorySpine -Turns $list -MaxLen $spineMax
+    $spinePrev = [string]$Store['project_spine']
+    if ($spineNew -and $spinePrev) {
+        $bits = New-Object System.Collections.Generic.List[string]
+        $seenS = @{}
+        foreach ($part in @(($spinePrev + ' · ' + $spineNew) -split '\s*·\s*')) {
+            $p = $part.Trim()
+            if (-not $p) { continue }
+            $k = $p.ToLowerInvariant()
+            if ($seenS.ContainsKey($k)) { continue }
+            $seenS[$k] = $true
+            [void]$bits.Add($p)
+            if ($bits.Count -ge 22) { break }
+        }
+        $merged = ($bits -join ' · ')
+        if ($merged.Length -gt $spineMax) { $merged = $merged.Substring(0, $spineMax - 1) + '…' }
+        $Store['project_spine'] = $merged
+    } elseif ($spineNew) {
+        $Store['project_spine'] = $spineNew
+    }
+
+    # Open-work lines (more slots = higher fidelity on project continuity)
+    $openBits = New-Object System.Collections.Generic.List[string]
+    foreach ($t in $list) {
+        $text = [string]$t.text
+        foreach ($line in ($text -split "`n")) {
+            $ln = $line.Trim()
+            if ($ln -match '(?i)\b(todo|open|blocker|next|still need|in progress|must|fix|ship|decided|use |don''t )\b' -and $ln.Length -ge 12 -and $ln.Length -le 180) {
+                $s = if ($ln.Length -gt 140) { $ln.Substring(0, 137) + '…' } else { $ln }
+                if (-not ($openBits -contains $s)) { [void]$openBits.Add($s) }
+                if ($openBits.Count -ge 8) { break }
+            }
+        }
+        if ($openBits.Count -ge 8) { break }
+    }
+    if ($openBits.Count -gt 0) {
+        $ow = ($openBits -join ' · ')
+        if ($ow.Length -gt 480) { $ow = $ow.Substring(0, 477) + '…' }
+        $Store['open_work'] = $ow
+    }
+
+    # Deep compact cadence: slower (every 8–10 turns) so mid-session fidelity stays high
+    $lastCompact = 0
+    try { $lastCompact = [int]$Store['last_compact_turn'] } catch { $lastCompact = 0 }
+    $cadence = if ($Dial -ge 4) { 8 } elseif ($Dial -le 2) { 10 } else { 8 }
+    $needDeep = ($list.Count -ge $cadence) -and (
+        ($list.Count - $lastCompact) -ge $cadence -or
+        ($list.Count -gt $prevTurns -and ($list.Count % $cadence) -eq 0)
+    )
+
+    # Keep a larger live window before folding into summary
+    $keepRecent = if ($Dial -le 2) { 6 } elseif ($Dial -eq 3) { 5 } else { 4 }
+    $cut = [Math]::Max(0, $list.Count - $keepRecent)
+    if ($cut -gt 0 -and ($needDeep -or (-not $Store['rolling_summary'] -and $list.Count -ge 8))) {
+        $sumBits = New-Object System.Collections.Generic.List[string]
+        $existing = [string]$Store['rolling_summary']
+        if ($existing) {
+            # Keep prior summary lead (already compacted) — generous for fidelity
+            $lead = $existing
+            if ($lead.Length -gt 700) { $lead = $lead.Substring(0, 697) + '…' }
+            [void]$sumBits.Add($lead)
+        }
+        $start = [Math]::Max(0, $cut - 14)
+        for ($i = $start; $i -lt $cut; $i++) {
+            $t = $list[$i]
+            # Longer extracts = higher fidelity on decisions/errors/paths
+            $ex = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 140 } elseif ($Dial -le 2) { 220 } else { 180 })
+            if (-not $ex) { continue }
+            $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
+            [void]$sumBits.Add("${tag}: $ex")
+            if ($sumBits.Count -ge 18) { break }
+        }
+        $joined = ($sumBits -join ' · ')
+        $sumCap = if ($Dial -ge 4) { 1000 } elseif ($Dial -le 2) { 1600 } else { 1300 }
+        if ($joined.Length -gt $sumCap) {
+            $joined = Get-PromptParleFidelityTrim -Text $joined -MaxChars $sumCap -Marker '…'
+        }
+        $Store['rolling_summary'] = $joined
+        $Store['last_compact_turn'] = $list.Count
+
+        $rawOlder = 0
+        for ($i = 0; $i -lt $cut; $i++) { $rawOlder += ([string]$list[$i].text).Length }
+        $saved = [Math]::Max(0, $rawOlder - $joined.Length)
+        try { $Store['chars_saved_est'] = [int]$Store['chars_saved_est'] + $saved } catch { $Store['chars_saved_est'] = $saved }
+    }
+
+    return $Store
+}
+
 function Invoke-PromptParleChatMemoryBrief {
     <#
     .SYNOPSIS
-      Continuous auto-compact of prior turns into a fidelity-preserving [MEM] brief.
-      Tiered densify (no user manual compaction):
-        - Spine: durable facts across the whole window (paths, versions, decisions)
-        - Deep past: ultra-dense extract bullets
-        - Mid: denser extracts
-        - Recent: near-full body (dial-capped)
-      Prior ```file``` deliverable bodies are collapsed so they cannot poison the next attachment.
+      Continuous session memory — high fidelity first, then densify age/noise.
+      Doctrine: selection over destruction.
+        - Spine + open work: durable project facts (paths, versions, decisions)
+        - Rolling summary: older turns folded extractively (not gutted)
+        - Mid: rich extracts bridging summary → recent
+        - Recent: near-full bodies (dial-capped, generous)
+      Extractive compact = 0 model tokens. Never trade correctness for token theater.
     #>
     param(
         [object[]]$History,
         [string]$HistoryText = '',
-        [int]$MaxChars = 2400,
-        [int]$Dial = 3
+        [int]$MaxChars = 3200,
+        [int]$Dial = 3,
+        [string]$ClientSessionId = ''
     )
     $turns = New-Object System.Collections.Generic.List[object]
     if ($History -and $History.Count -gt 0) {
@@ -2514,39 +3481,75 @@ function Invoke-PromptParleChatMemoryBrief {
             if ($b -match '(?is)^(user|assistant|bot|human|ai)\s*:\s*(.+)$') {
                 $r = $Matches[1].ToLowerInvariant()
                 if ($r -match 'bot|ai|assistant') { $r = 'assistant' } else { $r = 'user' }
-                $turns.Add([pscustomobject]@{ role = $r; text = $Matches[2].Trim() })
+                $tt = Reduce-PromptParleTurnTextForMemory -Text $Matches[2].Trim() -Role $r
+                if ($tt) { $turns.Add([pscustomobject]@{ role = $r; text = $tt }) }
             }
         }
     }
-    if ($turns.Count -eq 0) {
+
+    # Load + update rolling store (project continuity across long sessions)
+    $store = $null
+    $sid = if ($ClientSessionId) { $ClientSessionId.Trim() } else { '' }
+    if ($sid) {
+        try {
+            $store = Get-PromptParleChatMemoryStore -SessionId $sid
+            if ($turns.Count -gt 0) {
+                $store = Update-PromptParleChatMemoryStore -Store $store -Turns @($turns.ToArray()) -Dial $Dial
+                Save-PromptParleChatMemoryStore -Store $store -SessionId $sid
+            }
+        } catch {
+            $store = $null
+            Write-PromptParleDebugLog ("chat-memory store: " + $_.Exception.ToString())
+        }
+    }
+
+    if ($turns.Count -eq 0 -and (-not $store -or (-not $store['project_spine'] -and -not $store['rolling_summary']))) {
         return [pscustomobject]@{ text = ''; notes = @('memory: none'); chars_in = 0; chars_out = 0 }
     }
 
     $charsIn = 0
     foreach ($t in $turns) { $charsIn += $t.text.Length }
+    # Count prior store as "would have been replayed" for savings narrative
+    if ($store -and $store['chars_saved_est']) {
+        try { $charsIn += [int]$store['chars_saved_est'] } catch { }
+    }
 
-    # Tier sizes by dial (more fidelity at low dial; denser at high)
-    $recentN = if ($Dial -le 2) { 4 } elseif ($Dial -eq 3) { 3 } else { 2 }
-    $midN = if ($Dial -le 2) { 6 } elseif ($Dial -eq 3) { 5 } else { 4 }
+    # High-fidelity tiers by dial — recent near-full; mid rich; older in summary
+    $recentN = if ($Dial -le 2) { 5 } elseif ($Dial -eq 3) { 4 } else { 3 }
+    $midN = if ($Dial -le 2) { 6 } elseif ($Dial -eq 3) { 5 } else { 3 }
+    $hasRolling = [bool]($store -and $store['rolling_summary'])
+    # With rolling summary, still keep a solid mid bridge (do not collapse to amnesia)
+    if ($hasRolling) { $midN = [Math]::Max(2, [Math]::Min($midN, 4)) }
+
     $startRecent = [Math]::Max(0, $turns.Count - $recentN)
     $startMid = [Math]::Max(0, $startRecent - $midN)
 
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('[MEM] continuous session (auto-compact — high-signal only; treat as known context)')
+    $lines.Add('[MEM] high-fidelity session (noise stripped; older folded; recent near-full — treat as known context)')
 
-    # Spine: durable facts across ALL turns (paths, versions, decisions, open work)
-    $spine = Get-PromptParleMemorySpine -Turns @($turns.ToArray()) -MaxLen $(if ($Dial -ge 4) { 420 } elseif ($Dial -le 2) { 720 } else { 560 })
+    # Spine: prefer store (durable), else compute — generous caps
+    $spine = ''
+    if ($store -and $store['project_spine']) { $spine = [string]$store['project_spine'] }
+    if (-not $spine -and $turns.Count -gt 0) {
+        $spine = Get-PromptParleMemorySpine -Turns @($turns.ToArray()) -MaxLen $(if ($Dial -ge 4) { 520 } elseif ($Dial -le 2) { 820 } else { 680 })
+    }
     if ($spine) {
         $lines.Add('Spine:')
         $lines.Add($spine)
     }
+    if ($store -and $store['open_work']) {
+        $lines.Add('Open: ' + [string]$store['open_work'])
+    }
 
-    # Deep past (everything before mid)
-    if ($startMid -gt 0) {
+    # Rolling summary for deep past only — never a substitute for mid/recent
+    if ($hasRolling) {
+        $lines.Add('Summary (older, compacted):')
+        $lines.Add([string]$store['rolling_summary'])
+    } elseif ($startMid -gt 0) {
         $lines.Add('Earlier:')
         for ($i = 0; $i -lt $startMid; $i++) {
             $t = $turns[$i]
-            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 100 } else { 140 })
+            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 120 } else { 160 })
             if ($extract) {
                 $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
                 $lines.Add("· ${tag}: $extract")
@@ -2554,12 +3557,12 @@ function Invoke-PromptParleChatMemoryBrief {
         }
     }
 
-    # Mid band
+    # Mid band — rich extracts (high-fid bridge into recent)
     if ($startMid -lt $startRecent) {
         $lines.Add('Mid:')
         for ($i = $startMid; $i -lt $startRecent; $i++) {
             $t = $turns[$i]
-            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 160 } else { 220 })
+            $extract = Get-PromptParleMemoryExtract -Text $t.text -MaxLen $(if ($Dial -ge 4) { 180 } elseif ($Dial -le 2) { 280 } else { 220 })
             if ($extract) {
                 $tag = if ($t.role -eq 'assistant') { 'A' } else { 'U' }
                 $lines.Add("· ${tag}: $extract")
@@ -2567,32 +3570,42 @@ function Invoke-PromptParleChatMemoryBrief {
         }
     }
 
-    # Recent: near-full densified body
-    $lines.Add('Recent:')
-    for ($i = $startRecent; $i -lt $turns.Count; $i++) {
-        $t = $turns[$i]
-        $tag = if ($t.role -eq 'assistant') { 'assistant' } else { 'user' }
-        $body = $t.text
-        $cap = if ($Dial -le 2) { 1100 } elseif ($Dial -eq 3) { 750 } elseif ($Dial -eq 4) { 480 } else { 320 }
-        if ($body.Length -gt $cap) {
-            $body = Get-PromptParleFidelityTrim -Text $body -MaxChars $cap -Marker '…'
+    # Recent: near-full densified body (conversational live window — fidelity first)
+    if ($turns.Count -gt 0) {
+        $lines.Add('Recent:')
+        for ($i = $startRecent; $i -lt $turns.Count; $i++) {
+            $t = $turns[$i]
+            $tag = if ($t.role -eq 'assistant') { 'assistant' } else { 'user' }
+            $body = $t.text
+            $cap = if ($Dial -le 2) { 1400 } elseif ($Dial -eq 3) { 1000 } elseif ($Dial -eq 4) { 700 } else { 480 }
+            if ($body.Length -gt $cap) {
+                $body = Get-PromptParleFidelityTrim -Text $body -MaxChars $cap -Marker '…'
+            }
+            $body = $body.Trim()
+            if ($body) { $lines.Add("${tag}: $body") }
         }
-        $body = $body.Trim()
-        if ($body) { $lines.Add("${tag}: $body") }
     }
 
     $out = ($lines -join "`n")
     if ($out.Length -gt $MaxChars) {
-        # Prefer keeping Spine + Recent; trim Mid/Earlier first via fidelity trim
         $out = Get-PromptParleFidelityTrim -Text $out -MaxChars $MaxChars -Marker '…[mem budget]…'
     }
     $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * (1.0 - ($out.Length / [double]$charsIn))) } else { 0 }
+    if ($pct -lt 0) { $pct = 0 }
+    $notes = New-Object System.Collections.Generic.List[string]
+    [void]$notes.Add("memory −${pct}% ($charsIn→$($out.Length))")
+    [void]$notes.Add("turns $($turns.Count)")
+    [void]$notes.Add('rolling-compact')
+    if ($hasRolling) { [void]$notes.Add('session-summary') }
+    if ($store -and $store['last_compact_turn']) { [void]$notes.Add(('compact@' + $store['last_compact_turn'])) }
+
     return [pscustomobject]@{
         text      = $out
-        notes     = @("memory −${pct}% ($charsIn→$($out.Length))", "turns $($turns.Count)", 'auto-compact')
+        notes     = @($notes.ToArray())
         chars_in  = $charsIn
         chars_out = $out.Length
         turns     = $turns.Count
+        rolling   = [bool]$hasRolling
     }
 }
 
@@ -2716,7 +3729,7 @@ function Get-PromptParleRelevantSlice {
     $scanned = 0
     Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
-            $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+            $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
             $skip = $false
             foreach ($d in $script:PromptParleSkipDirNames) {
                 if ($rel -match [regex]::Escape([IO.Path]::DirectorySeparatorChar + $d + [IO.Path]::DirectorySeparatorChar) -or
@@ -2734,7 +3747,7 @@ function Get-PromptParleRelevantSlice {
         Select-Object -First $MaxScanFiles |
         ForEach-Object {
             $scanned++
-            $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+            $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
             $relLow = $rel.ToLowerInvariant()
             $nameLow = $_.BaseName.ToLowerInvariant()
             $score = 0
@@ -2881,11 +3894,11 @@ function Invoke-PromptParleFidelityContextLocal {
     if ($matches.Count -eq 0) {
         if (Test-PromptParleLooksLikeErrorLog -Text $Text) {
             $r = Invoke-PromptParleErrorBriefLocal -Text $Text -MaxChars $MaxChars -Dial $Dial -Prompt $Prompt
-            foreach ($n in @($r.notes)) { if ($n) { $notes.Add([string]$n) } }
+            foreach ($n in @($r.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
             return [pscustomobject]@{ text = $r.text; notes = @($notes); chars_in = $charsIn; chars_out = $r.text.Length }
         }
         $r2 = Invoke-PromptParleCodeBriefLocal -Text $Text -MaxChars $MaxChars -Dial $Dial -Prompt $Prompt
-        foreach ($n in @($r2.notes)) { if ($n) { $notes.Add([string]$n) } }
+        foreach ($n in @($r2.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
         return [pscustomobject]@{ text = $r2.text; notes = @($notes); chars_in = $charsIn; chars_out = $r2.text.Length }
     }
 
@@ -2995,7 +4008,7 @@ function Get-PromptParleWorkspaceFileIndex {
     $samples = New-Object System.Collections.Generic.List[string]
     Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
-            $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+            $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
             $skip = $false
             foreach ($d in $script:PromptParleSkipDirNames) {
                 if ($rel -match [regex]::Escape([IO.Path]::DirectorySeparatorChar + $d + [IO.Path]::DirectorySeparatorChar) -or
@@ -3014,7 +4027,7 @@ function Get-PromptParleWorkspaceFileIndex {
             if (-not $extCount.ContainsKey($ext)) { $extCount[$ext] = 0 }
             $extCount[$ext]++
             if ($samples.Count -lt 12) {
-                $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
                 $samples.Add($rel)
             }
         }
@@ -3049,7 +4062,7 @@ function Get-PromptParleWorkspaceDepsMap {
         if ($found -ge 3) { break }
         Get-ChildItem -LiteralPath $root -Recurse -File -Filter $pat -ErrorAction SilentlyContinue |
             Where-Object {
-                $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
                 $skip = $false
                 foreach ($d in $script:PromptParleSkipDirNames) {
                     if ($rel -like "*$([IO.Path]::DirectorySeparatorChar)$d$([IO.Path]::DirectorySeparatorChar)*" -or
@@ -3061,7 +4074,7 @@ function Get-PromptParleWorkspaceDepsMap {
             Select-Object -First 1 |
             ForEach-Object {
                 $found++
-                $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
                 $raw = ''
                 try {
                     $raw = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop
@@ -3213,7 +4226,22 @@ function Invoke-PromptParleLocalTool {
         }
         'connections' {
             $t = Get-PromptParleProjectConnectionsBrief -Force
-            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('connections: session map') }
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('connections: skinny map') }
+        }
+        'conn_index' {
+            $argS = if ($Arg) { [string]$Arg } else { '' }
+            $t = Get-PromptParleConnectionIndexText -IdOrLabel $argS
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('conn_index: on-disk catalog') }
+        }
+        'know_search' {
+            $q = if ($Arg) { [string]$Arg } elseif ($Text) { [string]$Text } else { '' }
+            $t = Search-PromptParleKnowledgeCatalog -Query $q
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('know_search: index only') }
+        }
+        'know_read' {
+            $p = if ($Arg) { [string]$Arg } else { '' }
+            $t = Read-PromptParleKnowledgeFile -PathOrRel $p
+            return [pscustomobject]@{ ok = $true; tool = $id; local = $true; text = $t; notes = @('know_read: readonly') }
         }
         { $_ -in @('web_search', 'web', 'search') } {
             $q = if ($Arg) { $Arg } elseif ($Text) { $Text } else { '' }
@@ -3399,7 +4427,7 @@ function Invoke-PromptParleWorkspaceFind {
                     $k = $_.FullName.ToLowerInvariant()
                     if ($seen.ContainsKey($k)) { return }
                     $seen[$k] = $true
-                    $rel = $_.FullName.Substring($root.Length).TrimStart('\', '/')
+                    $rel = $_.FullName.Substring($root.Length).TrimStart([char]0x5C, [char]0x2F)
                     $found.Add([pscustomobject]@{
                         path = $rel
                         full = $_.FullName
@@ -3475,11 +4503,108 @@ function Invoke-PromptParleWorkspaceFind {
 
 function Get-PromptParleHandsCatalogBrief {
     return @(
-        '[HANDS] client tools (0 AI tokens). Request with a hands fence: lines tool: arg',
+        '[HANDS] client tools (0 AI tokens). Request tools as tool: arg lines — either fenced ```hands ... ``` or a bare block:',
+        '[HANDS]',
+        'web_page: url-or-domain',
         'web_search: q | web_page: url|domain | local_list: C:\path | ssh_list: path | ssh_read: path | ssh_run: allowlisted-cmd',
         'workspace_find: *.md,*.pdf | query | relevant_slice: q | file_index | git_diff | git | connections | tree_pack: depth',
-        'After [HANDS] results: answer or apply/run/file. Never teach the user the method.'
+        'After client returns [HANDS] results: answer or apply/run/file. Never teach the user the method. Never leave a bare tool request as the final answer.'
     ) -join "`n"
+}
+
+function Test-PromptParleHasBareHandsRequest {
+    <# True when model used bare [HANDS] + tool:arg (not ```hands fence, not client result packs). #>
+    param([string]$Text = '')
+    if (-not $Text) { return $false }
+    # Whole-line [HANDS] header (request form)
+    if ($Text -match '(?im)^\s*\[HANDS\]\s*$') { return $true }
+    # Inline: [HANDS] web_page: domain  — exclude our own "client results/tools" pack headers
+    if ($Text -match '(?im)^\s*\[HANDS\]\s+(?!client\s+(?:results|tools)\b)([a-z_][a-z0-9_]*)\s*[:|]\s*\S') { return $true }
+    return $false
+}
+
+function ConvertFrom-PromptParleBareHandsBlocks {
+    <#
+    .SYNOPSIS
+      Parse bare [HANDS] requests models emit when they echo the catalog header
+      instead of a ```hands fence. Example:
+        [HANDS]
+        web_page: examplecorp.com
+      Or inline:
+        [HANDS] web_page: examplecorp.com
+    #>
+    param([string]$Text = '')
+    $reqs = New-Object System.Collections.Generic.List[object]
+    if (-not $Text) { return @() }
+
+    $parseToolLine = {
+        param([string]$Ln, [int]$Index)
+        if (-not $Ln) { return $null }
+        $tool = ''
+        $arg = ''
+        if ($Ln -match '^(?i)([a-z_][a-z0-9_]*)\s*:\s*(.*)$') {
+            $tool = $Matches[1].Trim()
+            $arg = $Matches[2].Trim()
+        } elseif ($Ln -match '^(?i)([a-z_][a-z0-9_]*)\s*\|\s*(.*)$') {
+            $tool = $Matches[1].Trim()
+            $arg = $Matches[2].Trim()
+        } elseif ($Ln -match '^(?i)([a-z_][a-z0-9_]*)\s+(.+)$') {
+            $tool = $Matches[1].Trim()
+            $arg = $Matches[2].Trim()
+        } elseif ($Ln -match '^(?i)([a-z_][a-z0-9_]*)$') {
+            $tool = $Matches[1].Trim()
+        } else {
+            return $null
+        }
+        $tool = $tool.ToLowerInvariant()
+        # Never treat pack headers / markdown noise as tools
+        if ($tool -in @('client', 'http', 'https', 'after', 'never', 'request', 'answer')) { return $null }
+        return [pscustomobject]@{ tool = $tool; arg = $arg; index = $Index; bare = $true }
+    }
+
+    # Inline form: [HANDS] web_page: domain
+    foreach ($m in [regex]::Matches($Text, '(?im)^\s*\[HANDS\]\s+(.+?)\s*$')) {
+        $rest = $m.Groups[1].Value.Trim()
+        if ($rest -match '^(?i)client\s+(?:results|tools)\b') { continue }
+        $obj = & $parseToolLine $rest $m.Index
+        if ($obj) { [void]$reqs.Add($obj) }
+    }
+
+    # Block form: [HANDS]\n tool: arg lines (stop at first non-tool non-empty line after tools start)
+    foreach ($m in [regex]::Matches($Text, '(?im)^\s*\[HANDS\]\s*$')) {
+        $start = $m.Index + $m.Length
+        if ($start -ge $Text.Length) { continue }
+        $rest = $Text.Substring($start)
+        $got = 0
+        $offset = $start
+        foreach ($line in ($rest -split '\r?\n', -1)) {
+            # account for leading newline after header match
+            if ($line.Length -eq 0 -and $offset -eq $start) {
+                $offset += 1
+                continue
+            }
+            $ln = $line.Trim()
+            $lineIndex = $offset
+            $offset += $line.Length + 1
+            if (-not $ln) {
+                if ($got -gt 0) { break }
+                continue
+            }
+            if ($ln -match '^(?i)\[HANDS\]') { break }
+            if ($ln.StartsWith('#')) { continue }
+            $obj = & $parseToolLine $ln $lineIndex
+            if ($obj) {
+                [void]$reqs.Add($obj)
+                $got++
+                if ($got -ge 8) { break }
+                continue
+            }
+            # prose / non-tool → end of bare block
+            break
+        }
+    }
+
+    return @($reqs.ToArray())
 }
 
 function Test-PromptParleForeignToolTheater {
@@ -3488,16 +4613,21 @@ function Test-PromptParleForeignToolTheater {
     if (-not $Text) { return $false }
     if ($Text -match '(?is)<\s*(tool_?call|toolcall|function_?call|invoke|tool_request|xai:tool)\b') { return $true }
     if ($Text -match '(?is)</\s*(tool_?call|toolcall|function_?call)\s*>') { return $true }
-    if ($Text -match '(?im)^\s*(tool_?call|function_?call|invoke_tool)\s*$') { return $true }
-    if ($Text -match '(?is)```(?:html|xml|tool|json)?\s*\r?\n\s*<\s*(tool_?call|toolcall|function_?call)\b') { return $true }
+    if ($Text -match '(?im)^\s*(tool_?call|function_?call|invoke_tool|tool_code)\s*$') { return $true }
+    if ($Text -match '(?is)```(?:html|xml|tool|tool_code|json)?\s*\r?\n\s*<\s*(tool_?call|toolcall|function_?call)\b') { return $true }
+    if ($Text -match '(?is)```(?:tool_code|toolcall|tool)\b') { return $true }
+    # Gemini / Google-style pseudo tools
+    if ($Text -match '(?i)\bgoogle_?search\s*\(') { return $true }
+    if ($Text -match '(?im)^\s*(google_?search|default_api\.\w+)\s*$') { return $true }
+    if ($Text -match '(?i)\bdefault_api\.(google_?search|web_?search|web_?page)\s*\(') { return $true }
     return $false
 }
 
 function ConvertFrom-PromptParleForeignToolCalls {
     <#
     .SYNOPSIS
-      0.21: parse foreign model tool protocols into hands tool/arg requests.
-      Handles toolcall / tool_call / function_call XML and "tool\nq is …" bodies.
+      0.21/0.26.17: parse foreign model tool protocols into hands tool/arg requests.
+      Handles toolcall XML, Gemini google_search / tool_code, and "tool\nq is …" bodies.
     #>
     param([string]$Text = '')
     $reqs = New-Object System.Collections.Generic.List[object]
@@ -3507,19 +4637,29 @@ function ConvertFrom-PromptParleForeignToolCalls {
         param([string]$Tool)
         if (-not $Tool) { return '' }
         $t = $Tool.ToLowerInvariant().Trim()
-        $t = $t -replace '^(tool_|function_|invoke_)', ''
+        $t = $t -replace '^(tool_|function_|invoke_|default_api\.)', ''
         switch ($t) {
             'search' { return 'web_search' }
             'websearch' { return 'web_search' }
             'web-search' { return 'web_search' }
-            'google' { return 'web_search' }
+            'web_search' { return 'web_search' }
             'search_web' { return 'web_search' }
+            'google' { return 'web_search' }
+            'google_search' { return 'web_search' }
+            'googlesearch' { return 'web_search' }
+            'google-search' { return 'web_search' }
+            'bing_search' { return 'web_search' }
+            'duckduckgo' { return 'web_search' }
+            'ddg_search' { return 'web_search' }
             'browse' { return 'web_page' }
             'open_url' { return 'web_page' }
             'fetch_url' { return 'web_page' }
             'fetch' { return 'web_page' }
             'page' { return 'web_page' }
             'read_url' { return 'web_page' }
+            'web_page' { return 'web_page' }
+            'open_page' { return 'web_page' }
+            'get_page' { return 'web_page' }
             default { return $t }
         }
     }
@@ -3534,6 +4674,16 @@ function ConvertFrom-PromptParleForeignToolCalls {
         $a = $a.Trim().Trim('"').Trim("'")
         if ($a.Length -gt 500) { $a = $a.Substring(0, 500) }
         return $a
+    }
+    $addReq = {
+        param([string]$Tool, [string]$Arg, [int]$Index)
+        $tool = & $normalizeTool $Tool
+        $arg = & $normalizeArg $Arg $tool
+        if (-not $tool) { return }
+        foreach ($existing in $reqs) {
+            if ($existing.tool -eq $tool -and $existing.arg -eq $arg) { return }
+        }
+        [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = $Index; foreign = $true })
     }
 
     # <toolcall>...</toolcall> and variants
@@ -3554,43 +4704,56 @@ function ConvertFrom-PromptParleForeignToolCalls {
                 $arg = ($lines -join ' ')
             }
         }
-        if (-not $tool -and $body -match '(?i)\b(web_search|web_page|ssh_list|ssh_read|ssh_run|workspace_find|relevant_slice)\b') {
+        if (-not $tool -and $body -match '(?i)\b(web_search|web_page|google_search|ssh_list|ssh_read|ssh_run|workspace_find|relevant_slice)\b') {
             $tool = $Matches[1]
             if (-not $arg) { $arg = $body }
         }
-        $tool = & $normalizeTool $tool
-        $arg = & $normalizeArg $arg $tool
-        if ($tool) {
-            [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = $m.Index; foreign = $true })
-        }
+        & $addReq $tool $arg $m.Index
     }
 
-    # Bare / unclosed toolcall bodies
-    if ($reqs.Count -eq 0 -and $Text -match '(?is)(?:tool_?call|toolcall|function_?call)') {
-        if ($Text -match '(?im)\b(web_search|web_page|websearch|search_web|browse)\b') {
-            $tool = & $normalizeTool $Matches[1]
-            $arg = ''
-            if ($Text -match '(?is)(?:q|query|search)\s*(?:is|=|:)\s*([^\r\n<]+)') { $arg = $Matches[1].Trim() }
-            elseif ($Text -match '(?is)(?:url|page|domain)\s*(?:is|=|:)\s*([^\r\n<]+)') {
-                $arg = $Matches[1].Trim()
-                $tool = 'web_page'
-            }
-            $arg = & $normalizeArg $arg $tool
-            if ($tool) {
-                [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = 0; foreign = $true })
-            }
+    # Bare / unclosed toolcall bodies (incl. Gemini: tool_call + google_search + query line)
+    if ($reqs.Count -eq 0 -and $Text -match '(?is)(?:tool_?call|toolcall|function_?call|tool_code)') {
+        $tool = ''
+        $arg = ''
+        if ($Text -match '(?im)\b(web_search|web_page|websearch|search_web|browse|google_search|googlesearch|google-search|google_search|search)\b') {
+            $tool = $Matches[1]
         }
+        if ($Text -match '(?is)(?:q|query|search)\s*(?:is|=|:)\s*([^\r\n<]+)') { $arg = $Matches[1].Trim() }
+        elseif ($Text -match '(?is)(?:url|page|domain)\s*(?:is|=|:)\s*([^\r\n<]+)') {
+            $arg = $Matches[1].Trim()
+            if (-not $tool) { $tool = 'web_page' }
+        }
+        # tool_call\ngoogle_search\nnewest movies...
+        if (-not $arg -and $Text -match '(?is)(?:tool_?call|toolcall|function_?call|tool_code)\s*\r?\n\s*(?:[a-z_][a-z0-9_]*)\s*\r?\n\s*([^\r\n<]{3,200})') {
+            $arg = $Matches[1].Trim()
+            if (-not $tool) { $tool = 'web_search' }
+        }
+        if (-not $tool -and $arg) { $tool = 'web_search' }
+        if ($tool) { & $addReq $tool $arg 0 }
     }
 
-    # fenced json/xml tool payloads
-    foreach ($m in [regex]::Matches($Text, '(?ms)```(?:tool|json|xml|html)?[^\n]*\r?\n(.*?)```')) {
+    # Function-call style: google_search(query="...") / default_api.web_search(q='...')
+    foreach ($m in [regex]::Matches($Text, '(?is)\b(?:default_api\.)?(google_?search|web_?search|web_?page|search_web|browse)\s*\(\s*(?:(?:q|query|url|input)\s*=\s*)?["'']([^"'']+)["'']')) {
+        & $addReq $m.Groups[1].Value $m.Groups[2].Value $m.Index
+    }
+    # print(google_search(...)) residual without named kw
+    foreach ($m in [regex]::Matches($Text, '(?is)\b(?:print\s*\(\s*)?(?:default_api\.)?(google_?search|web_?search)\s*\(\s*["'']([^"'']+)["'']\s*\)')) {
+        & $addReq $m.Groups[1].Value $m.Groups[2].Value $m.Index
+    }
+
+    # fenced tool_code / json / xml tool payloads
+    foreach ($m in [regex]::Matches($Text, '(?ms)```(?:tool|tool_code|toolcall|json|xml|html)?[^\n]*\r?\n(.*?)```')) {
         $body = $m.Groups[1].Value
-        if ($body -match '(?i)"(?:name|tool)"\s*:\s*"(web_search|web_page|ssh_list|ssh_read|workspace_find)"') {
+        if ($body -match '(?i)"(?:name|tool)"\s*:\s*"(web_search|web_page|google_search|ssh_list|ssh_read|workspace_find)"') {
             $tool = $Matches[1]
             $arg = ''
             if ($body -match '(?i)"(?:q|query|input|url|arguments?)"\s*:\s*"([^"]+)"') { $arg = $Matches[1] }
-            $arg = & $normalizeArg $arg $tool
-            [void]$reqs.Add([pscustomobject]@{ tool = $tool; arg = $arg; index = $m.Index; foreign = $true })
+            & $addReq $tool $arg $m.Index
+        }
+        if ($body -match '(?is)\b(?:default_api\.)?(google_?search|web_?search|web_?page)\s*\(') {
+            foreach ($fm in [regex]::Matches($body, '(?is)\b(?:default_api\.)?(google_?search|web_?search|web_?page)\s*\(\s*(?:(?:q|query|url|input)\s*=\s*)?["'']([^"'']+)["'']')) {
+                & $addReq $fm.Groups[1].Value $fm.Groups[2].Value ($m.Index + $fm.Index)
+            }
         }
     }
 
@@ -3631,6 +4794,15 @@ function Parse-PromptParleHandsBlocks {
             index = $m.Index
         })
     }
+    # Bare [HANDS] + tool:arg (Gemini and others echo catalog header instead of ```hands fence)
+    foreach ($br in @(ConvertFrom-PromptParleBareHandsBlocks -Text $Text)) {
+        if (-not $br.tool) { continue }
+        $dup = $false
+        foreach ($existing in $reqs) {
+            if ($existing.tool -eq $br.tool -and $existing.arg -eq $br.arg) { $dup = $true; break }
+        }
+        if (-not $dup) { [void]$reqs.Add($br) }
+    }
     # Foreign tool protocols → treat as hands (never show raw toolcall to user)
     foreach ($fr in @(ConvertFrom-PromptParleForeignToolCalls -Text $Text)) {
         if (-not $fr.tool) { continue }
@@ -3651,14 +4823,26 @@ function Invoke-PromptParleHandsRequest {
         [int]$MaxChars = 4500
     )
     $id = $Tool.ToLowerInvariant().Trim()
+    $id = $id -replace '^(default_api\.)', ''
     switch ($id) {
         'ls' { $id = 'list' }       # smart local/ssh router in LocalTool
         'dir' { $id = 'list' }
         'local_list' { $id = 'local_list' }
         'search' { $id = 'web_search' }
         'web' { $id = 'web_search' }
+        'websearch' { $id = 'web_search' }
+        'web-search' { $id = 'web_search' }
+        'search_web' { $id = 'web_search' }
+        'google' { $id = 'web_search' }
+        'google_search' { $id = 'web_search' }
+        'googlesearch' { $id = 'web_search' }
+        'google-search' { $id = 'web_search' }
+        'bing_search' { $id = 'web_search' }
+        'duckduckgo' { $id = 'web_search' }
         'fetch' { $id = 'web_page' }
         'page' { $id = 'web_page' }
+        'browse' { $id = 'web_page' }
+        'open_url' { $id = 'web_page' }
         'find' { $id = 'workspace_find' }
         'glob' { $id = 'workspace_find' }
         'read' { $id = 'ssh_read' }
@@ -3695,6 +4879,7 @@ function Invoke-PromptParleHandsRequest {
 }
 
 function Format-PromptParleHandsPack {
+    <# Internal pack for model context only — never show raw to the user. #>
     param(
         [object[]]$Results,
         [int]$MaxChars = 9000
@@ -3717,11 +4902,265 @@ function Format-PromptParleHandsPack {
     return $text
 }
 
+function Format-PromptParleUserFacingEvidence {
+    <#
+    .SYNOPSIS
+      0.26.18: conversational brief from hands/web results for the user.
+      Never includes [HANDS], hands#, tool theater, or "ask for a prose summary".
+    #>
+    param(
+        [object[]]$Results,
+        [string]$Prompt = '',
+        [int]$MaxChars = 4500
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    $q = ''
+    if ($Prompt) { $q = $Prompt.Trim() }
+    if ($q.Length -gt 120) { $q = $q.Substring(0, 117) + '…' }
+
+    $linkLines = New-Object System.Collections.Generic.List[string]
+    $extra = New-Object System.Collections.Generic.List[string]
+    $anyOk = $false
+
+    foreach ($r in @($Results)) {
+        if (-not $r) { continue }
+        $ok = $true
+        try { $ok = [bool]$r.ok } catch { }
+        if ($ok) { $anyOk = $true }
+        $blob = [string]$r.text
+        if (-not $blob) { continue }
+
+        # Prefer structured [WEB] hits
+        if ($blob -match '(?m)^\[WEB\]') {
+            if ($blob -match '(?m)^\[WEB\]\s*q=(.+)$') {
+                $wq = $Matches[1].Trim()
+                if (-not $q) { $q = $wq }
+            }
+            if ($blob -match '(?ms)^Summary:\s*(.+?)(?=\r?\n\d+\.|\r?\n---|$)') {
+                $sum = $Matches[1].Trim()
+                if ($sum -and $sum.Length -gt 20) { [void]$extra.Add($sum) }
+            }
+            foreach ($m in [regex]::Matches($blob, '(?m)^(\d+)\.\s+(.+?)(?:\s+\|\s+(https?://\S+))?\s*$')) {
+                $title = $m.Groups[2].Value.Trim()
+                $url = $m.Groups[3].Value.Trim()
+                if ($url) {
+                    [void]$linkLines.Add(('- **{0}** — {1}' -f $title, $url))
+                } else {
+                    [void]$linkLines.Add(('- **{0}**' -f $title))
+                }
+            }
+            # Optional page body after OBSERVE
+            if ($blob -match '(?ms)\[OBSERVE\][^\n]*\r?\n(?:url:\s*\S+\r?\n)?([\s\S]{80,2400})') {
+                $body = $Matches[1].Trim()
+                $body = [regex]::Replace($body, '\s+', ' ')
+                if ($body.Length -gt 500) { $body = $body.Substring(0, 497) + '…' }
+                [void]$extra.Add($body)
+            }
+            continue
+        }
+
+        # web_page / plain text
+        $clean = [regex]::Replace($blob, '(?m)^\[(HANDS|WEB|OBSERVE|CLIENT)\][^\n]*\r?\n?', '')
+        $clean = [regex]::Replace($clean, '\s+', ' ').Trim()
+        if ($clean.Length -gt 40) {
+            if ($clean.Length -gt 600) { $clean = $clean.Substring(0, 597) + '…' }
+            [void]$extra.Add($clean)
+        }
+    }
+
+    if ($q) {
+        [void]$lines.Add(('Here''s what I found for **{0}**:' -f $q))
+    } else {
+        [void]$lines.Add('Here''s what I found:')
+    }
+    [void]$lines.Add('')
+
+    if ($extra.Count -gt 0) {
+        foreach ($e in $extra) {
+            if ($e) { [void]$lines.Add($e); [void]$lines.Add('') }
+        }
+    }
+
+    if ($linkLines.Count -gt 0) {
+        [void]$lines.Add('**Sources**')
+        foreach ($ll in $linkLines) { [void]$lines.Add($ll) }
+        [void]$lines.Add('')
+        # Honest when we only have listing hubs (common for "newest movies")
+        $hubby = ($linkLines -join ' ') -match '(?i)fandango|amc|cinemark|rottentomatoes|showtimes|movies.in.theaters|new movies'
+        if ($hubby -and $extra.Count -eq 0) {
+            [void]$lines.Add('Those are live theater listing pages. Open a source above for the full current title list (listings change daily by market).')
+        }
+    } elseif (-not $anyOk) {
+        [void]$lines.Add('I couldn''t pull solid web results just now. Try again, or name a site (e.g. fandango.com).')
+    } elseif ($extra.Count -eq 0) {
+        [void]$lines.Add('Search ran, but the brief came back thin. Try a more specific ask (city, theater chain, or a title).')
+    }
+
+    $text = ($lines -join "`n").Trim()
+    if ($text.Length -gt $MaxChars) {
+        $text = $text.Substring(0, $MaxChars).Trim() + '…'
+    }
+    return $text
+}
+
+function Expand-PromptParleHandsWithListingPages {
+    <#
+    .SYNOPSIS
+      0.26.18: when web_search only returned theater/listing hub links, fetch 1–2 pages
+      so synthesis can name actual movies when the HTML has them.
+    #>
+    param(
+        [object[]]$Results,
+        [string]$Prompt = '',
+        [int]$MaxPages = 2,
+        [int]$MaxChars = 3500
+    )
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($r in @($Results)) { if ($r) { [void]$out.Add($r) } }
+    $blob = ($out | ForEach-Object { [string]$_.text }) -join "`n"
+    $q = ($Prompt + ' ' + $blob).ToLowerInvariant()
+    $wantsMovies = [bool]($q -match '(?i)\b(movie|movies|film|films|theater|theatre|cinema|showtimes?|box office|now playing)\b')
+    if (-not $wantsMovies) { return @($out.ToArray()) }
+
+    $urls = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches($blob, 'https?://[^\s<>"'']+')) {
+        $u = $m.Value.TrimEnd('.,);')
+        if ($u -match '(?i)(fandango\.com/movies|rottentomatoes\.com/browse/movies|amctheatres\.com/movies|cinemark\.com/movies|rottentomatoes\.com/guide/popular)') {
+            if (-not ($urls -contains $u)) { [void]$urls.Add($u) }
+        }
+    }
+    # Prefer known listing roots if only generic hosts appeared
+    if ($urls.Count -eq 0) {
+        if ($blob -match '(?i)fandango\.com') { [void]$urls.Add('https://www.fandango.com/movies-in-theaters') }
+        if ($blob -match '(?i)rottentomatoes\.com') { [void]$urls.Add('https://www.rottentomatoes.com/browse/movies_in_theaters/sort:newest') }
+    }
+    $n = 0
+    foreach ($u in $urls) {
+        if ($n -ge $MaxPages) { break }
+        try {
+            $pg = Invoke-PromptParleWebPageFetch -UrlOrDomain $u -MaxChars $MaxChars
+            if ($pg.ok -and $pg.text) {
+                [void]$out.Add([pscustomobject]@{
+                    ok = $true
+                    tool = 'web_page'
+                    arg = $u
+                    text = [string]$pg.text
+                    notes = @('listing-page-expand')
+                })
+                $n++
+                Write-Host ("  hands(expand): web_page {0} ({1}c)" -f $u, ([string]$pg.text).Length) -ForegroundColor Cyan
+            }
+        } catch { }
+    }
+    return @($out.ToArray())
+}
+
+function Invoke-PromptParleConversationalSynthesis {
+    <#
+    .SYNOPSIS
+      0.26.18: force a user-facing prose answer from evidence. Falls back to local brief.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [object[]]$HandsResults = @(),
+        [string]$PrepEvidence = '',
+        [string]$System = '',
+        [string]$Runtime = '',
+        [string]$Provider = 'openai',
+        [string]$Profile = 'general',
+        [int]$CompressionLevel = 3,
+        [string]$Model = ''
+    )
+    $hands = @($HandsResults)
+    if ($hands.Count -gt 0) {
+        try { $hands = @(Expand-PromptParleHandsWithListingPages -Results $hands -Prompt $Prompt) } catch { }
+    }
+    $pack = if ($hands.Count -gt 0) { Format-PromptParleHandsPack -Results $hands -MaxChars 9000 } else { '' }
+    $userBrief = if ($hands.Count -gt 0) { Format-PromptParleUserFacingEvidence -Results $hands -Prompt $Prompt -MaxChars 4500 } else { '' }
+
+    $ctxParts = New-Object System.Collections.ArrayList
+    if ($PrepEvidence) { [void]$ctxParts.Add([string]$PrepEvidence) }
+    if ($pack) { [void]$ctxParts.Add([string]$pack) }
+    $ctx = ([string[]]@($ctxParts.ToArray())) -join "`n`n"
+
+    $sys = if ($System) { $System.Trim() } else { '' }
+    if ($sys) {
+        $sys = $sys + "`n`nYou are in a normal chat with a person. Be warm, direct, and conversational."
+    } else {
+        $sys = 'You are PromptParle in a normal chat. Be warm, direct, and conversational.'
+    }
+
+    $promptSyn = @(
+        $Prompt.Trim()
+        ''
+        '[CLIENT DIRECTIVE — conversational answer · 0.26.18]'
+        'The client ALREADY ran tools. Evidence is in context ([HANDS]/[WEB]/[OBSERVE]).'
+        'Write the FINAL answer as natural chat prose a human would want to read.'
+        'Rules:'
+        '- Answer the user question directly. Use bullet lists for movies/titles when useful.'
+        '- Cite source names/URLs briefly when you use them.'
+        '- If evidence only has listing-site links (Fandango/AMC/RT) without individual titles, say that clearly and list the best sources — still sound like a helpful person, not a tool log.'
+        '- NEVER output: [HANDS], hands#, toolcall, function_call, tool_code, ```hands, "Client ran tools", or "ask for a prose summary".'
+        '- NEVER request more tools. This is the last step.'
+    ) -join "`n"
+
+    $rt = 'FINAL conversational answer only. No tools. No markup. No method dump.'
+    if ($Runtime) { $rt = ($Runtime.Trim() + ' ' + $rt).Trim() }
+
+    try {
+        Write-Host '  agent: conversational synthesis' -ForegroundColor DarkYellow
+        $params = @{
+            Prompt           = $promptSyn
+            Context          = $ctx
+            System           = $sys
+            Runtime          = $rt
+            Provider         = $Provider
+            Profile          = $Profile
+            CompressionLevel = $CompressionLevel
+            Quiet            = $true
+            Raw              = $true
+        }
+        if ($Model) { $params.Model = $Model }
+        $result = Invoke-PromptParle @params
+        $syn = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+        $syn = Remove-PromptParleHandsBlocks -Text $syn
+        $bad = (-not $syn) -or ($syn.Trim().Length -lt 24) `
+            -or (Test-PromptParleResponseIsToolTheaterOnly -Text $syn) `
+            -or (Test-PromptParleForeignToolTheater -Text $syn) `
+            -or ($syn -match '(?i)\[HANDS\]\s*client results|Client ran tools|ask a follow-up for a prose summary|hands#\d')
+        if (-not $bad) {
+            return [pscustomobject]@{
+                ok       = $true
+                text     = $syn.Trim()
+                result   = $result
+                hands    = $hands
+                source   = 'model'
+            }
+        }
+        Write-Host '  agent: synthesis still tool-theater — using local conversational brief' -ForegroundColor DarkYellow
+    } catch {
+        Write-Host ("  agent: synthesis failed: {0}" -f $_) -ForegroundColor DarkYellow
+    }
+
+    $fallback = if ($userBrief) { $userBrief } else {
+        "I looked that up, but couldn't form a clean answer from the results. Try asking again a bit more specifically."
+    }
+    return [pscustomobject]@{
+        ok     = $true
+        text   = $fallback
+        result = $null
+        hands  = $hands
+        source = 'local-brief'
+    }
+}
+
 function Test-PromptParleResponseNeedsHands {
     param([string]$Text = '')
     if (-not $Text) { return $false }
     if ($Text -match '(?ms)```hands') { return $true }
     if ($Text -match '(?i)<<hands\s+') { return $true }
+    if (Test-PromptParleHasBareHandsRequest -Text $Text) { return $true }
     if (Test-PromptParleForeignToolTheater -Text $Text) { return $true }
     return $false
 }
@@ -3731,6 +5170,12 @@ function Remove-PromptParleHandsBlocks {
     if (-not $Text) { return '' }
     $t = [regex]::Replace($Text, '(?ms)```hands[^\n]*\r?\n.*?```', '')
     $t = [regex]::Replace($t, '(?i)<<hands\s+[^>]+>>', '')
+    # Bare [HANDS] block: header + following tool:arg lines
+    $t = [regex]::Replace($t, '(?ims)^\s*\[HANDS\]\s*\r?\n(?:[ \t]*(?:[a-z_][a-z0-9_]*\s*[:|].*|[a-z_][a-z0-9_]*\s+\S.*)[ \t]*\r?\n?)+', '')
+    # Inline [HANDS] tool: arg (not client results/tools pack headers)
+    $t = [regex]::Replace($t, '(?im)^\s*\[HANDS\]\s+(?!client\s+(?:results|tools)\b).+$', '')
+    # Orphan bare [HANDS] header left alone
+    $t = [regex]::Replace($t, '(?im)^\s*\[HANDS\]\s*$', '')
     # Strip foreign toolcall theater (never show to user)
     $t = [regex]::Replace($t, '(?is)```(?:html|xml|tool|json)?\s*\r?\n\s*<\s*(?:tool_?call|toolcall|function_?call)\b[\s\S]*?```', '')
     $t = [regex]::Replace($t, '(?is)<\s*(tool_?call|toolcall|function_?call|invoke|tool_request)\b[^>]*>[\s\S]*?</\s*\1\s*>', '')
@@ -3748,6 +5193,8 @@ function Test-PromptParleResponseIsToolTheaterOnly {
     $t = [regex]::Replace($t, '\s+', ' ').Trim()
     if ($t.Length -lt 24) { return $true }
     if ($t -match '(?i)^(web_search|web_page|q is|query is|searching|looking up)\b' -and $t.Length -lt 120) { return $true }
+    # Bare residual tool lines without fence
+    if ($t -match '(?i)^(web_search|web_page|ssh_list|ssh_read|workspace_find)\s*[:|]' -and $t.Length -lt 160) { return $true }
     return $false
 }
 
@@ -3927,20 +5374,25 @@ function Invoke-PromptParleNativeAgentTurn {
         }
         if ($Model) { $body.model = [string]$Model }
 
+        # 0.25 Local-first: agent loop stays on PC (text-hands → Invoke-PromptParle local).
+        # Portal /api/v1/agent is no longer on the desktop path (no key custody / no prompt hop).
+        Write-Host '  agent-native: local-first text-hands (no portal agent hop)' -ForegroundColor DarkCyan
+        $fb = @{
+            Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
+            Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
+            MaxRounds = $MaxRounds
+        }
+        if ($Model) { $fb.Model = $Model }
+        if ($Images) { $fb.Images = $Images }
+        return Invoke-PromptParleLegacyTextHandsTurn @fb
+
+        # Unreachable legacy portal agent (kept for reference / future opt-in)
         $resp = $null
         try {
             $resp = Invoke-PromptParleApi -Method POST -Path '/api/v1/agent' -Body $body
         } catch {
-            # Fallback: legacy text-hands path if agent endpoint missing
             if ("$_" -match '404|Not Found|/api/v1/agent|Unknown path') {
                 Write-Host '  agent-native: /api/v1/agent unavailable — falling back to text-hands loop' -ForegroundColor Yellow
-                $fb = @{
-                    Prompt = $Prompt; Context = $Context; System = $System; Runtime = $Runtime
-                    Provider = $Provider; Profile = $Profile; CompressionLevel = $CompressionLevel
-                    MaxRounds = $MaxRounds
-                }
-                if ($Model) { $fb.Model = $Model }
-                if ($Images) { $fb.Images = $Images }
                 return Invoke-PromptParleLegacyTextHandsTurn @fb
             }
             throw
@@ -4013,17 +5465,29 @@ function Invoke-PromptParleNativeAgentTurn {
         }
     }
 
-    if (-not $lastContent -and $allHands.Count -gt 0) {
-        $lastContent = @(
-            '**Tools ran; model did not return a final prose answer within round budget.**'
-            ''
-            Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 8000
-        ) -join "`n"
+    if ((-not $lastContent -or (Test-PromptParleResponseIsToolTheaterOnly -Text $lastContent) -or (Test-PromptParleForeignToolTheater -Text $lastContent)) -and $allHands.Count -gt 0) {
+        $synN = Invoke-PromptParleConversationalSynthesis `
+            -Prompt $Prompt `
+            -HandsResults @($allHands.ToArray()) `
+            -PrepEvidence $Context `
+            -System $System `
+            -Runtime $Runtime `
+            -Provider $Provider `
+            -Profile $Profile `
+            -CompressionLevel $CompressionLevel `
+            -Model $Model
+        if ($synN.hands) { $allHands = New-Object System.Collections.Generic.List[object]; foreach ($h in @($synN.hands)) { [void]$allHands.Add($h) } }
+        if ($synN.text) { $lastContent = [string]$synN.text }
     }
 
     # Strip any accidental tool theater from final text
-    if (Test-PromptParleForeignToolTheater -Text $lastContent) {
+    if ((Test-PromptParleForeignToolTheater -Text $lastContent) -or ($lastContent -match '(?i)\[HANDS\]\s*client results|hands#\d')) {
         $lastContent = Remove-PromptParleHandsBlocks -Text $lastContent
+        if (-not $lastContent -or $lastContent.Length -lt 24) {
+            if ($allHands.Count -gt 0) {
+                $lastContent = Format-PromptParleUserFacingEvidence -Results @($allHands.ToArray()) -Prompt $Prompt -MaxChars 4500
+            }
+        }
     }
 
     $evidenceContext = $Context
@@ -4050,6 +5514,16 @@ function Invoke-PromptParleNativeAgentTurn {
         turn_id              = $turnId
     }
 
+    # Dial is still the session aggressiveness knob (local prep budgets, round depth).
+    # Native agent is pass-through for the *portal optimize* step — do not hardcode dial 1
+    # or the chat UI reports "dial 1/5" while the sidebar is set to 3.
+    $dialReport = 3
+    try {
+        $dialReport = [int]$CompressionLevel
+        if ($dialReport -lt 1) { $dialReport = 1 }
+        if ($dialReport -gt 5) { $dialReport = 5 }
+    } catch { $dialReport = 3 }
+
     $metaOut = [ordered]@{
         original_tokens         = $sumIn
         optimized_tokens        = $sumIn
@@ -4059,18 +5533,24 @@ function Invoke-PromptParleNativeAgentTurn {
         provider                = [string]$Provider
         model                   = [string]$modelOut
         optimization_profile    = 'agent-pass-through'
-        compression_level       = 1
+        compression_level       = $dialReport
         strategy                = 'native-agent-0.22'
         secrets_masked          = $false
-        notes                   = @('pass-through', 'no-optimize', ('rounds:' + $roundsUsed), ('tools:' + $allHands.Count))
+        notes                   = @(
+            'pass-through'
+            'portal-optimize-skipped'
+            ('local-prep-dial:' + $dialReport)
+            ('rounds:' + $roundsUsed)
+            ('tools:' + $allHands.Count)
+        )
         signals                 = @{}
         image_count             = 0
     }
 
     return [pscustomobject]@{
         response         = $lastContent
-        metadata         = [pscustomobject]$metaOut
-        agent            = [pscustomobject]$agentMeta
+        metadata         = (ConvertTo-PromptParleCustomObject $metaOut)
+        agent            = (ConvertTo-PromptParleCustomObject $agentMeta)
         evidence_context = $evidenceContext
         optimized_prompt = $null
     }
@@ -4231,14 +5711,36 @@ function Invoke-PromptParleLegacyTextHandsTurn {
         }
     }
 
-    # Never show raw hands fences or foreign toolcall XML to the user
+    # Never show raw hands fences / foreign toolcall / internal [HANDS] packs to the user
     $rawFinal = [string]$lastResp
     $hadToolMarkup = (Test-PromptParleResponseNeedsHands -Text $rawFinal) -or (Test-PromptParleForeignToolTheater -Text $rawFinal) -or (Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal)
+    $looksLikeHandsDump = [bool]($rawFinal -match '(?i)\[HANDS\]\s*client results|Client ran tools|hands#\d|ask a follow-up for a prose summary')
 
     # Emergency: foreign toolcall never entered the hands loop (parse miss) → run tools now
     if ($hadToolMarkup -and $allHands.Count -eq 0) {
         $emergency = @(ConvertFrom-PromptParleForeignToolCalls -Text $rawFinal)
         if ($emergency.Count -eq 0) { $emergency = @(Parse-PromptParleHandsBlocks -Text $rawFinal) }
+        # Still unmapped → web_search the user question (never dead-end on tool theater)
+        if ($emergency.Count -eq 0) {
+            $fallbackQ = ''
+            if ($rawFinal -match '(?is)(?:query|q|search)\s*(?:=|:|is)\s*["'']?([^"''<\r\n]{3,200})') {
+                $fallbackQ = $Matches[1].Trim().TrimEnd('.,;:)')
+            }
+            if (-not $fallbackQ -and $Prompt) {
+                try { $fallbackQ = Get-PromptParleWebSearchQuery -Prompt $Prompt } catch { $fallbackQ = '' }
+            }
+            if (-not $fallbackQ) { $fallbackQ = [string]$Prompt }
+            $shouldSearch = [bool]$fallbackQ -and (
+                (Test-PromptParleForeignToolTheater -Text $rawFinal) -or
+                (Test-PromptParleHasBareHandsRequest -Text $rawFinal) -or
+                (Test-PromptParleWebSearchIntent -Prompt $Prompt) -or
+                ($rawFinal -match '(?i)google_?search|web_?search|tool_?call|function_?call|tool_code')
+            )
+            if ($shouldSearch -and $fallbackQ) {
+                $emergency = @([pscustomobject]@{ tool = 'web_search'; arg = $fallbackQ; index = 0; foreign = $true; emergency_fallback = $true })
+                Write-Host ("  hands(emergency-fallback): web_search ← {0}" -f $(if ($fallbackQ.Length -gt 60) { $fallbackQ.Substring(0, 57) + '...' } else { $fallbackQ })) -ForegroundColor Magenta
+            }
+        }
         foreach ($req in $emergency) {
             if ($allHands.Count -ge 4) { break }
             if (-not $req.tool) { continue }
@@ -4248,25 +5750,74 @@ function Invoke-PromptParleLegacyTextHandsTurn {
         }
     }
 
-    if ($hadToolMarkup) {
+    # 0.26.18: if we have tool evidence but no real prose (or dumped hands pack), force conversational answer
+    $needsConvo = $false
+    if ($allHands.Count -gt 0) {
+        $strippedProbe = Remove-PromptParleHandsBlocks -Text $rawFinal
+        if ($hadToolMarkup -or $looksLikeHandsDump -or (Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal) `
+            -or (-not $strippedProbe) -or $strippedProbe.Length -lt 40) {
+            $needsConvo = $true
+        }
+    } elseif ($hadToolMarkup -and (Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal)) {
+        $needsConvo = $true
+    }
+
+    if ($needsConvo) {
+        $synOut = Invoke-PromptParleConversationalSynthesis `
+            -Prompt $Prompt `
+            -HandsResults @($allHands.ToArray()) `
+            -PrepEvidence $prepEvidence `
+            -System $System `
+            -Runtime $runtime `
+            -Provider $Provider `
+            -Profile $Profile `
+            -CompressionLevel $CompressionLevel `
+            -Model $Model
+        if ($synOut.hands -and @($synOut.hands).Count -gt $allHands.Count) {
+            $allHands.Clear()
+            foreach ($h in @($synOut.hands)) { [void]$allHands.Add($h) }
+        }
+        if ($synOut.text) {
+            $lastResp = [string]$synOut.text
+            $rawFinal = $lastResp
+            $roundsUsed++
+        }
+        if ($synOut.result) {
+            $lastResult = $synOut.result
+            $metaEm = Get-PromptParleProp $synOut.result 'metadata'
+            if ($null -eq $metaEm) { $metaEm = Get-PromptParleProp $synOut.result 'Metadata' }
+            if ($metaEm) {
+                try { $sumOrig += [int](Get-PromptParleProp $metaEm 'original_tokens' 0) } catch { }
+                try { $sumOpt += [int](Get-PromptParleProp $metaEm 'optimized_tokens' 0) } catch { }
+            }
+        }
+        $hadToolMarkup = (Test-PromptParleResponseNeedsHands -Text $rawFinal) -or (Test-PromptParleForeignToolTheater -Text $rawFinal) -or (Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal)
+        $looksLikeHandsDump = [bool]($rawFinal -match '(?i)\[HANDS\]\s*client results|Client ran tools|hands#\d')
+    }
+
+    if ($hadToolMarkup -or $looksLikeHandsDump) {
         $stripped = Remove-PromptParleHandsBlocks -Text $rawFinal
-        if ((Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal) -or (-not $stripped) -or $stripped.Length -lt 24) {
+        if ($looksLikeHandsDump -or (Test-PromptParleResponseIsToolTheaterOnly -Text $rawFinal) -or (-not $stripped) -or $stripped.Length -lt 24) {
             if ($allHands.Count -gt 0) {
-                $lastResp = @(
-                    '**Client ran tools (model returned tool markup instead of an answer).**'
-                    ''
-                    Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 6000
-                    ''
-                    '_Raw toolcall/XML is never shown. Ask a follow-up for a prose summary if needed._'
-                ) -join "`n"
+                # Last resort: local conversational brief — never dump internal hands packs
+                $lastResp = Format-PromptParleUserFacingEvidence -Results @($allHands.ToArray()) -Prompt $Prompt -MaxChars 4500
             } else {
-                $lastResp = @(
-                    '**Blocked: model emitted foreign tool markup instead of answering.**'
-                    'Client could not map it to hands tools. Retry — research on a .com domain should auto-fetch via observe first.'
-                ) -join "`n"
+                $lastResp = "I couldn't finish that lookup cleanly. Try once more, or name a site (e.g. fandango.com)."
             }
         } else {
             $lastResp = $stripped
+        }
+    }
+
+    # Final safety: never leave internal hands protocol in the chat bubble
+    if ($lastResp -match '(?i)\[HANDS\]\s*client results|Client ran tools|hands#\d|ask a follow-up for a prose summary') {
+        if ($allHands.Count -gt 0) {
+            $lastResp = Format-PromptParleUserFacingEvidence -Results @($allHands.ToArray()) -Prompt $Prompt -MaxChars 4500
+        } else {
+            $lastResp = Remove-PromptParleHandsBlocks -Text $lastResp
+            if (-not $lastResp -or $lastResp.Length -lt 12) {
+                $lastResp = "I hit a snag turning tool results into a chat answer. Please try that question again."
+            }
         }
     }
 
@@ -4305,14 +5856,14 @@ function Invoke-PromptParleLegacyTextHandsTurn {
             } else {
                 $lastResult | Add-Member -NotePropertyName response -NotePropertyValue $lastResp -Force
             }
-            $lastResult | Add-Member -NotePropertyName agent -NotePropertyValue ([pscustomobject]$agentMeta) -Force
+            $lastResult | Add-Member -NotePropertyName agent -NotePropertyValue (ConvertTo-PromptParleCustomObject $agentMeta) -Force
             $lastResult | Add-Member -NotePropertyName evidence_context -NotePropertyValue $evidenceContext -Force
             return $lastResult
         } catch {
             return [pscustomobject]@{
                 response          = $lastResp
                 metadata          = $metaOut
-                agent             = [pscustomobject]$agentMeta
+                agent             = (ConvertTo-PromptParleCustomObject $agentMeta)
                 evidence_context  = $evidenceContext
                 optimized_prompt  = Get-PromptParleProp $lastResult 'optimized_prompt' $null
             }
@@ -4321,7 +5872,7 @@ function Invoke-PromptParleLegacyTextHandsTurn {
     return [pscustomobject]@{
         response         = $lastResp
         metadata         = $metaOut
-        agent            = [pscustomobject]$agentMeta
+        agent            = (ConvertTo-PromptParleCustomObject $agentMeta)
         evidence_context = $evidenceContext
     }
 }
@@ -4344,7 +5895,13 @@ function Invoke-PromptParleAgentTurn {
         [object]$Images = $null,
         [int]$MaxRounds = 0,
         [switch]$OptimizeOnly,
-        [switch]$LegacyTextHands
+        [switch]$LegacyTextHands,
+        # Accepted from local-ui chat splat (tools-on path). Forwarded when falling through to Invoke-PromptParle.
+        [string]$SessionTitle = '',
+        [string]$ClientSessionId = '',
+        # UI may also splat these; accept so @params never throws "parameter cannot be found"
+        [switch]$Quiet,
+        [switch]$Raw
     )
     if ($OptimizeOnly) {
         $p = @{
@@ -4354,6 +5911,8 @@ function Invoke-PromptParleAgentTurn {
         }
         if ($Model) { $p.Model = $Model }
         if ($Images) { $p.Images = $Images }
+        if ($SessionTitle) { $p.SessionTitle = $SessionTitle }
+        if ($ClientSessionId) { $p.ClientSessionId = $ClientSessionId }
         return Invoke-PromptParle @p
     }
     if ($LegacyTextHands) {
@@ -4383,12 +5942,13 @@ function Get-PromptParleSshPathCandidatesFromPrompt {
     #>
     [CmdletBinding()]
     param([string]$Prompt = '')
-    $out = New-Object System.Collections.Generic.List[string]
+    $out = New-Object System.Collections.ArrayList
     $seen = @{}
     $add = {
         param([string]$Raw)
         if (-not $Raw) { return }
-        $t = $Raw.Trim().Trim('"').Trim("'").Trim('`').TrimEnd('.,);:]')
+        $t = ([string]$Raw).Trim().Trim('"').Trim("'").Trim([char]0x60)
+        $t = $t.TrimEnd([char[]]@('.', ',', ')', ';', ':', ']'))
         if (-not $t) { return }
         if ($t.Length -gt 260) { return }
         if ($t -match '[;|&`$<>]') { return }
@@ -4400,7 +5960,7 @@ function Get-PromptParleSshPathCandidatesFromPrompt {
         $key = $t.ToLowerInvariant()
         if ($seen.ContainsKey($key)) { return }
         $seen[$key] = $true
-        [void]$out.Add($t)
+        [void]$out.Add([string]$t)
     }
 
     if (-not $Prompt) { return @() }
@@ -4422,14 +5982,174 @@ function Get-PromptParleSshPathCandidatesFromPrompt {
 }
 
 function Test-PromptParleProductWorkIntent {
-    <# True when engineering/product context may need live evidence (broad — deep fetch is turn-kind gated). #>
-    param([string]$Prompt = '')
-    $p = if ($null -eq $Prompt) { '' } else { $Prompt }
-    if (-not $p.Trim()) { return $false }
-    # Almost any non-trivial turn with SSH up benefits from product bind status; exclude pure small talk
-    if ($p.Trim().Length -lt 8) { return $false }
-    if ($p -match '(?is)^(hi|hello|hey|thanks|thank you|ok|okay|sure|got it|k|cool|nice)[.!\s]*$') { return $false }
-    return $true
+    <#
+    .SYNOPSIS
+      True when live product-bind pack is needed (SSH status under product_root).
+      Not "almost always" — only implement/mutate or structural product/workspace work.
+      Session evidence_mode never reaches this (prep early-returns first).
+    #>
+    param(
+        [string]$Prompt = '',
+        [string]$TurnKind = 'chat',
+        [object]$Obligation = $null
+    )
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    if (-not $p) { return $false }
+
+    $kind = if ($TurnKind) { $TurnKind } else { 'chat' }
+    if ($kind -eq 'implement') { return $true }
+
+    $oblMode = ''
+    try { $oblMode = [string](Get-PromptParleProp $Obligation 'mode' '') } catch { $oblMode = '' }
+    if ($oblMode -eq 'mutate') { return $true }
+
+    # Structural product / workspace work (paths, tools, land-code) — not small-talk or pure research
+    if ($p -match '(?i)\b(ssh_|```apply|```run|product_?root|source_?root|live_?path)\b') { return $true }
+    if ($p -match '(?i)\b(implement|apply (the )?|migrate|deploy|refactor|patch|land (it|the)|wire (up|the))\b') { return $true }
+    if ($p -match '(?i)\b(where is|show (me )?(the )?(code|file|tree)|list (the )?(dir|directory|folder)|on (the )?(server|remote|disk))\b') { return $true }
+    if ($p -match '(?i)(?:^|[\s`"''(])(?:/home/|/var/www/|/etc/|[A-Za-z]:\\|\./)[\w./\\-]+') { return $true }
+    if ($p -match '(?i)\b[\w.-]+\.(?:psm1|psd1|php|ts|tsx|js|sql|prisma)\b' -and $p -match '(?i)\b(read|open|show|edit|fix|where|status|build)\b') {
+        return $true
+    }
+    return $false
+}
+
+function Resolve-PromptParleEvidenceMode {
+    <#
+    .SYNOPSIS
+      Product turn evidence mode — single decision for prep depth + chat dispatch.
+      session | live | refresh
+
+      session  — answer from [MEM]/[KNOW]/bind only; no live fleet; no hands agent
+      live     — may pull SSH/observe/fleet; hands agent allowed when tools on
+      refresh  — user forced live re-pull (same pipeline as live)
+
+      Doctrine: if the client already holds the fact in session evidence, do not re-fetch.
+      Not keyword theater: structural signals (session store, history, obligation, paths).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Prompt = '',
+        [object[]]$History = @(),
+        [string]$MemText = '',
+        [object[]]$PriorityKnowledge = @(),
+        [string]$TurnKind = 'chat',
+        [object]$Obligation = $null
+    )
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    $kind = if ($TurnKind) { $TurnKind } else { 'chat' }
+
+    # Session evidence present? (computed early — catch-up + session mode both need it)
+    $memLen = if ($MemText) { $MemText.Length } else { 0 }
+    $knowN = 0
+    if ($PriorityKnowledge) { $knowN = @($PriorityKnowledge).Count }
+    $recentAsstLen = 0
+    if ($History -and $History.Count -gt 0) {
+        for ($i = $History.Count - 1; $i -ge 0; $i--) {
+            $hr = [string](Get-PromptParleProp $History[$i] 'role' 'user')
+            $ht = [string](Get-PromptParleProp $History[$i] 'text' (Get-PromptParleProp $History[$i] 'content' ''))
+            if (-not $ht) { continue }
+            if ($hr -match '(?i)assistant|bot|ai') {
+                if ($ht.Length -ge 200 -and $ht -notmatch '(?i)^\[prior ') {
+                    $recentAsstLen = $ht.Length
+                    break
+                }
+            }
+        }
+    }
+    $hasSession = ($memLen -ge 400) -or ($knowN -gt 0) -or ($recentAsstLen -ge 280)
+
+    # Explicit live re-pull (user agency)
+    if ($p -match '(?i)\b(refresh|re-?check|re-?fetch|re-?scan|pull again|look again)\b') {
+        return [pscustomobject]@{ mode = 'refresh'; hands_allowed = $true; reason = 'user-refresh' }
+    }
+    if ($p -match '(?i)\b(from (the )?(server|ssh|remote|disk)|live (status|state|git|on (server|remote))|current on (disk|server|remote))\b') {
+        return [pscustomobject]@{ mode = 'refresh'; hands_allowed = $true; reason = 'user-live-scope' }
+    }
+
+    # Catch-up: chat continuity vs project state (never invent .parle/sessions)
+    $catchUp = $false
+    $projectCatch = $false
+    try { $catchUp = [bool](Test-PromptParleSessionCatchUpIntent -Prompt $p) } catch { $catchUp = $false }
+    try { $projectCatch = [bool](Test-PromptParleProjectCatchUpIntent -Prompt $p) } catch { $projectCatch = $false }
+    if ($catchUp -and $hasSession -and -not $projectCatch) {
+        return [pscustomobject]@{ mode = 'session'; hands_allowed = $false; reason = 'catchup-session' }
+    }
+    if ($catchUp -and $projectCatch) {
+        # Project path / repo state — live for git/HANDOFF; not a sessions-dir hunt
+        return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'catchup-project' }
+    }
+    if ($catchUp -and -not $hasSession) {
+        # No MEM in this chat — still answer from [SELF] honesty; optional light live only if path given
+        if ($p -match '(?i)(?:^|[\s`"''(])(?:/home/|/var/www/|/etc/|[A-Za-z]:\\|\./)[\w./\\-]+') {
+            return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'catchup-project-no-mem' }
+        }
+        return [pscustomobject]@{ mode = 'session'; hands_allowed = $false; reason = 'catchup-self-only' }
+    }
+
+    # Work that cannot be satisfied from memory alone
+    if ($kind -eq 'implement') {
+        return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'implement' }
+    }
+    $oblMode = ''
+    try { $oblMode = [string](Get-PromptParleProp $Obligation 'mode' '') } catch { $oblMode = '' }
+    if ($oblMode -eq 'mutate') {
+        return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'mutate' }
+    }
+    if ($oblMode -eq 'observe' -or $oblMode -eq 'deliver') {
+        # Observe/deliver may need fresh web/files — live unless pure meta on existing ledger
+        if (-not (Test-PromptParleResearchMetaIntent -Prompt $p)) {
+            return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = ('obligation:' + $oblMode) }
+        }
+    }
+
+    # Structural need for new external evidence (paths, tools, web) — not product-name moles
+    $needsLive = $false
+    if ($p -match '(?i)\b(ssh_|web_search|web_page|```hands|```apply|```run)\b') { $needsLive = $true }
+    if ($p -match '(?i)\b(list (the )?(dir|directory|folder|tree)|read (the )?file|open (the )?file|cat |show (me )?(the )?code|on (the )?remote)\b') { $needsLive = $true }
+    # Bare path: live only when user wants file/tree/code — not when they named a project as chat topic alone
+    if ($p -match '(?i)(?:^|[\s`"''(])(?:/home/|/var/www/|/etc/|[A-Za-z]:\\|\./|\.\./)[\w./\\-]+') {
+        if ($p -match '(?i)\b(read|open|show|list|cat|edit|fix|where|contents|tree|ls |status|git |file|folder|dir)\b') {
+            $needsLive = $true
+        }
+    }
+    if ($p -match '(?i)\b[\w.-]+\.(?:md|php|psm1|psd1|ts|tsx|js|json|yml|yaml|sql)\b' -and $p -match '(?i)\b(read|open|show|edit|fix|where is|contents of)\b') {
+        $needsLive = $true
+    }
+    try {
+        if (Test-PromptParleWebSearchIntent -Prompt $p) { $needsLive = $true }
+    } catch { }
+    if ($needsLive) {
+        return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'needs-live-evidence' }
+    }
+
+    if (-not $hasSession) {
+        return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'no-session-evidence' }
+    }
+
+    # Session can answer — hands off
+    $why = 'session-evidence'
+    if ($knowN -gt 0) { $why = 'know' }
+    elseif ($memLen -ge 400) { $why = 'mem' }
+    elseif ($recentAsstLen -ge 280) { $why = 'recent-assistant' }
+    return [pscustomobject]@{ mode = 'session'; hands_allowed = $false; reason = $why }
+}
+
+function Get-PromptParleProtectedSessionContext {
+    <#
+    .SYNOPSIS
+      Keep only bind + session truth tags for evidence_mode=session (no bulk re-fleet residue).
+    #>
+    param([string]$Context = '')
+    if (-not $Context) { return '' }
+    $blocks = New-Object System.Collections.ArrayList
+    $rx = '(?ms)(\[(?:SELF|CONN|PROJECT|KNOW|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)'
+    foreach ($m in [regex]::Matches($Context, $rx)) {
+        $b = $m.Groups[1].Value.Trim()
+        if ($b) { [void]$blocks.Add($b) }
+    }
+    if ($blocks.Count -eq 0) { return $Context.Trim() }
+    return (($blocks.ToArray()) -join "`n`n")
 }
 
 function Get-PromptParleSshProductWorkPack {
@@ -4883,9 +6603,24 @@ function Resolve-PromptParleTurnObligation {
     # Keep want_list as any list for mode=observe
     if ($wantLocalList -or $wantSshList) { $wantList = $true }
 
+    # Explicit document deliver only — "review X.com" / "tell me about" are chat answers, not downloads.
     $wantDeliver = [bool]($p -match '(?i)\b(one[\s-]?page|one[\s-]?pager|executive summary|write me (a |an )?(article|summary|brief|report|pdf|docx|document)|deliverable|download(able)?|as (a )?(pdf|docx|markdown|md)\b)')
-    if ($open.kind -eq 'document' -and $p -match '(?i)\b(from the website|from (their|the) site|do it|generate|again|now|updated|strictly)\b') {
-        $wantDeliver = $true
+    # Sticky document continues ONLY with clear regenerate language (not bare "now" / incidental web).
+    if ($open.kind -eq 'document' -and -not $wantDeliver) {
+        if ($p -match '(?i)\b(from the website|from (their|the) site|generate (the )?(doc|document|summary|report|one[\s-]?pager)|do (the )?(doc|document|summary)|again (as |with )?(a )?(pdf|docx|md|file)|updated (summary|report|one[\s-]?pager|document)|strictly from)\b') {
+            $wantDeliver = $true
+        }
+    }
+    # Topic pivot: new research/Q&A without deliver language clears sticky document so FAIL-CLOSED does not fire.
+    if ($open.kind -eq 'document' -and -not $wantDeliver) {
+        $pivotAway = [bool](
+            $wantWeb `
+            -or $p -match '(?i)\b(tell me|what is|who is|about|review|research|did you|you researched|insider|overview|capabilit)\b'
+        )
+        if ($pivotAway) {
+            try { Set-PromptParleOpenObligation -Clear } catch { }
+            $open = Get-PromptParleOpenObligation
+        }
     }
 
     $wantMutate = $false
@@ -4947,6 +6682,92 @@ function Resolve-PromptParleTurnObligation {
     }
 }
 
+function Get-PromptParleWebEvidencePath {
+    return (Join-Path $script:PromptParleConfigDir 'web-evidence.json')
+}
+
+function Add-PromptParleWebEvidence {
+    <#
+    .SYNOPSIS
+      Session ledger of URLs the client actually fetched (authoritative for "did you research?").
+    #>
+    param(
+        [string]$Url = '',
+        [string]$Kind = 'web_page'
+    )
+    $u = if ($null -eq $Url) { '' } else { $Url.Trim() }
+    if (-not $u) { return }
+    try {
+        $path = Get-PromptParleWebEvidencePath
+        $dir = Split-Path -Parent $path
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        $items = New-Object System.Collections.ArrayList
+        if (Test-Path -LiteralPath $path) {
+            try {
+                $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+                if ($raw) {
+                    $parsed = $raw | ConvertFrom-Json
+                    foreach ($it in @($parsed)) {
+                        if (-not $it) { continue }
+                        $iu = [string](Get-PromptParleProp $it 'url' '')
+                        if ($iu) { [void]$items.Add(@{ url = $iu; kind = [string](Get-PromptParleProp $it 'kind' 'web_page'); at = [string](Get-PromptParleProp $it 'at' '') }) }
+                    }
+                }
+            } catch { }
+        }
+        # Dedupe by host+path (case-insensitive), newest first
+        $key = $u.ToLowerInvariant()
+        $next = New-Object System.Collections.ArrayList
+        [void]$next.Add(@{ url = $u; kind = $Kind; at = (Get-Date).ToUniversalTime().ToString('o') })
+        foreach ($it in $items) {
+            $iu = [string]$it.url
+            if (-not $iu) { continue }
+            if ($iu.ToLowerInvariant() -eq $key) { continue }
+            [void]$next.Add($it)
+            if ($next.Count -ge 20) { break }
+        }
+        $json = ConvertTo-Json -InputObject @($next.ToArray()) -Depth 4 -Compress
+        [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+    } catch { }
+}
+
+function Get-PromptParleWebEvidenceBrief {
+    <# Compact [SESSION WEB] block for prep — so follow-ups cannot deny completed research. #>
+    param([int]$Max = 12)
+    try {
+        $path = Get-PromptParleWebEvidencePath
+        if (-not (Test-Path -LiteralPath $path)) { return '' }
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if (-not $raw) { return '' }
+        $parsed = $raw | ConvertFrom-Json
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add('[SESSION WEB] pages this client actually fetched (authoritative — not model memory)')
+        $n = 0
+        foreach ($it in @($parsed)) {
+            if ($n -ge $Max) { break }
+            $u = [string](Get-PromptParleProp $it 'url' '')
+            if (-not $u) { continue }
+            $n++
+            $lines.Add(('- {0}' -f $u))
+        }
+        if ($n -eq 0) { return '' }
+        $lines.Add('rule: If the user asks whether you researched/fetched/read a site, answer YES when the domain or URL appears above. Never say "Not yet" / "Share the URL" when it is already on this list.')
+        return ($lines -join "`n")
+    } catch {
+        return ''
+    }
+}
+
+function Test-PromptParleResearchMetaIntent {
+    <# "did you research / you researched the website?" — answer from session ledger, not amnesia. #>
+    param([string]$Prompt = '')
+    $p = if ($null -eq $Prompt) { '' } else { $Prompt.Trim() }
+    if (-not $p) { return $false }
+    return [bool]($p -match '(?i)\b(did you (actually )?(research|fetch|read|browse|open|visit|pull|look( at)?)|you researched|researched the (actual )?(website|site|page|url)|did (the )?client (fetch|research)|from the (actual )?website\??)\b')
+}
+
 function Invoke-PromptParleWebPageFetch {
     <#
     .SYNOPSIS
@@ -4963,7 +6784,7 @@ function Invoke-PromptParleWebPageFetch {
     }
     $url = $raw
     if ($url -notmatch '^https?://') { $url = 'https://' + $url }
-    $ua = 'PromptParle/0.18 (desktop observe; +https://promptparle.com)'
+    $ua = 'PromptParle/0.26 (desktop observe; +https://promptparle.com)'
     try {
         $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 18 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
         $html = [string]$resp.Content
@@ -4982,6 +6803,7 @@ function Invoke-PromptParleWebPageFetch {
         if ($t.Length -lt 40) {
             return [pscustomobject]@{ ok = $false; text = $t; url = $url; notes = @('thin-page') }
         }
+        try { Add-PromptParleWebEvidence -Url $url -Kind 'web_page' } catch { }
         return [pscustomobject]@{ ok = $true; text = $t; url = $url; notes = @('page-fetch'); bytes = $t.Length }
     } catch {
         return [pscustomobject]@{ ok = $false; text = ''; url = $url; notes = @("page-fail: $_") }
@@ -5849,6 +7671,9 @@ function Get-PromptParleCheckableClaims {
         if ($s -match $denialRx) { continue }
         if (Test-PromptParleGroundingTheaterClaim -Text $s) { continue }
         if ($s -match '(?i)^(what changed|applied|download|hands ran|client |additional resources|key strengths|latest news)\b') { continue }
+        # Action menus / offers — not product claims (quality gate must not score these)
+        if ($s -match '(?i)^(explore|look at|check for|check the|would you like|let me know|how you.d like|how would you like)\b') { continue }
+        if ($s -match '(?i)\b(would you like me to|let me know how|how you.?d like to proceed)\b') { continue }
         if ($s -match '^\s*https?://') { continue }
         # Must look like a factual assertion or labeled product capability
         $isPriority = [bool]($s -match $priorityRx)
@@ -6061,10 +7886,27 @@ function Invoke-PromptParleQualityGate {
         }
     }
 
-    $hasSource = $Force -or ($Context -match '(?m)\[OBSERVE\]') -or ($Context -match '(?m)\[WEB\]') -or ($Context -match '(?m)\[HANDS\]') -or ($Context -match '(?m)\[GROUNDING\]') -or ($Context -match '(?m)\[EVIDENCE_SPINE\]') -or ($Context -match '(?m)\[ATTACH\]') -or ($Context -match '===== FILE:')
+    # Procedural / menu replies are not product-claim audits
+    if (-not $Force -and $bodyEarly -match '(?i)\bwould you like me to\b' -and $bodyEarly -notmatch '(?i)\b(honeypot|decoy|amtd|federation|vpatch|modbus|scada)\b') {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'procedural-menu'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+
+    $hasWebObs = ($Context -match '(?m)\[OBSERVE\]') -or ($Context -match '(?m)\[WEB\]') -or ($Context -match '(?m)\[GROUNDING\]') -or ($Context -match '(?m)\[EVIDENCE_SPINE\]') -or ($Context -match '(?m)\[ATTACH\]') -or ($Context -match '===== FILE:')
+    $hasHandsOnly = ($Context -match '(?m)\[HANDS\]') -and -not $hasWebObs
+    $hasSource = $Force -or $hasWebObs -or ($Context -match '(?m)\[HANDS\]')
     if (-not $hasSource) {
         return [pscustomobject]@{
             text = $raw; applied = $false; reason = 'no-evidence'
+            claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+        }
+    }
+    # HANDS-only dir listings are not product research evidence — do not 0% spam conversational replies
+    if (-not $Force -and $hasHandsOnly -and $bodyEarly -notmatch '(?i)\b(honeypot|decoy|amtd|federation|vpatch|modbus|scada|zero-?day|patent|certified)\b') {
+        return [pscustomobject]@{
+            text = $raw; applied = $false; reason = 'hands-only-nonproduct'
             claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
         }
     }
@@ -6326,10 +8168,9 @@ function Update-PromptParleOpenObligationFromTurn {
 function Test-PromptParleDeliverOwed {
     param($Obligation, [string]$ResponseText = '')
     if (-not $Obligation) { return $false }
+    # Only when this turn explicitly owes a downloadable file — NOT sticky-doc + incidental web research.
     if ($Obligation.mode -eq 'deliver' -or $Obligation.want_deliver) { return $true }
-    $open = Get-PromptParleOpenObligation
-    if ($open.kind -eq 'document' -and $Obligation.want_web) { return $true }
-    # Theater promised a deliverable
+    # Theater promised a deliverable in the model text
     if ($ResponseText -match '(?i)Generating (updated |the )?(deliverable|summary|one-?pager|document)') { return $true }
     return $false
 }
@@ -6383,25 +8224,51 @@ function Invoke-PromptParleAgentLocalPrep {
         [int]$Dial = 3,
         [string]$Profile = '',
         [object[]]$History = @(),
-        [string]$HistoryText = ''
+        [string]$HistoryText = '',
+        [string]$ClientSessionId = '',
+        # User-pinned session knowledge (UI ★ marks) — highest in-session priority
+        [object[]]$PriorityKnowledge = @(),
+        # When true, UI list replaces disk pins (empty array clears). When false, merge UI + disk.
+        [bool]$PriorityKnowledgeReplace = $false
     )
-    $notes = New-Object System.Collections.Generic.List[string]
+    # ArrayList — List[string].Add throws "Argument types do not match" with PS string wrappers
+    $notes = New-Object System.Collections.ArrayList
     $ctx = if ($null -eq $Context) { '' } else { [string]$Context }
     $pr = if ($null -eq $Prompt) { '' } else { [string]$Prompt }
+    # Wire baseline ONLY (prompt + attach context + history as received) — never inflate with fleet/KNOW
     $charsIn = $ctx.Length + $pr.Length
-    if ($HistoryText) { $charsIn += $HistoryText.Length }
-    elseif ($History) {
+    $histChars = 0
+    if ($HistoryText) {
+        $histChars = $HistoryText.Length
+        $charsIn += $histChars
+    } elseif ($History) {
         foreach ($h in $History) {
             $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
-            $charsIn += $ht.Length
+            $histChars += $ht.Length
         }
+        $charsIn += $histChars
     }
-    $tools = New-Object System.Collections.Generic.List[string]
+    $charsWire = $charsIn
+    # Honest baseline: chars of client framing (SELF / CONN / PROJECT / MEM) that ANY
+    # chat client would send for the same fidelity. Counted into "before" so identical
+    # framing nets to 0% (not a false expansion) and real compression shows as savings.
+    # Does NOT change what the model sees — accounting only. (0.27.2)
+    $framingInjected = 0
+    # Rolling disk densify credit (beyond this-turn history wire) — lifts "before" baseline
+    $memRollingCredit = 0
+    $tools = New-Object System.Collections.ArrayList
+    # Resolved later (after MEM) so [KNOW] sits above densified history as session truth
+    $knowItems = @()
+    $PriorityKnowledge = @($PriorityKnowledge)
+    $evidenceMode = 'live'
+    $handsAllowed = $true
+    $evidenceReason = 'default'
+    $memTextForGate = ''
 
     # Prep depth only — model already understands natural language; we must not underrun evidence
     $turnKind = 'chat'
     try { $turnKind = Get-PromptParleTurnKind -Prompt $pr -History $History } catch { $turnKind = 'chat' }
-    $notes.Add("turn:$turnKind")
+    [void]$notes.Add([string]("turn:$turnKind"))
 
     # Hard implement directive — capability=obligation; forces apply/run channel
     if ($turnKind -eq 'implement') {
@@ -6415,7 +8282,7 @@ function Invoke-PromptParleAgentLocalPrep {
         ) -join ' '
         if ($pr -notmatch '\[CLIENT DIRECTIVE') {
             $pr = $pr + "`n`n" + $directive
-            $notes.Add('implement-directive')
+            [void]$notes.Add('implement-directive')
         }
     }
 
@@ -6427,14 +8294,16 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($connBrief) {
             if ($ctx -and $ctx -notmatch '(?m)^\[CONN\]') {
                 $ctx = $connBrief + "`n`n" + $ctx
+                $framingInjected += $connBrief.Length
             } elseif (-not $ctx) {
                 $ctx = $connBrief
+                $framingInjected += $connBrief.Length
             }
-            $notes.Add('conn')
-            $tools.Add('connections')
+            [void]$notes.Add('conn')
+            [void]$tools.Add('connections')
         }
     } catch {
-        $notes.Add('conn-skip')
+        [void]$notes.Add('conn-skip')
     }
 
     # 0a) Always-on [SELF] — identity, capabilities, portal, help (0.22.4)
@@ -6442,10 +8311,11 @@ function Invoke-PromptParleAgentLocalPrep {
         $selfCard = Get-PromptParleSelfCard
         if ($selfCard -and $ctx -notmatch '(?m)^\[SELF\]') {
             if ($ctx) { $ctx = $selfCard + "`n`n" + $ctx } else { $ctx = $selfCard }
-            $notes.Add('self-card')
+            $framingInjected += $selfCard.Length
+            [void]$notes.Add('self-card')
         }
     } catch {
-        $notes.Add('self-card-skip')
+        [void]$notes.Add('self-card-skip')
     }
 
     # 0a2) Always-on [PROJECT] bind card — only when a real bind exists (or unbound notice)
@@ -6461,57 +8331,45 @@ function Invoke-PromptParleAgentLocalPrep {
             } else {
                 $ctx = $projCard
             }
-            $notes.Add('project-card')
-            $tools.Add('project_bind')
+            $framingInjected += $projCard.Length
+            [void]$notes.Add('project-card')
+            [void]$tools.Add('project_bind')
         }
     } catch {
-        $notes.Add('project-card-skip')
+        [void]$notes.Add('project-card-skip')
     }
 
-    # 0b) Continuous chat memory — auto-compact every turn (facts over theater)
+    # 0b) Continuous chat memory — high-fidelity first; densify only age + noise
+    $mem = $null
     try {
-        $memMax = 2800
-        if ($Dial -le 2) { $memMax = 4200 }
-        if ($Dial -eq 3) { $memMax = 3000 }
-        if ($Dial -ge 4) { $memMax = 1800 }
-        if ($Dial -ge 5) { $memMax = 1400 }
-        $mem = $null
+        # Budgets favor fidelity (dial still owns aggressiveness)
+        $memMax = 3200
+        if ($Dial -le 2) { $memMax = 4800 }
+        if ($Dial -eq 3) { $memMax = 3600 }
+        if ($Dial -ge 4) { $memMax = 2400 }
+        if ($Dial -ge 5) { $memMax = 1800 }
         $histForMem = $History
         $histTextForMem = $HistoryText
-        # Always sanitize assistant theater / false blockers so [MEM] does not re-teach lies
+        # Structural densify only (Reduce-*) — no phrase-list content moles
         try {
             if ($History -and $History.Count -gt 0) {
                 $filtered = New-Object System.Collections.Generic.List[object]
                 foreach ($h in @($History)) {
                     $hr = [string](Get-PromptParleProp $h 'role' 'user')
                     $ht = [string](Get-PromptParleProp $h 'text' (Get-PromptParleProp $h 'content' ''))
-                    if ($hr -match '(?i)assistant|bot|ai') {
-                        if ($ht -match '(?i)Ready for the named addition|Name it and I ship|spine locked|Handoff read\.|Would you like me to actually implement|Just say the word') {
-                            $ht = '[prior permission/status theater omitted]'
-                        } elseif ($ht -match '(?i)The change was never implemented|only \*described\*|hypothetical') {
-                            $ht = '[prior unapplied design essay omitted — implement via apply blocks next]'
-                        } elseif ($ht -match '(?i)contain no portal|no portal backend|only the PromptParle desktop|no server-side components|cannot be implemented from the current handoff|no matching paths or code in the evidence') {
-                            $ht = '[prior false missing-product claim omitted — use [PROJECT] bind]'
-                        } elseif ($ht -match '(?i)do not build|ExecutionPolicy Bypass|ship.?blocker|blocked until|until that change is made') {
-                            $ht = '[prior security note compressed]'
-                        } elseif ($ht -match '(?i)Edit `prisma/schema|Run the migration|curl -X POST' -and $ht.Length -gt 800) {
-                            # Homework dumps that never applied — keep a stub so MEM does not re-teach "paste this"
-                            $ht = '[prior homework-style design dump omitted — use ```apply path=``` to land files]'
-                        }
-                        # Always collapse prior deliverables so doc2 is not summarized as doc1
-                        $ht = Reduce-PromptParleTurnTextForMemory -Text $ht -Role 'assistant'
-                    } else {
-                        $ht = Reduce-PromptParleTurnTextForMemory -Text $ht -Role 'user'
-                    }
-                    $filtered.Add([pscustomobject]@{ role = $hr; text = $ht })
+                    $roleForReduce = if ($hr -match '(?i)assistant|bot|ai') { 'assistant' } else { 'user' }
+                    $ht = Reduce-PromptParleTurnTextForMemory -Text $ht -Role $roleForReduce
+                    if ($ht) { $filtered.Add([pscustomobject]@{ role = $hr; text = $ht }) }
                 }
                 $histForMem = @($filtered.ToArray())
             }
         } catch { }
+        $memParams = @{ MaxChars = $memMax; Dial = $Dial }
+        if ($ClientSessionId) { $memParams.ClientSessionId = $ClientSessionId }
         if ($histForMem -and $histForMem.Count -gt 0) {
-            $mem = Invoke-PromptParleChatMemoryBrief -History $histForMem -MaxChars $memMax -Dial $Dial
+            $mem = Invoke-PromptParleChatMemoryBrief -History $histForMem @memParams
         } elseif ($histTextForMem -and $histTextForMem.Trim().Length -gt 20) {
-            $mem = Invoke-PromptParleChatMemoryBrief -HistoryText $histTextForMem -MaxChars $memMax -Dial $Dial
+            $mem = Invoke-PromptParleChatMemoryBrief -HistoryText $histTextForMem @memParams
         }
         # This-turn attachment wins over [MEM] for document asks (place ATTACH priority note)
         $hasThisTurnAttach = $false
@@ -6523,7 +8381,7 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($mem -and $mem.text) {
             if ($hasThisTurnAttach) {
                 $mem.text = $mem.text + "`n" + 'Priority: THIS turn [ATTACH]/FILE is primary. Do not re-use prior document topics or prior executive summaries from Spine/Recent when a new file is attached.'
-                $notes.Add('mem-attach-priority')
+                [void]$notes.Add('mem-attach-priority')
             }
             if ($ctx -notmatch '(?m)^\[MEM\]') {
                 # Place memory after CONN/PROJECT, before bulky attaches
@@ -6533,43 +8391,190 @@ function Invoke-PromptParleAgentLocalPrep {
                     $ctx = $mem.text + "`n`n" + $ctx
                 }
             }
-            foreach ($n in @($mem.notes)) { if ($n) { $notes.Add([string]$n) } }
-            $tools.Add('chat_memory')
+            foreach ($n in @($mem.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+            [void]$tools.Add('chat_memory')
+            # Credit rolling densify: mem.chars_in includes prior session fold savings
+            try {
+                $mci = [int](Get-PromptParleProp $mem 'chars_in' 0)
+                if ($mci -gt $histChars) {
+                    $memRollingCredit = $mci - $histChars
+                    [void]$notes.Add(("mem-credit:{0}c" -f $memRollingCredit))
+                }
+            } catch { }
         }
     } catch {
-        $notes.Add('mem-skip')
+        [void]$notes.Add('mem-skip')
     }
 
-    if (-not $ToolsEnabled) {
-        $notes.Add('tools off')
-        return [pscustomobject]@{
-            prompt = $pr; context = $ctx; notes = @($notes.ToArray())
-            tools = @($tools); agent = 'none'
-            tools_enabled = $false
+    # 0c) User-pinned session Knowledge (★ in UI) — after MEM, protected from budget densify
+    try {
+        $storeKnow = @()
+        if ($ClientSessionId) {
+            try {
+                $stK = Get-PromptParleChatMemoryStore -SessionId $ClientSessionId.Trim()
+                if ($stK -and $stK['priority_knowledge']) { $storeKnow = @($stK['priority_knowledge']) }
+            } catch { }
         }
+        if ($PriorityKnowledgeReplace) {
+            # Chat UI is authoritative (unpin clears disk too)
+            $knowItems = @(Merge-PromptParlePriorityKnowledge -FromUi $PriorityKnowledge -FromStore @() -MaxItems 12)
+        } else {
+            $knowItems = @(Merge-PromptParlePriorityKnowledge -FromUi $PriorityKnowledge -FromStore $storeKnow -MaxItems 12)
+        }
+        if ($ClientSessionId -and ($PriorityKnowledgeReplace -or $knowItems.Count -gt 0)) {
+            try {
+                $stSave = Get-PromptParleChatMemoryStore -SessionId $ClientSessionId.Trim()
+                $stSave['priority_knowledge'] = $knowItems
+                Save-PromptParleChatMemoryStore -Store $stSave -SessionId $ClientSessionId.Trim()
+            } catch { }
+        }
+        $knowMax = 4800
+        if ($Dial -ge 4) { $knowMax = 3600 }
+        if ($Dial -le 2) { $knowMax = 6000 }
+        $knowBlock = Format-PromptParlePriorityKnowledgeBlock -Items $knowItems -MaxChars $knowMax -MaxItems 8
+        if ($knowBlock) {
+            # Drop any prior [KNOW] then place after SELF/CONN/PROJECT (before MEM/bulk)
+            $ctx = [regex]::Replace($ctx, '(?ms)\[KNOW\][^\n]*(?:\n(?!\[)[^\n]*)*\n*', '')
+            if ($ctx -match '(?s)^((?:\[(?:SELF|CONN|PROJECT)\][^\n]*(?:\n(?!\[)[^\n]*)*\n\n?)+)(.*)$') {
+                $ctx = $Matches[1] + $knowBlock + "`n`n" + $Matches[2]
+            } elseif ($ctx) {
+                $ctx = $knowBlock + "`n`n" + $ctx
+            } else {
+                $ctx = $knowBlock
+            }
+            [void]$notes.Add(('know:' + $knowItems.Count))
+            [void]$tools.Add('priority_knowledge')
+            # Do NOT add pin sizes to charsWire/charsIn — pins are selected signal, not "before" bloat
+        }
+    } catch {
+        [void]$notes.Add('know-skip')
+    }
+
+    # Evidence mode (product core) — decides prep depth + whether hands agent may run
+    $oblEarly = $null
+    try { $oblEarly = Resolve-PromptParleTurnObligation -Prompt $pr -History $History } catch { $oblEarly = $null }
+    try {
+        if ($mem -and $mem.text) { $memTextForGate = [string]$mem.text }
+        $em = Resolve-PromptParleEvidenceMode `
+            -Prompt $pr `
+            -History $History `
+            -MemText $memTextForGate `
+            -PriorityKnowledge $knowItems `
+            -TurnKind $turnKind `
+            -Obligation $oblEarly
+        $evidenceMode = [string]$em.mode
+        $handsAllowed = [bool]$em.hands_allowed
+        $evidenceReason = [string]$em.reason
+    } catch {
+        $evidenceMode = 'live'
+        $handsAllowed = $true
+        $evidenceReason = 'resolve-fallback'
+    }
+    [void]$notes.Add(('evidence:' + $evidenceMode + '/' + $evidenceReason))
+    [void]$tools.Add(('evidence_' + $evidenceMode))
+
+    if (-not $ToolsEnabled) {
+        [void]$notes.Add('tools off')
+        $charsOutOff = $ctx.Length + $pr.Length
+        $charsBeforeOff = $charsWire + [Math]::Max(0, [int]$memRollingCredit) + [Math]::Max(0, [int]$framingInjected)
+        $tokInOff = if ($charsBeforeOff -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsBeforeOff / 4.0)) }
+        $tokOutOff = if ($charsOutOff -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsOutOff / 4.0)) }
+        return ,([pscustomobject]@{
+            prompt           = $pr
+            context          = $ctx
+            notes            = @($notes.ToArray())
+            tools            = @($tools)
+            agent            = 'none'
+            tools_enabled    = $false
+            chars_in         = $charsBeforeOff
+            chars_out        = $charsOutOff
+            tokens_before    = $tokInOff
+            tokens_after     = $tokOutOff
+            evidence_mode    = $evidenceMode
+            hands_allowed    = $false
+            evidence_reason  = $evidenceReason
+        })
     }
 
     if ($Dial -lt 1) { $Dial = 1 }
     if ($Dial -gt 5) { $Dial = 5 }
     $prof = if ($Profile) { $Profile } else { 'general' }
-    # 0.14: compressor profiles still accepted for API compat, but chat path always sends general
     $budget = Get-PromptParleLocalContextBudget -Dial $Dial
-    $tools.Add('secret_scan')
-    $tools.Add('code_brief')
+    [void]$tools.Add('secret_scan')
+    [void]$tools.Add('code_brief')
 
     # 1) Mask secrets (always when tools on)
     $r1 = Invoke-PromptParleSecretScanLocal -Text $pr
     $r2 = Invoke-PromptParleSecretScanLocal -Text $ctx
     $pr = $r1.text
     $ctx = $r2.text
-    if (($r1.masked + $r2.masked) -gt 0) { $notes.Add("mask $($r1.masked + $r2.masked)") }
+    if (($r1.masked + $r2.masked) -gt 0) { [void]$notes.Add("mask $($r1.masked + $r2.masked)") }
+
+    # --- evidence_mode=session: bind + MEM/KNOW only; no live fleet; return early ---
+    if ($evidenceMode -eq 'session') {
+        $ctx = Get-PromptParleProtectedSessionContext -Context $ctx
+        $sessDir = @(
+            '[CLIENT DIRECTIVE — evidence_mode=session]',
+            'Answer from [MEM]/[KNOW]/[PROJECT]/[CONN] only — session already holds the evidence.',
+            'Write a normal conversational answer. NEVER emit hands, toolcall, ssh_list/ssh_read, or re-discovery.',
+            'If a fact is missing, say so briefly and invite the user to say refresh for a live pull.'
+        ) -join ' '
+        if ($pr -notmatch '\[CLIENT DIRECTIVE — evidence_mode=session') {
+            $pr = $pr + "`n`n" + $sessDir
+        }
+        $charsOutS = $ctx.Length + $pr.Length
+        $charsInS = $charsWire + [Math]::Max(0, [int]$memRollingCredit) + [Math]::Max(0, [int]$framingInjected)
+        $tokBeforeS = if ($charsInS -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsInS / 4.0)) }
+        $tokAfterS = if ($charsOutS -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsOutS / 4.0)) }
+        $savedS = [Math]::Max(0, $charsInS - $charsOutS)
+        if ($savedS -gt 0 -and $charsInS -gt 0) {
+            $pctS = [int][Math]::Round(100.0 * $savedS / $charsInS)
+            [void]$notes.Add("local −${pctS}%")
+        }
+        [void]$notes.Add(("prep-tokens:{0}->{1}" -f $tokBeforeS, $tokAfterS))
+        return ,([pscustomobject]@{
+            prompt           = $pr
+            context          = $ctx
+            notes            = @($notes.ToArray())
+            tools            = @($tools | Select-Object -Unique)
+            agent            = 'none'
+            tools_enabled    = $true
+            dial             = $Dial
+            budget           = $budget
+            chars_in         = $charsInS
+            chars_out        = $charsOutS
+            tokens_before    = $tokBeforeS
+            tokens_after     = $tokAfterS
+            evidence_mode    = 'session'
+            hands_allowed    = $false
+            evidence_reason  = $evidenceReason
+            obligation       = $oblEarly
+            turn_kind        = $turnKind
+        })
+    }
+
+    # --- evidence_mode=live|refresh: full prep (SSH / observe / fleet) ---
+    # Catch-up on project path: steer to real project spine, never invent .parle/sessions
+    try {
+        if ($evidenceReason -match '^catchup-' -or (Test-PromptParleSessionCatchUpIntent -Prompt $pr)) {
+            $cuDir = @(
+                '[CLIENT DIRECTIVE — project catch-up]',
+                'User wants orientation on recent work. Chat history is NOT under the project tree (no .parle/sessions/).',
+                'Use [MEM]/[KNOW] if present. For a project path: prefer git status/log, HANDOFF.md, AGENTS.md, README, recent diffs — never invent a sessions folder.',
+                'Answer with a real catch-up brief (what changed, open work, next step). Do not offer a menu of "would you like me to explore" without first using tools.'
+            ) -join ' '
+            if ($pr -notmatch '\[CLIENT DIRECTIVE — project catch-up') {
+                $pr = $pr + "`n`n" + $cuDir
+                [void]$notes.Add('catchup-directive')
+            }
+        }
+    } catch { }
 
     # 2) Fidelity fleet — protect [CONN]/[MEM]; shrink rest with prompt-aware tools
     if ($ctx.Length -gt 200) {
         $headKeep = ''
         $restCtx = $ctx
-        # Peel protected headers (CONN + PROJECT + MEM) — never densify the bind map away
-        while ($restCtx -match '(?s)^(\[(?:CONN|PROJECT|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+        while ($restCtx -match '(?s)^(\[(?:CONN|PROJECT|MEM|KNOW|SELF)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
             if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
             else { $headKeep = $Matches[1] }
             $restCtx = $Matches[2]
@@ -6578,16 +8583,15 @@ function Invoke-PromptParleAgentLocalPrep {
             $room = [Math]::Max(800, $budget - $headKeep.Length - 80)
             $fleet = Invoke-PromptParleFidelityContextLocal -Text $restCtx -Prompt $pr -MaxChars $room -Dial $Dial
             $restCtx = $fleet.text
-            foreach ($n in @($fleet.notes)) { if ($n) { $notes.Add([string]$n) } }
+            foreach ($n in @($fleet.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
             foreach ($fn in @($fleet.notes)) {
-                if ($fn -match 'error_brief') { $tools.Add('error_brief'); break }
+                if ($fn -match 'error_brief') { [void]$tools.Add('error_brief'); break }
             }
         }
         if ($headKeep) { $ctx = $headKeep + "`n`n" + $restCtx } else { $ctx = $restCtx }
     }
 
-    # 2.5) SSH cwd auto-evidence — named files in prompt fetch from live remote cwd
-    # Doctrine: if [CONN] shows SSH cwd, relative/absolute names must be tried before "not found"
+    # 2.5) SSH cwd auto-evidence — named files in prompt
     try {
         $sshMax = [Math]::Min(14000, [int]($budget * 0.48))
         if ($Dial -le 2) { $sshMax = [Math]::Min(20000, [int]($budget * 0.55)) }
@@ -6596,28 +8600,29 @@ function Invoke-PromptParleAgentLocalPrep {
         $sshEv = Get-PromptParleSshPromptEvidence -Prompt $pr -Profile $prof -MaxFiles $sshFiles -MaxChars $sshMax
         if ($sshEv -and $sshEv.text) {
             if ($ctx) { $ctx = $ctx + "`n`n" + $sshEv.text } else { $ctx = [string]$sshEv.text }
-            $notes.Add(("ssh-fetch {0}" -f $sshEv.files))
+            [void]$notes.Add(("ssh-fetch {0}" -f $sshEv.files))
             foreach ($sn in @($sshEv.notes)) {
-                if ($sn -and $sn -match '^ssh-ok:') { $notes.Add([string]$sn) }
+                if ($sn -and $sn -match '^ssh-ok:') { [void]$notes.Add([string]$sn) }
             }
-            $tools.Add('ssh')
+            [void]$tools.Add('ssh')
         } elseif ($sshEv -and $sshEv.notes) {
             $miss = @($sshEv.notes | Where-Object { $_ -match '^ssh-miss:' } | Select-Object -First 4)
             if ($miss.Count -gt 0) {
                 $missNames = @($miss | ForEach-Object { $_ -replace '^ssh-miss:', '' })
                 $missBlock = "[SSH] Fetch attempted (not found on remote under session cwd):`n- " + ($missNames -join "`n- ")
                 if ($ctx) { $ctx = $ctx + "`n`n" + $missBlock } else { $ctx = $missBlock }
-                $notes.Add('ssh-miss')
-                $tools.Add('ssh')
+                [void]$notes.Add('ssh-miss')
+                [void]$tools.Add('ssh')
             }
         }
     } catch {
-        $notes.Add('ssh-fetch-skip')
+        [void]$notes.Add('ssh-fetch-skip')
     }
 
-    # 2.6) Product bind live evidence — always when SSH up (depth by turn kind, not keyword moles)
+    # 2.6) Product bind live evidence — only when turn needs product workspace pack
     try {
-        if (Test-PromptParleProductWorkIntent -Prompt $pr) {
+        $wantProduct = Test-PromptParleProductWorkIntent -Prompt $pr -TurnKind $turnKind -Obligation $oblEarly
+        if ($wantProduct) {
             $prodMax = [Math]::Min(12000, [int]($budget * 0.38))
             if ($turnKind -eq 'implement') {
                 $prodMax = [Math]::Min(18000, [int]($budget * 0.48))
@@ -6628,26 +8633,57 @@ function Invoke-PromptParleAgentLocalPrep {
             $prod = Get-PromptParleSshProductWorkPack -Prompt $pr -MaxChars $prodMax -TurnKind $turnKind
             if ($prod -and $prod.ok -and $prod.text) {
                 if ($ctx) { $ctx = $ctx + "`n`n" + $prod.text } else { $ctx = [string]$prod.text }
-                foreach ($pn in @($prod.notes)) { if ($pn) { $notes.Add([string]$pn) } }
-                $tools.Add('ssh')
-                $tools.Add('product_bind')
+                foreach ($pn in @($prod.notes)) { if ($pn) { [void]$notes.Add([string]$pn) } }
+                [void]$tools.Add('ssh')
+                [void]$tools.Add('product_bind')
             }
         }
     } catch {
-        $notes.Add('ssh-product-skip')
+        [void]$notes.Add('ssh-product-skip')
     }
+
+    # 2b) Session web ledger — compact (max 6) so long research sessions don't accumulate URL noise
+    try {
+        $webMax = 6
+        if ($Dial -le 2) { $webMax = 8 }
+        if ($Dial -ge 4) { $webMax = 4 }
+        # Research-meta asks need the full list to answer "did you research X?"
+        if (Test-PromptParleResearchMetaIntent -Prompt $pr) { $webMax = 12 }
+        $webEv = Get-PromptParleWebEvidenceBrief -Max $webMax
+        if ($webEv) {
+            if ($ctx) { $ctx = $ctx + "`n`n" + $webEv } else { $ctx = $webEv }
+            [void]$notes.Add('session-web')
+        }
+    } catch { [void]$notes.Add('session-web-skip') }
+
+    # 2c) Research-meta: "did you research the site?" → ledger is the answer, not amnesia
+    try {
+        if (Test-PromptParleResearchMetaIntent -Prompt $pr) {
+            $metaDir = @(
+                '[CLIENT DIRECTIVE — research meta · 0.26.17]',
+                'User is asking whether you already researched/fetched a website.',
+                'Answer from [SESSION WEB] and any [OBSERVE]/[WEB]/[WEB_PAGE] in context THIS turn.',
+                'If the domain or URL is listed, answer YES and cite those URLs. Do NOT say "Not yet" or ask them to share the URL when evidence is already present.',
+                'If the ledger is empty, say you have no client-fetched pages yet — then offer to fetch now.'
+            ) -join ' '
+            if ($pr -notmatch '\[CLIENT DIRECTIVE — research meta') {
+                $pr = $pr + "`n`n" + $metaDir
+                [void]$notes.Add('research-meta-directive')
+            }
+        }
+    } catch { }
 
     # 3) 0.18 obligation resolve + client-first OBSERVE (before model tokens)
     $blob = ("{0} {1}" -f $pr, $prof).ToLowerInvariant()
     $obligation = $null
     try {
         $obligation = Resolve-PromptParleTurnObligation -Prompt $pr -History $History
-        $notes.Add(('obligation:' + $obligation.mode))
+        [void]$notes.Add(('obligation:' + $obligation.mode))
         if ($obligation.observe -and $obligation.observe.Count -gt 0) {
-            $notes.Add(('observe:' + ($obligation.observe -join '+')))
+            [void]$notes.Add(('observe:' + ($obligation.observe -join '+')))
         }
     } catch {
-        $notes.Add('obligation-skip')
+        [void]$notes.Add('obligation-skip')
     }
 
     if ($obligation -and ($obligation.want_web -or $obligation.want_list)) {
@@ -6660,10 +8696,10 @@ function Invoke-PromptParleAgentLocalPrep {
             if ($obs.text) {
                 if ($ctx) { $ctx = $ctx + "`n`n" + $obs.text } else { $ctx = [string]$obs.text }
             }
-            foreach ($n in @($obs.notes)) { if ($n) { $notes.Add([string]$n) } }
-            foreach ($t in @($obs.tools)) { if ($t) { $tools.Add([string]$t) } }
+            foreach ($n in @($obs.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+            foreach ($t in @($obs.tools)) { if ($t) { [void]$tools.Add([string]$t) } }
             if ($obs.fulfilled -and $obs.fulfilled.Count -gt 0) {
-                $notes.Add(('observe-ok:' + $obs.fulfilled.Count))
+                [void]$notes.Add(('observe-ok:' + $obs.fulfilled.Count))
                 # Hard directive: results already obtained — do not answer with the method
                 $obsDir = @(
                     '[CLIENT DIRECTIVE — observe fulfilled · capability=obligation 0.20]',
@@ -6674,7 +8710,7 @@ function Invoke-PromptParleAgentLocalPrep {
                 ) -join ' '
                 if ($pr -notmatch '\[CLIENT DIRECTIVE — observe') {
                     $pr = $pr + "`n`n" + $obsDir
-                    $notes.Add('observe-directive')
+                    [void]$notes.Add('observe-directive')
                 }
             } elseif ($obligation.want_web -or $obligation.want_list) {
                 $failDir = @(
@@ -6684,11 +8720,11 @@ function Invoke-PromptParleAgentLocalPrep {
                 ) -join ' '
                 if ($pr -notmatch '\[CLIENT DIRECTIVE — observe') {
                     $pr = $pr + "`n`n" + $failDir
-                    $notes.Add('observe-fail-directive')
+                    [void]$notes.Add('observe-fail-directive')
                 }
             }
         } catch {
-            $notes.Add('observe-prep-skip')
+            [void]$notes.Add('observe-prep-skip')
         }
     } elseif (Test-PromptParleWebSearchIntent -Prompt $pr) {
         # Residual thin web brief when obligation resolver missed but structural web intent hit
@@ -6701,12 +8737,12 @@ function Invoke-PromptParleAgentLocalPrep {
                 $web = Invoke-PromptParleWebSearchLocal -Query $wq -MaxResults 4 -MaxChars $webBudget
                 if ($web.ok -and $web.text) {
                     if ($ctx) { $ctx = $ctx + "`n`n" + $web.text } else { $ctx = $web.text }
-                    $notes.Add($(if ($web.cached) { 'web-cache' } else { 'web' }))
-                    $tools.Add('web_search')
+                    [void]$notes.Add($(if ($web.cached) { 'web-cache' } else { 'web' }))
+                    [void]$tools.Add('web_search')
                 }
             }
         } catch {
-            $notes.Add('web-skip')
+            [void]$notes.Add('web-skip')
         }
     }
 
@@ -6715,9 +8751,9 @@ function Invoke-PromptParleAgentLocalPrep {
         $gb = Get-PromptParleGroundingBlock -Context $ctx
         if ($gb) {
             if ($ctx) { $ctx = $ctx + "`n`n" + $gb } else { $ctx = $gb }
-            $notes.Add('grounding-block')
+            [void]$notes.Add('grounding-block')
         }
-    } catch { $notes.Add('grounding-skip') }
+    } catch { [void]$notes.Add('grounding-skip') }
 
     # 3c) 0.20 PROVENANCE when user audits a claim (where does it say / where did you get)
     try {
@@ -6734,7 +8770,7 @@ function Invoke-PromptParleAgentLocalPrep {
                             if ($pg.ok -and $pg.text) {
                                 $blk = "[OBSERVE] kind=web_page client-first (0.20 provenance)`nurl: $($pg.url)`nrule: Use for claim audit only.`n---`n$($pg.text)"
                                 if ($ctx) { $ctx = $ctx + "`n`n" + $blk } else { $ctx = $blk }
-                                $notes.Add('provenance-refetch')
+                                [void]$notes.Add('provenance-refetch')
                             }
                         }
                     } catch { }
@@ -6743,7 +8779,7 @@ function Invoke-PromptParleAgentLocalPrep {
             $prov = Invoke-PromptParleProvenancePrep -Prompt $pr -Context $ctx -History $History
             if ($prov.text) {
                 if ($ctx) { $ctx = $ctx + "`n`n" + $prov.text } else { $ctx = $prov.text }
-                foreach ($n in @($prov.notes)) { if ($n) { $notes.Add([string]$n) } }
+                foreach ($n in @($prov.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
                 $pdir = @(
                     '[CLIENT DIRECTIVE — provenance owed · 0.20]',
                     'Client already audited challenged claims in [PROVENANCE].',
@@ -6752,12 +8788,12 @@ function Invoke-PromptParleAgentLocalPrep {
                 ) -join ' '
                 if ($pr -notmatch '\[CLIENT DIRECTIVE — provenance') {
                     $pr = $pr + "`n`n" + $pdir
-                    $notes.Add('provenance-directive')
+                    [void]$notes.Add('provenance-directive')
                 }
             }
         }
     } catch {
-        $notes.Add('provenance-skip')
+        [void]$notes.Add('provenance-skip')
     }
 
     # Deliver sticky: if document owed, remind model of post-condition
@@ -6770,7 +8806,7 @@ function Invoke-PromptParleAgentLocalPrep {
         ) -join ' '
         if ($pr -notmatch '\[CLIENT DIRECTIVE — deliver') {
             $pr = $pr + "`n`n" + $delDir
-            $notes.Add('deliver-directive')
+            [void]$notes.Add('deliver-directive')
         }
         # Persist sticky early so short follow-ups keep the contract
         try {
@@ -6799,10 +8835,10 @@ function Invoke-PromptParleAgentLocalPrep {
         try {
             if ($wantDiff -and $ws.is_git) {
                 $extra = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(18000, [int]($budget * 0.55)))
-                if ($extra) { $notes.Add('diff'); $tools.Add('git_diff') }
+                if ($extra) { [void]$notes.Add('diff'); [void]$tools.Add('git_diff') }
             } elseif ($wantDeps) {
                 $extra = Get-PromptParleWorkspaceDepsMap -MaxChars 2800
-                if ($extra) { $notes.Add('deps'); $tools.Add('deps') }
+                if ($extra) { [void]$notes.Add('deps'); [void]$tools.Add('deps') }
             } elseif ($wantSlice -or ($bodyLen -lt 80 -and -not $wantMap)) {
                 # Prefer high-fidelity relevant slices over bare index when we have query tokens
                 $sliceBudget = [Math]::Min(14000, [int]($budget * 0.45))
@@ -6810,15 +8846,15 @@ function Invoke-PromptParleAgentLocalPrep {
                 $sl = Get-PromptParleRelevantSlice -Prompt $pr -MaxFiles $(if ($Dial -le 2) { 5 } else { 4 }) -MaxChars $sliceBudget
                 if ($sl.text) {
                     $extra = $sl.text
-                    foreach ($n in @($sl.notes)) { if ($n) { $notes.Add([string]$n) } }
-                    $tools.Add('relevant_slice')
+                    foreach ($n in @($sl.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+                    [void]$tools.Add('relevant_slice')
                 } elseif ($wantMap -or $bodyLen -lt 40) {
                     $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
-                    if ($extra) { $notes.Add('idx'); $tools.Add('file_index') }
+                    if ($extra) { [void]$notes.Add('idx'); [void]$tools.Add('file_index') }
                 }
             } elseif ($wantMap -or $bodyLen -lt 40) {
                 $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
-                if ($extra) { $notes.Add('idx'); $tools.Add('file_index') }
+                if ($extra) { [void]$notes.Add('idx'); [void]$tools.Add('file_index') }
             }
         } catch { $extra = $null }
         if ($extra) {
@@ -6838,9 +8874,9 @@ function Invoke-PromptParleAgentLocalPrep {
                     $rest = $Matches[2]
                 }
                 $ctx = if ($headKeep) { $headKeep + "`n`n" + $sl.text } else { $sl.text }
-                foreach ($n in @($sl.notes)) { if ($n) { $notes.Add([string]$n) } }
-                $notes.Add('slice>bulk')
-                $tools.Add('relevant_slice')
+                foreach ($n in @($sl.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+                [void]$notes.Add('slice>bulk')
+                [void]$tools.Add('relevant_slice')
             }
         } catch { }
     } elseif ($ws -and $ws.exists -and $ws.is_git -and $wantDiff) {
@@ -6851,18 +8887,18 @@ function Invoke-PromptParleAgentLocalPrep {
                     $connKeep = ''
                     if ($ctx -match '(?s)^(\[CONN\][^\n]*(?:\n(?!\[)[^\n]*)*)') { $connKeep = $Matches[1] }
                     $ctx = if ($connKeep) { $connKeep + "`n`n" + $gd } else { $gd }
-                    $notes.Add('diff>files')
-                    $tools.Add('git_diff')
+                    [void]$notes.Add('diff>files')
+                    [void]$tools.Add('git_diff')
                 }
             } catch { }
         }
     }
 
-    # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM; protect PROVENANCE/GROUNDING anywhere
+    # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM/KNOW; protect PROVENANCE/GROUNDING
     if ($ctx.Length -gt $budget) {
         $protected = New-Object System.Collections.Generic.List[string]
         $work = $ctx
-        foreach ($tag in @('PROVENANCE', 'GROUNDING')) {
+        foreach ($tag in @('PROVENANCE', 'GROUNDING', 'KNOW')) {
             $rx = '(?ms)(\[' + $tag + '\][^\n]*(?:\n(?!\[)[^\n]*)*)'
             foreach ($m in [regex]::Matches($work, $rx)) {
                 [void]$protected.Add($m.Groups[1].Value.Trim())
@@ -6871,7 +8907,7 @@ function Invoke-PromptParleAgentLocalPrep {
         }
         $headKeep = ''
         $rest = $work
-        while ($rest -match '(?s)^(\[(?:CONN|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+        while ($rest -match '(?s)^(\[(?:SELF|CONN|PROJECT|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
             if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
             else { $headKeep = $Matches[1] }
             $rest = $Matches[2]
@@ -6887,32 +8923,46 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($protText) { $pieces += $protText }
         if ($rest) { $pieces += $rest.Trim() }
         $ctx = ($pieces -join "`n`n")
-        $notes.Add("cap $budget")
+        [void]$notes.Add("cap $budget")
     }
 
     $charsOut = $ctx.Length + $pr.Length
-    $saved = [Math]::Max(0, $charsIn - $charsOut)
+    # Honest meter: wire in (+ rolling densify credit + always-on client framing) → prep out.
+    # framingInjected = SELF/CONN/PROJECT scaffolding any chat client would send anyway.
+    # No synthetic fleet credits.
+    $charsInEffective = $charsWire + [Math]::Max(0, [int]$memRollingCredit) + [Math]::Max(0, [int]$framingInjected)
+    $tokBefore = if ($charsInEffective -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsInEffective / 4.0)) }
+    $tokAfter = if ($charsOut -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsOut / 4.0)) }
+    $saved = [Math]::Max(0, $charsInEffective - $charsOut)
     if ($saved -gt 0) {
-        $pct = if ($charsIn -gt 0) { [int][Math]::Round(100.0 * $saved / $charsIn) } else { 0 }
-        $notes.Add("local −${pct}%")
+        $pct = if ($charsInEffective -gt 0) { [int][Math]::Round(100.0 * $saved / $charsInEffective) } else { 0 }
+        [void]$notes.Add("local −${pct}%")
+        [void]$notes.Add(("prep-tokens:{0}->{1}" -f $tokBefore, $tokAfter))
+    } elseif ($tokAfter -gt $tokBefore -and $tokBefore -gt 0) {
+        [void]$notes.Add(("prep-expanded:{0}->{1}" -f $tokBefore, $tokAfter))
     } elseif ($notes.Count -eq 0) {
-        $notes.Add('fidelity ok')
+        [void]$notes.Add('fidelity ok')
     }
 
-    return [pscustomobject]@{
-        prompt        = $pr
-        context       = $ctx
-        notes         = @($notes.ToArray())
-        tools         = @($tools | Select-Object -Unique)
-        agent         = 'none'
-        tools_enabled = $true
-        dial          = $Dial
-        budget        = $budget
-        chars_in      = $charsIn
-        chars_out     = $charsOut
-        obligation    = $obligation
-        turn_kind     = $turnKind
-    }
+    return ,([pscustomobject]@{
+        prompt           = $pr
+        context          = $ctx
+        notes            = @($notes.ToArray())
+        tools            = @($tools | Select-Object -Unique)
+        agent            = 'none'
+        tools_enabled    = $true
+        dial             = $Dial
+        budget           = $budget
+        chars_in         = $charsInEffective
+        chars_out        = $charsOut
+        tokens_before    = $tokBefore
+        tokens_after     = $tokAfter
+        evidence_mode    = $evidenceMode
+        hands_allowed    = [bool]$handsAllowed
+        evidence_reason  = $evidenceReason
+        obligation       = $obligation
+        turn_kind        = $turnKind
+    })
 }
 
 function Optimize-PromptParleAgent {
@@ -6975,7 +9025,7 @@ function Optimize-PromptParleAgent {
         if (-not ($suggested -contains 'git_diff')) { $suggested.Add('git_diff') }
         $reasons.Add('Git language → git + git_diff')
     }
-    if ($blob -match 'search|web|research|look up|news|docs|documentation|internet') {
+    if ($blob -match 'search|web|research|look up|news|docs|documentation|internet|theaters?|movies?|showtimes?|box office|as of today|right now') {
         if (-not ($suggested -contains 'web_search')) { $suggested.Add('web_search') }
         $reasons.Add('Research language → web_search (brief, cached)')
     }
@@ -7095,22 +9145,79 @@ function ConvertTo-PromptParleSingleString {
 }
 
 function Get-PromptParleTrimPath {
-    param([string]$Path)
-    $p = ConvertTo-PromptParleSingleString $Path
-    if (-not $p) { return '' }
-    # Use char[] — string overloads of TrimEnd cause "Argument types do not match" on Windows PS 5.1
-    return $p.TrimEnd([char[]]@([char]0x5C, [char]0x2F))
+    <#
+    .SYNOPSIS
+      Strip trailing \ or / without calling String.TrimEnd (PS method-bind footgun).
+    #>
+    param($Path)
+    $p = [string](ConvertTo-PromptParleSingleString $Path)
+    if ([string]::IsNullOrEmpty($p)) { return '' }
+    while ($p.Length -gt 0) {
+        $last = $p[$p.Length - 1]
+        if ($last -eq [char]0x5C -or $last -eq [char]0x2F) {
+            $p = $p.Substring(0, $p.Length - 1)
+        } else {
+            break
+        }
+    }
+    return $p
+}
+
+function Get-PromptParleTrimPathStart {
+    param($Path)
+    $p = [string](ConvertTo-PromptParleSingleString $Path)
+    if ([string]::IsNullOrEmpty($p)) { return '' }
+    $i = 0
+    while ($i -lt $p.Length) {
+        $ch = $p[$i]
+        if ($ch -eq [char]0x5C -or $ch -eq [char]0x2F) { $i++ } else { break }
+    }
+    if ($i -le 0) { return $p }
+    return $p.Substring($i)
+}
+
+function ConvertTo-PromptParleInt32 {
+    <# Internal: coerce numbers without [ref]/TryParse or ambiguous casts. #>
+    param($Value, [int]$Default = 0)
+    if ($null -eq $Value) { return $Default }
+    try {
+        if ($Value -is [int]) { return $Value }
+        if ($Value -is [long]) {
+            if ($Value -gt [int]::MaxValue -or $Value -lt [int]::MinValue) { return $Default }
+            return [int]$Value
+        }
+        if ($Value -is [double] -or $Value -is [float] -or $Value -is [decimal]) {
+            return [int][math]::Truncate([double]$Value)
+        }
+        $s = [string](ConvertTo-PromptParleSingleString $Value)
+        if ([string]::IsNullOrWhiteSpace($s)) { return $Default }
+        return [Convert]::ToInt32($s.Trim(), 10)
+    } catch {
+        return $Default
+    }
+}
+
+function Write-PromptParleDebugLog {
+    param([string]$Message)
+    try {
+        $log = Join-Path ([System.IO.Path]::GetTempPath()) 'promptparle-debug.log'
+        $line = '{0} {1}' -f (Get-Date).ToString('o'), $Message
+        [System.IO.File]::AppendAllText($log, $line + [Environment]::NewLine)
+    } catch { }
 }
 
 function Test-PromptParlePathEqual {
-    param([string]$A, [string]$B)
-    $a = ConvertTo-PromptParleSingleString $A
-    $b = ConvertTo-PromptParleSingleString $B
-    return [string]::Equals($a, $b, [StringComparison]::OrdinalIgnoreCase)
+    param($A, $B)
+    # Normalize trailing slashes via Get-PromptParleTrimPath (PS 5.1-safe)
+    $a = Get-PromptParleTrimPath -Path $A
+    $b = Get-PromptParleTrimPath -Path $B
+    if ($null -eq $a) { $a = '' }
+    if ($null -eq $b) { $b = '' }
+    return [string]::Equals([string]$a, [string]$b, [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Test-PromptParlePathStartsWith {
-    param([string]$Path, [string]$Prefix)
+    param($Path, $Prefix)
     $p = ConvertTo-PromptParleSingleString $Path
     $pre = ConvertTo-PromptParleSingleString $Prefix
     if (-not $p -or -not $pre) { return $false }
@@ -7123,10 +9230,10 @@ function Resolve-PromptParleExistingPath {
       Resolve a user path to a single existing full path string.
     #>
     param(
-        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$Path,
         [switch]$DirectoryOnly
     )
-    $raw = (ConvertTo-PromptParleSingleString $Path).Trim().Trim([char]'"').Trim([char]"'")
+    $raw = (ConvertTo-PromptParleSingleString $Path).Trim().Trim([char]0x22).Trim([char]0x27)
     if (-not $raw) { throw 'Path is empty' }
 
     $home = Get-PromptParleHomePath
@@ -7201,16 +9308,17 @@ function Test-PromptParlePathIsGitRepo {
 
 function Add-PromptParleWorkspaceRecent {
     param(
-        [string]$Path,
+        $Path,
         [int]$Max = 12
     )
     $pathStr = ConvertTo-PromptParleSingleString $Path
-    if (-not $pathStr) { return [string[]]@() }
+    if (-not $pathStr) { return ,([string[]]@()) }
+
+    # Avoid List[string].Add — on PS 5.1 odd string wrappers throw "Argument types do not match"
+    $acc = New-Object System.Collections.ArrayList
+    [void]$acc.Add([string]$pathStr)
 
     $state = Get-PromptParleSessionState
-    $list = New-Object System.Collections.Generic.List[string]
-    [void]$list.Add($pathStr)
-
     $existing = Get-PromptParleProp $state 'workspace_recent'
     if ($null -ne $existing) {
         foreach ($item in @($existing)) {
@@ -7218,47 +9326,563 @@ function Add-PromptParleWorkspaceRecent {
             if (-not $s) { continue }
             if (Test-PromptParlePathEqual -A $s -B $pathStr) { continue }
             if (Test-Path -LiteralPath $s -PathType Container) {
-                [void]$list.Add($s)
+                [void]$acc.Add([string]$s)
             }
         }
     }
-    while ($list.Count -gt $Max) { $list.RemoveAt($list.Count - 1) }
+    while ($acc.Count -gt $Max) { $acc.RemoveAt($acc.Count - 1) }
     # Force array (never unwrap single element to bare string)
-    return [string[]]@($list.ToArray())
+    return ,([string[]]@($acc.ToArray()))
 }
 
 function Set-PromptParleWorkspace {
     <#
     .SYNOPSIS
-      Attach a local folder (optionally a git repo) as the coding workspace.
+      Attach a local folder as a coding workspace connection.
+      Mode add (default): append up to max locals. Mode replace: single active local only.
       Path stays on this PC; never uploaded to PromptParle cloud.
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]$Path
+        [Parameter(Mandatory)]$Path,
+        [ValidateSet('add', 'replace')]
+        [string]$Mode = 'add',
+        [string]$Label = '',
+        [string]$Id = ''
     )
+    $stage = 'init'
+    $pathIn = ConvertTo-PromptParleSingleString $Path
     try {
-        $resolved = Resolve-PromptParleExistingPath -Path (ConvertTo-PromptParleSingleString $Path) -DirectoryOnly
-        $kind = if (Test-PromptParlePathIsGitRepo -Path $resolved) { 'git' } else { 'local' }
-        $recent = [string[]]@(Add-PromptParleWorkspaceRecent -Path $resolved)
-        $state = Get-PromptParleSessionState
-        $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $resolved -WorkspaceKind $kind -WorkspaceRecent $recent
-        Save-PromptParleSessionState -State $state
+        $stage = 'resolve'
+        $resolved = Resolve-PromptParleExistingPath -Path $pathIn -DirectoryOnly
+        $resolved = ConvertTo-PromptParleSingleString $resolved
+        if (-not $resolved) { throw 'Resolved path is empty' }
+
+        $stage = 'git-check'
+        $wkind = if (Test-PromptParlePathIsGitRepo -Path $resolved) { 'git' } else { 'local' }
+
+        $stage = 'recent'
+        $recent = @()
+        try {
+            $recent = @([string[]]@(Add-PromptParleWorkspaceRecent -Path $resolved))
+        } catch {
+            $recent = @([string]$resolved)
+        }
+
+        $stage = 'connections-load'
+        $list = @()
+        try {
+            $list = @(Get-PromptParleConnections)
+        } catch {
+            Write-PromptParleDebugLog ("Set-PromptParleWorkspace connections-load: " + $_.Exception.ToString())
+            $list = @()
+        }
+
+        $stage = 'normalize'
+        $norm = Get-PromptParleTrimPath -Path $resolved
+
+        if ($Mode -eq 'replace') {
+            $list = @($list | Where-Object { $_.kind -ne 'local' })
+        } else {
+            # Dedupe same path
+            foreach ($c in $list) {
+                if ($c.kind -eq 'local' -and $c.path -and (Test-PromptParlePathEqual -A $c.path -B $norm)) {
+                    $c.active = $true
+                    foreach ($o in $list) {
+                        if ($o.kind -eq 'local' -and $o.id -ne $c.id) { $o.active = $false }
+                    }
+                    if ($Label) { $c.label = (ConvertTo-PromptParleSingleString $Label).Trim() }
+                    $stage = 'save-existing'
+                    $null = Save-PromptParleConnectionsState -Connections $list -WorkspaceRecent $recent
+                    try { Update-PromptParleConnectionCatalog -Connection $c | Out-Null } catch { }
+                    return [pscustomobject]@{
+                        path        = $resolved
+                        kind        = $wkind
+                        is_git      = [bool]($wkind -eq 'git')
+                        recent      = $recent
+                        id          = $c.id
+                        label       = $c.label
+                        connections = @(Get-PromptParleConnections)
+                        mode        = 'existing'
+                    }
+                }
+            }
+            $localCount = @($list | Where-Object { $_.kind -eq 'local' }).Count
+            if ($localCount -ge $script:PromptParleMaxLocalConnections) {
+                throw "Local folder limit is $($script:PromptParleMaxLocalConnections). Detach one before adding another."
+            }
+        }
+
+        $stage = 'new-row'
+        $labIn = (ConvertTo-PromptParleSingleString $Label).Trim()
+        $leaf = if ($labIn) { $labIn } else { Split-Path -Leaf $resolved }
+        if (-not $leaf) { $leaf = 'This PC' }
+        $newId = if ($Id) { ConvertTo-PromptParleSingleString $Id } else { New-PromptParleConnectionId -Prefix 'pc' }
+        # New local becomes active
+        foreach ($c in $list) {
+            if ($c.kind -eq 'local') { $c.active = $false }
+        }
+        $row = [pscustomobject]@{
+            id         = $newId
+            kind       = 'local'
+            label      = $leaf
+            path       = $resolved
+            active     = $true
+            readonly   = $false
+            source     = 'local'
+            ssh_target = ''
+            ssh_port   = 22
+            ssh_cwd    = ''
+            ssh_name   = ''
+            catalog_id = $newId
+            indexed_at = ''
+            file_count = 0
+        }
+        $list = @($list) + @($row)
+
+        $stage = 'save-new'
+        $null = Save-PromptParleConnectionsState -Connections $list -WorkspaceRecent $recent
+
+        $stage = 'catalog'
+        $idx = $null
+        try { $idx = Update-PromptParleConnectionCatalog -Connection $row } catch { $idx = $null }
+        if ($idx) {
+            $row.indexed_at = [string](Get-PromptParleProp $idx 'indexed_at' '')
+            $row.file_count = ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $idx 'file_count' 0) -Default 0
+            $list2 = @(Get-PromptParleConnections)
+            foreach ($c in $list2) {
+                if ($c.id -eq $row.id) {
+                    $c.indexed_at = $row.indexed_at
+                    $c.file_count = $row.file_count
+                }
+            }
+            $stage = 'save-indexed'
+            $null = Save-PromptParleConnectionsState -Connections $list2 -WorkspaceRecent $recent
+        }
         return [pscustomobject]@{
-            path   = $resolved
-            kind   = $kind
-            is_git = [bool]($kind -eq 'git')
-            recent = $recent
+            path        = $resolved
+            kind        = $wkind
+            is_git      = [bool]($wkind -eq 'git')
+            recent      = $recent
+            id          = $newId
+            label       = $leaf
+            connections = @(Get-PromptParleConnections)
+            mode        = $Mode
+            file_count  = if ($idx) { ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $idx 'file_count' 0) -Default 0 } else { 0 }
         }
     } catch {
-        throw "Attach folder failed ($Path): $_"
+        $ver = 'unknown'
+        try { $ver = Get-PromptParleClientVersion } catch { }
+        $msg = $_.Exception.Message
+        if (-not $msg) { $msg = "$_" }
+        $etype = $_.Exception.GetType().FullName
+        Write-PromptParleDebugLog ("Set-PromptParleWorkspace FAIL v$ver stage=$stage path=$pathIn type=$etype msg=$msg stack=$($_.ScriptStackTrace)")
+        throw ("Attach folder failed [v{0}] ({1}) at {2}: {3}: {4}" -f $ver, $pathIn, $stage, $etype, $msg)
     }
 }
 
 function Clear-PromptParleWorkspace {
-    $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath '' -WorkspaceKind 'none'
-    Save-PromptParleSessionState -State $state
+    param(
+        [string]$Id = '',
+        [switch]$All
+    )
+    $list = @(Get-PromptParleConnections)
+    if ($Id) {
+        $list = @($list | Where-Object { $_.id -ne $Id })
+    } elseif ($All -or -not $Id) {
+        # Default: clear all locals (legacy clear)
+        $list = @($list | Where-Object { $_.kind -ne 'local' })
+    }
+    # Ensure one active local if any remain
+    $locals = @($list | Where-Object { $_.kind -eq 'local' })
+    if ($locals.Count -gt 0 -and -not ($locals | Where-Object { $_.active })) {
+        $locals[0].active = $true
+    }
+    $null = Save-PromptParleConnectionsState -Connections $list
+}
+
+function Set-PromptParleActiveLocalConnection {
+    param([Parameter(Mandatory)][string]$IdOrLabel)
+    $key = $IdOrLabel.Trim()
+    $list = @(Get-PromptParleConnections)
+    $hit = $null
+    foreach ($c in $list) {
+        if ($c.kind -ne 'local') { continue }
+        if ($c.id -eq $key -or ($c.label -and $c.label.Equals($key, [StringComparison]::OrdinalIgnoreCase))) {
+            $hit = $c; break
+        }
+    }
+    if (-not $hit) { throw "Local connection not found: $IdOrLabel" }
+    foreach ($c in $list) {
+        if ($c.kind -eq 'local') { $c.active = ($c.id -eq $hit.id) }
+    }
+    $null = Save-PromptParleConnectionsState -Connections $list
+    return $hit
+}
+
+function Add-PromptParleKnowledgeConnection {
+    <#
+    .SYNOPSIS
+      Attach a read-only knowledge root (local folder or SSH docs cwd). Indexes on disk; not dumped into prompts.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Path = '',
+        [string]$Label = '',
+        [ValidateSet('local', 'ssh')]
+        [string]$Source = 'local',
+        [string]$SshTarget = '',
+        [int]$SshPort = 22,
+        [string]$SshCwd = '',
+        [string]$SshName = ''
+    )
+    $list = @(Get-PromptParleConnections)
+    $kCount = @($list | Where-Object { $_.kind -eq 'knowledge' }).Count
+    if ($kCount -ge $script:PromptParleMaxKnowledgeConnections) {
+        throw "Knowledge repo limit is $($script:PromptParleMaxKnowledgeConnections). Detach one first."
+    }
+    $resolved = ''
+    if ($Source -eq 'local') {
+        if (-not $Path) { throw 'Knowledge local path required.' }
+        $resolved = Resolve-PromptParleExistingPath -Path (ConvertTo-PromptParleSingleString $Path) -DirectoryOnly
+        $norm = Get-PromptParleTrimPath -Path $resolved
+        foreach ($c in $list) {
+            if ($c.kind -eq 'knowledge' -and $c.source -eq 'local' -and $c.path -and (Test-PromptParlePathEqual -A $c.path -B $norm)) {
+                throw "Knowledge folder already attached: $($c.label)"
+            }
+        }
+    } else {
+        if (-not $SshTarget) { throw 'SSH knowledge requires host (user@host).' }
+        $SshTarget = $SshTarget.Trim()
+    }
+    $leaf = if ($Label -and $Label.Trim()) { $Label.Trim() } elseif ($resolved) { Split-Path -Leaf $resolved } elseif ($SshName) { $SshName } else { 'Knowledge' }
+    $newId = New-PromptParleConnectionId -Prefix 'kn'
+    $row = [pscustomobject]@{
+        id         = $newId
+        kind       = 'knowledge'
+        label      = $leaf
+        path       = $resolved
+        active     = $false
+        readonly   = $true
+        source     = $Source
+        ssh_target = if ($Source -eq 'ssh') { $SshTarget } else { '' }
+        ssh_port   = if ($Source -eq 'ssh') { $SshPort } else { 22 }
+        ssh_cwd    = if ($Source -eq 'ssh') { $SshCwd } else { '' }
+        ssh_name   = if ($Source -eq 'ssh') { $SshName } else { '' }
+        catalog_id = $newId
+        indexed_at = ''
+        file_count = 0
+    }
+    $list = @($list) + @($row)
+    $null = Save-PromptParleConnectionsState -Connections $list
+    $idx = $null
+    try { $idx = Update-PromptParleConnectionCatalog -Connection $row } catch { $idx = $null }
+    if ($idx) {
+        $list2 = @(Get-PromptParleConnections)
+        foreach ($c in $list2) {
+            if ($c.id -eq $newId) {
+                $c.indexed_at = [string]$idx.indexed_at
+                $c.file_count = [int]$idx.file_count
+            }
+        }
+        $null = Save-PromptParleConnectionsState -Connections $list2
+    }
+    return [pscustomobject]@{
+        id         = $newId
+        label      = $leaf
+        path       = $resolved
+        source     = $Source
+        file_count = if ($idx) { [int]$idx.file_count } else { 0 }
+        connections = @(Get-PromptParleConnections)
+    }
+}
+
+function Remove-PromptParleConnection {
+    param([Parameter(Mandatory)][string]$Id)
+    $list = @(Get-PromptParleConnections)
+    $before = $list.Count
+    $list = @($list | Where-Object { $_.id -ne $Id })
+    if ($list.Count -eq $before) { throw "Connection not found: $Id" }
+    $locals = @($list | Where-Object { $_.kind -eq 'local' })
+    if ($locals.Count -gt 0 -and -not ($locals | Where-Object { $_.active })) {
+        $locals[0].active = $true
+    }
+    $null = Save-PromptParleConnectionsState -Connections $list
+    try {
+        $cat = Get-PromptParleCatalogDir
+        $meta = Join-Path $cat ("conn_{0}.json" -f $Id)
+        $idx = Join-Path $cat ("conn_{0}.idx.jsonl" -f $Id)
+        if (Test-Path -LiteralPath $meta) { Remove-Item -LiteralPath $meta -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $idx) { Remove-Item -LiteralPath $idx -Force -ErrorAction SilentlyContinue }
+    } catch { }
+    return @(Get-PromptParleConnections)
+}
+
+function Update-PromptParleConnectionCatalog {
+    <#
+    .SYNOPSIS
+      Build on-disk structure index for a connection (no model, no prompt tokens).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Connection,
+        [int]$MaxFiles = 0
+    )
+    if ($MaxFiles -le 0) { $MaxFiles = $script:PromptParleCatalogMaxFiles }
+    $c = ConvertTo-PromptParleConnectionObject -Item $Connection
+    if (-not $c) { throw 'Invalid connection' }
+    $catDir = Get-PromptParleCatalogDir
+    $cid = if ($c.catalog_id) { $c.catalog_id } else { $c.id }
+    $metaPath = Join-Path $catDir ("conn_{0}.json" -f $cid)
+    $idxPath = Join-Path $catDir ("conn_{0}.idx.jsonl" -f $cid)
+    $skip = @($script:PromptParleSkipDirNames)
+    # ArrayList — avoid List[string].Add type mismatches on Windows PS 5.1
+    $entries = New-Object System.Collections.ArrayList
+    $extCount = @{}
+    $topDirs = @{}
+    $fileCount = 0
+    $sample = New-Object System.Collections.ArrayList
+
+    if ($c.kind -eq 'knowledge' -and $c.source -eq 'ssh') {
+        # Lightweight remote listing under ssh cwd (names only)
+        try {
+            $remote = if ($c.ssh_cwd) { $c.ssh_cwd } else { '.' }
+            $cmd = "find $(if ($c.ssh_cwd) { [string][char]39 + $c.ssh_cwd.Replace([string][char]39, '') + [string][char]39 } else { '.' }) -maxdepth 3 -type f 2>/dev/null | head -n $MaxFiles"
+            $r = Invoke-PromptParleSsh -RemoteCommand $cmd -Target $c.ssh_target -Port $c.ssh_port -SkipSessionCwd
+            $lines = @([string]$r.text -split "`n")
+            foreach ($ln in $lines) {
+                $rel = $ln.Trim()
+                if (-not $rel) { continue }
+                $fileCount++
+                $ext = [IO.Path]::GetExtension($rel).ToLowerInvariant()
+                if (-not $ext) { $ext = '(none)' }
+                if (-not $extCount.ContainsKey($ext)) { $extCount[$ext] = 0 }
+                $extCount[$ext]++
+                $name = Split-Path -Leaf $rel
+                [void]$entries.Add([string](@{ p = $rel; e = $ext; n = $name } | ConvertTo-Json -Compress))
+                if ($sample.Count -lt 12) { [void]$sample.Add([string]$rel) }
+            }
+        } catch {
+            # leave empty index
+        }
+    } elseif ($c.path -and (Test-Path -LiteralPath $c.path -PathType Container)) {
+        $root = $c.path
+        $rootLen = $root.Length
+        Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                $rel = $_.FullName.Substring($rootLen).TrimStart([char]0x5C, [char]0x2F)
+                $skipHit = $false
+                foreach ($d in $skip) {
+                    if ($rel -match [regex]::Escape($d + [IO.Path]::DirectorySeparatorChar) -or
+                        $rel -match ('(?i)(^|[/\\])' + [regex]::Escape($d) + '([/\\]|$)')) {
+                        $skipHit = $true; break
+                    }
+                }
+                -not $skipHit
+            } |
+            Select-Object -First $MaxFiles |
+            ForEach-Object {
+                $fileCount++
+                $rel = $_.FullName.Substring($rootLen).TrimStart([char]0x5C, [char]0x2F).Replace('\', '/')
+                $ext = if ($_.Extension) { $_.Extension.ToLowerInvariant() } else { '(none)' }
+                if (-not $extCount.ContainsKey($ext)) { $extCount[$ext] = 0 }
+                $extCount[$ext]++
+                $parts = $rel -split '/'
+                if ($parts.Count -gt 1) {
+                    $td = $parts[0]
+                    if (-not $topDirs.ContainsKey($td)) { $topDirs[$td] = 0 }
+                    $topDirs[$td]++
+                }
+                $title = ''
+                # Cheap title for knowledge markdown
+                if ($c.kind -eq 'knowledge' -and $ext -in @('.md', '.txt', '.rst')) {
+                    try {
+                        $head = Get-Content -LiteralPath $_.FullName -TotalCount 8 -ErrorAction SilentlyContinue
+                        foreach ($h in @($head)) {
+                            if ($h -match '^\s*#\s+(.+)$') { $title = $Matches[1].Trim(); break }
+                            if ($h -and $h.Trim() -and $h.Length -lt 120) { $title = $h.Trim(); break }
+                        }
+                    } catch { }
+                }
+                $obj = [ordered]@{
+                    p = $rel
+                    e = $ext
+                    b = [long]$_.Length
+                    n = $_.Name
+                }
+                if ($title) { $obj.t = $title }
+                [void]$entries.Add([string]($obj | ConvertTo-Json -Compress))
+                if ($sample.Count -lt 12) { [void]$sample.Add([string]$rel) }
+            }
+    }
+
+    $extParts = @()
+    foreach ($k in ($extCount.Keys | Sort-Object { -$extCount[$_] } | Select-Object -First 12)) {
+        $extParts += ('{0}:{1}' -f $k, $extCount[$k])
+    }
+    $topList = @($topDirs.Keys | Sort-Object { -$topDirs[$_] } | Select-Object -First 10)
+    $now = (Get-Date).ToString('o')
+    $meta = [ordered]@{
+        id         = $c.id
+        catalog_id = $cid
+        kind       = $c.kind
+        label      = $c.label
+        path       = $c.path
+        source     = $c.source
+        file_count = $fileCount
+        top_dirs   = $topList
+        ext_counts = ($extParts -join ' ')
+        samples    = @($sample)
+        indexed_at = $now
+    }
+    ($meta | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $metaPath -Encoding UTF8
+    if ($entries.Count -gt 0) {
+        ($entries -join "`n") | Set-Content -LiteralPath $idxPath -Encoding UTF8
+    } else {
+        '' | Set-Content -LiteralPath $idxPath -Encoding UTF8
+    }
+    return [pscustomobject]@{
+        catalog_id = $cid
+        file_count = $fileCount
+        indexed_at = $now
+        meta_path  = $metaPath
+    }
+}
+
+function Get-PromptParleConnectionCatalogMeta {
+    param([Parameter(Mandatory)][string]$Id)
+    $path = Join-Path (Get-PromptParleCatalogDir) ("conn_{0}.json" -f $Id)
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+    } catch { return $null }
+}
+
+function Search-PromptParleKnowledgeCatalog {
+    <#
+    .SYNOPSIS
+      Keyword search over knowledge indexes only (paths/titles). Bodies loaded only via Read.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Query,
+        [int]$MaxHits = 12,
+        [int]$MaxChars = 1800
+    )
+    $q = $Query.Trim()
+    if (-not $q) { return 'know_search: empty query' }
+    $tokens = @($q.ToLowerInvariant() -split '\s+' | Where-Object { $_.Length -gt 1 } | Select-Object -First 8)
+    if ($tokens.Count -eq 0) { $tokens = @($q.ToLowerInvariant()) }
+    $hits = New-Object System.Collections.Generic.List[string]
+    $used = 0
+    foreach ($c in @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'knowledge' })) {
+        $cid = if ($c.catalog_id) { $c.catalog_id } else { $c.id }
+        $idxPath = Join-Path (Get-PromptParleCatalogDir) ("conn_{0}.idx.jsonl" -f $cid)
+        if (-not (Test-Path -LiteralPath $idxPath)) {
+            try { Update-PromptParleConnectionCatalog -Connection $c | Out-Null } catch { }
+        }
+        if (-not (Test-Path -LiteralPath $idxPath)) { continue }
+        $lines = Get-Content -LiteralPath $idxPath -ErrorAction SilentlyContinue
+        foreach ($ln in @($lines)) {
+            if (-not $ln) { continue }
+            $low = $ln.ToLowerInvariant()
+            $score = 0
+            foreach ($t in $tokens) {
+                if ($low.Contains($t)) { $score++ }
+            }
+            if ($score -le 0) { continue }
+            try {
+                $obj = $ln | ConvertFrom-Json
+                $p = [string](Get-PromptParleProp $obj 'p' '')
+                $title = [string](Get-PromptParleProp $obj 't' '')
+                $line = "KNOW[$($c.label)] $p"
+                if ($title) { $line += " — $title" }
+                $line += " (score $score)"
+                if (($used + $line.Length) -gt $MaxChars -and $hits.Count -gt 0) { break }
+                [void]$hits.Add($line)
+                $used += $line.Length + 1
+                if ($hits.Count -ge $MaxHits) { break }
+            } catch { }
+        }
+        if ($hits.Count -ge $MaxHits) { break }
+    }
+    if ($hits.Count -eq 0) {
+        return "know_search: no hits for '$q' (knowledge indexes only; use know_read path after a hit)."
+    }
+    return "know_search '$q' (paths only — call know_read for text):`n" + ($hits -join "`n")
+}
+
+function Read-PromptParleKnowledgeFile {
+    param(
+        [Parameter(Mandatory)][string]$PathOrRel,
+        [string]$ConnectionId = '',
+        [int]$MaxChars = 8000
+    )
+    $want = $PathOrRel.Trim().Trim('"').Trim("'")
+    $targets = @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'knowledge' })
+    if ($ConnectionId) {
+        $targets = @($targets | Where-Object { $_.id -eq $ConnectionId -or $_.label -eq $ConnectionId })
+    }
+    foreach ($c in $targets) {
+        if ($c.source -eq 'ssh') {
+            try {
+                $r = Invoke-PromptParleSsh -RemoteCommand ("head -c $MaxChars -- " + $want.Replace("'", '')) -Target $c.ssh_target -Port $c.ssh_port -WorkingDirectory $c.ssh_cwd
+                if ($r.exit_code -eq 0 -and $r.text) {
+                    $body = [string]$r.text
+                    if ($body.Length -gt $MaxChars) { $body = $body.Substring(0, $MaxChars) + "`n…[know]" }
+                    return "[KNOW $($c.label)] $want`n$body"
+                }
+            } catch { }
+            continue
+        }
+        if (-not $c.path) { continue }
+        $full = $want
+        if (-not [IO.Path]::IsPathRooted($want)) {
+            $full = Join-Path $c.path ($want -replace '/', [IO.Path]::DirectorySeparatorChar)
+        }
+        # Stay under knowledge root
+        try {
+            $fullRes = (Resolve-Path -LiteralPath $full -ErrorAction Stop).Path
+            $rootRes = (Resolve-Path -LiteralPath $c.path -ErrorAction Stop).Path
+            if (-not $fullRes.StartsWith($rootRes, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (-not (Test-Path -LiteralPath $fullRes -PathType Leaf)) { continue }
+            $raw = Get-Content -LiteralPath $fullRes -Raw -ErrorAction Stop
+            if ($raw.Length -gt $MaxChars) { $raw = $raw.Substring(0, $MaxChars) + "`n…[know]" }
+            $rel = $fullRes.Substring($rootRes.Length).TrimStart([char]0x5C, [char]0x2F)
+            return "[KNOW $($c.label)] $rel`n$raw"
+        } catch { }
+    }
+    return "know_read: not found under knowledge roots: $want"
+}
+
+function Get-PromptParleConnectionIndexText {
+    param([string]$IdOrLabel = '')
+    $list = @(Get-PromptParleConnections)
+    $c = $null
+    if ($IdOrLabel) {
+        foreach ($x in $list) {
+            if ($x.id -eq $IdOrLabel -or ($x.label -and $x.label.Equals($IdOrLabel, [StringComparison]::OrdinalIgnoreCase))) {
+                $c = $x; break
+            }
+        }
+    } else {
+        $c = Get-PromptParleActiveLocalConnection
+    }
+    if (-not $c) { return 'conn_index: no connection matched.' }
+    $cid = if ($c.catalog_id) { $c.catalog_id } else { $c.id }
+    $meta = Get-PromptParleConnectionCatalogMeta -Id $cid
+    if (-not $meta) {
+        try { Update-PromptParleConnectionCatalog -Connection $c | Out-Null } catch { }
+        $meta = Get-PromptParleConnectionCatalogMeta -Id $cid
+    }
+    if (-not $meta) { return "conn_index: $($c.label) — no catalog yet." }
+    $lines = @(
+        "conn_index: $($c.label) [$($c.kind)]",
+        "files: $($meta.file_count)",
+        "top: $([string]($meta.top_dirs -join ', '))",
+        "ext: $([string]$meta.ext_counts)",
+        "sample: $((@($meta.samples) | Select-Object -First 8) -join ' · ')"
+    )
+    return ($lines -join "`n")
 }
 
 function Get-PromptParleWorkspace {
@@ -7290,17 +9914,21 @@ function Get-PromptParleWorkspace {
             if ($s -and (Test-Path -LiteralPath $s -PathType Container)) { $recent += $s }
         }
     }
+    $conns = @()
+    try { $conns = @(Ensure-PromptParleConnectionsMigrated -State $state) } catch { $conns = @() }
     return [pscustomobject]@{
-        path       = $path
-        kind       = $kind
-        exists     = $exists
-        is_git     = $isGit
-        branch     = $branch
-        remote     = $remote
-        recent     = $recent
-        ssh_target = [string](Get-PromptParleProp $state 'ssh_target' '')
-        ssh_port   = [int](Get-PromptParleProp $state 'ssh_port' 22)
-        ssh_cwd    = [string](Get-PromptParleProp $state 'ssh_cwd' '')
+        path        = $path
+        kind        = $kind
+        exists      = $exists
+        is_git      = $isGit
+        branch      = $branch
+        remote      = $remote
+        recent      = $recent
+        ssh_target  = [string](Get-PromptParleProp $state 'ssh_target' '')
+        ssh_port    = ConvertTo-PromptParleSshPort -Value (Get-PromptParleProp $state 'ssh_port' 22)
+        ssh_cwd     = [string](Get-PromptParleProp $state 'ssh_cwd' '')
+        ssh_name    = [string](Get-PromptParleProp $state 'ssh_name' '')
+        connections = $conns
     }
 }
 
@@ -7487,7 +10115,7 @@ function Resolve-PromptParleWorkspacePath {
         throw 'No workspace attached. Use /workspace C:\path\to\repo'
     }
     $rootStr = ConvertTo-PromptParleSingleString $Root
-    $rel = (ConvertTo-PromptParleSingleString $RelativePath).Trim().TrimStart([char[]]@([char]0x2F, [char]0x5C))
+    $rel = (ConvertTo-PromptParleSingleString $RelativePath).Trim().TrimStart([char]0x2F, [char]0x5C)
     $rel = $rel.Replace([char]0x2F, [IO.Path]::DirectorySeparatorChar)
     if ($rel -match '(^|[\\/])\.\.([\\/]|$)') {
         throw 'Path may not contain ..'
@@ -7614,7 +10242,7 @@ function Find-PromptParleWorkspaceFiles {
     $skip = $script:PromptParleSkipDirNames
     $wsPath = ConvertTo-PromptParleSingleString $ws.path
     $files = Get-ChildItem -LiteralPath $wsPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
-        $rel = $_.FullName.Substring($wsPath.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
+        $rel = $_.FullName.Substring($wsPath.Length).TrimStart([char]0x5C, [char]0x2F)
         foreach ($s in $skip) {
             if ($rel -like "$s\*" -or $rel -like "$s/*" -or $rel -eq $s) { return $false }
         }
@@ -7624,7 +10252,7 @@ function Find-PromptParleWorkspaceFiles {
     $wsRoot = Get-PromptParleTrimPath $wsPath
     $lines = @("Matches for '$Pattern' (max $Max):")
     foreach ($f in $files) {
-        $rel = $f.FullName.Substring($wsRoot.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
+        $rel = $f.FullName.Substring($wsRoot.Length).TrimStart([char]0x5C, [char]0x2F)
         $lines += "  $rel  ($([math]::Round($f.Length/1KB,1)) KB)"
     }
     if ($files.Count -eq 0) { $lines += '  (none)' }
@@ -7642,7 +10270,7 @@ function Get-PromptParleWorkspacePack {
     $skip = $script:PromptParleSkipDirNames
     $wsPath = ConvertTo-PromptParleSingleString $ws.path
     $files = @(Get-ChildItem -LiteralPath $wsPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
-        $rel = $_.FullName.Substring($wsPath.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
+        $rel = $_.FullName.Substring($wsPath.Length).TrimStart([char]0x5C, [char]0x2F)
         foreach ($s in $skip) {
             if ($rel -like "$s\*" -or $rel -like "$s/*") { return $false }
         }
@@ -7656,7 +10284,7 @@ function Get-PromptParleWorkspacePack {
     foreach ($f in $files) {
         try {
             $read = Read-PromptParleTextFileSafe -Path $f.FullName
-            $rel = $f.FullName.Substring($wsRoot.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F))
+            $rel = $f.FullName.Substring($wsRoot.Length).TrimStart([char]0x5C, [char]0x2F)
             [void]$packed.Add([pscustomobject]@{
                 name = $rel.Replace([char]0x5C, [char]0x2F)
                 text = $read.text
@@ -7974,51 +10602,262 @@ fi
     }
 }
 
-function Set-PromptParleSshTarget {
+function Get-PromptParleSshHistoryPath {
+    return (Join-Path $script:PromptParleConfigDir 'ssh-history.json')
+}
+
+function ConvertTo-PromptParleSshPort {
+    <# Internal: coerce port to 1–65535, default 22. Avoids try/catch inside hashtables (PS parse break). #>
+    param($Value, [int]$Default = 22)
+    $n = ConvertTo-PromptParleInt32 -Value $Value -Default $Default
+    if ($n -lt 1 -or $n -gt 65535) { return $Default }
+    return $n
+}
+
+function ConvertTo-PromptParleSshLastUsedSortKey {
+    <# Internal: sortable DateTime for history last_used strings. #>
+    param([string]$Value)
+    if (-not $Value) { return [datetime]::MinValue }
+    $dt = [datetime]::MinValue
+    if ([datetime]::TryParse($Value, [ref]$dt)) { return $dt }
+    return [datetime]::MinValue
+}
+
+function Get-PromptParleSshHistory {
+    <#
+    .SYNOPSIS
+      Local SSH connection history (friendly name + target + port + cwd). Never stores passwords.
+      Sorted by last_used descending (most recent first).
+    #>
+    [CmdletBinding()]
+    param([int]$Max = 30)
+    $path = Get-PromptParleSshHistoryPath
+    $list = New-Object System.Collections.Generic.List[object]
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+            $arr = $raw | ConvertFrom-Json
+            foreach ($item in @($arr)) {
+                if (-not $item) { continue }
+                $tgt = [string](Get-PromptParleProp $item 'target' '')
+                if (-not $tgt) { continue }
+                # Never accept password-like fields even if older files had them.
+                # Build properties with plain assignments (no try/catch inside @{ } — PS 5.1 parse error).
+                $portN = ConvertTo-PromptParleSshPort -Value (Get-PromptParleProp $item 'port' 22)
+                $row = [pscustomobject]@{
+                    name      = [string](Get-PromptParleProp $item 'name' '')
+                    target    = $tgt
+                    port      = $portN
+                    cwd       = [string](Get-PromptParleProp $item 'cwd' '')
+                    last_used = [string](Get-PromptParleProp $item 'last_used' '')
+                }
+                [void]$list.Add($row)
+            }
+        } catch { }
+    }
+    $sorted = @(
+        $list | Sort-Object { ConvertTo-PromptParleSshLastUsedSortKey -Value $_.last_used } -Descending
+    )
+    if ($Max -gt 0 -and $sorted.Count -gt $Max) {
+        $sorted = $sorted | Select-Object -First $Max
+    }
+    return @($sorted)
+}
+
+function Save-PromptParleSshHistoryEntry {
+    <#
+    .SYNOPSIS
+      Upsert a history entry (no passwords). Keyed by target+port.
+    #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Target,
         [int]$Port = 22,
         [string]$WorkingDirectory = '',
-        # Validate remote cwd exists (default true when path provided)
-        [bool]$ValidateCwd = $true
+        [string]$Name = ''
     )
     $t = $Target.Trim()
+    if (-not $t) { return }
+    if ($Port -le 0) { $Port = 22 }
+    $cwd = if ($null -eq $WorkingDirectory) { '' } else { $WorkingDirectory.Trim() }
+    $nm = if ($null -eq $Name) { '' } else { $Name.Trim() }
+    $now = (Get-Date).ToString('o')
+    $existing = @(Get-PromptParleSshHistory -Max 100)
+    $out = New-Object System.Collections.Generic.List[object]
+    $found = $false
+    foreach ($e in $existing) {
+        $ep = ConvertTo-PromptParleSshPort -Value $e.port
+        if ([string]$e.target -eq $t -and $ep -eq $Port) {
+            $found = $true
+            $keepName = if ($nm) { $nm } else { [string]$e.name }
+            $row = [pscustomobject]@{
+                name      = $keepName
+                target    = $t
+                port      = $Port
+                cwd       = $cwd
+                last_used = $now
+            }
+            [void]$out.Add($row)
+        } else {
+            # Drop any accidental secret-like keys by re-projecting
+            $row = [pscustomobject]@{
+                name      = [string]$e.name
+                target    = [string]$e.target
+                port      = $ep
+                cwd       = [string]$e.cwd
+                last_used = [string]$e.last_used
+            }
+            [void]$out.Add($row)
+        }
+    }
+    if (-not $found) {
+        $rowNew = [pscustomobject]@{
+            name      = $nm
+            target    = $t
+            port      = $Port
+            cwd       = $cwd
+            last_used = $now
+        }
+        $out.Insert(0, $rowNew)
+    }
+    # Cap + re-sort by last_used
+    $sorted = @(
+        $out | Sort-Object { ConvertTo-PromptParleSshLastUsedSortKey -Value $_.last_used } -Descending |
+            Select-Object -First 30
+    )
+    $path = Get-PromptParleSshHistoryPath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    # Explicit shape only — never password/key fields
+    $clean = @()
+    foreach ($e in $sorted) {
+        $clean += [ordered]@{
+            name      = [string]$e.name
+            target    = [string]$e.target
+            port      = [int](ConvertTo-PromptParleSshPort -Value $e.port)
+            cwd       = [string]$e.cwd
+            last_used = [string]$e.last_used
+        }
+    }
+    ($clean | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+function Set-PromptParleSshTarget {
+    param(
+        [Parameter(Mandatory)]$Target,
+        $Port = 22,
+        $WorkingDirectory = '',
+        # Friendly display name (shown in sidebar; host stays hidden)
+        $Name = '',
+        # Validate remote cwd exists (default true when path provided)
+        [bool]$ValidateCwd = $true,
+        # When false, do not touch ssh_name (e.g. cwd-only edit)
+        [bool]$UpdateName = $true
+    )
+    $stage = 'coerce'
+    try {
+    # Coerce all inputs — history / JSON / UI can hand non-string types (PS 5.1 "Argument types do not match")
+    $t = (ConvertTo-PromptParleSingleString $Target).Trim()
     if ($t -match '^ssh\s+(.+)$') { $t = $Matches[1].Trim() }
     # user@host[:port]
-    $port = $Port
+    $port = ConvertTo-PromptParleSshPort -Value $Port
     if ($t -match '^(.+):(\d+)$') {
         $t = $Matches[1]
-        $port = [int]$Matches[2]
+        $port = ConvertTo-PromptParleSshPort -Value $Matches[2]
     }
     if ($t -notmatch '@' -and $t -notmatch '^[A-Za-z0-9._-]+$') {
         throw 'SSH target should look like user@host (or host).'
     }
-    $cwd = if ($null -eq $WorkingDirectory) { '' } else { $WorkingDirectory.Trim() }
+    $cwd = (ConvertTo-PromptParleSingleString $WorkingDirectory).Trim()
     if ($cwd -and $ValidateCwd) {
+        $stage = 'validate-cwd'
         $check = Test-PromptParleSshWorkingDirectory -Path $cwd -Target $t -Port $port
         if (-not $check.ok) {
-            throw $check.error
+            throw (ConvertTo-PromptParleSingleString $check.error)
         }
-        if ($check.resolved) { $cwd = [string]$check.resolved }
+        if ($check.resolved) { $cwd = (ConvertTo-PromptParleSingleString $check.resolved).Trim() }
     }
+    $stage = 'session-load'
     $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $t -SshPort $port -SshCwd $cwd
+    $nm = (ConvertTo-PromptParleSingleString $Name).Trim()
+    # Reject path/host-shaped "names" so the sidebar never regains directory leaks
+    # Also reject quote-glued garbage from the old /ssh name parse bug (SSH connection"ubuntu@…)
+    $isBadSshName = {
+        param([string]$Label, [string]$TargetHost)
+        if (-not $Label) { return $true }
+        $s = $Label.Trim()
+        if (-not $s) { return $true }
+        if ($TargetHost -and $s.Equals($TargetHost, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if ($s -match '["'']') { return $true }
+        if ($s -match '[@/\\]' -or $s -match '^[~\/]' -or $s -match '^[A-Za-z]:[\\/]') { return $true }
+        if ($s -match ':\d{2,5}\b' -or $s -match '\s·\s') { return $true }
+        if ($s -match '(?i)\.compute\.|amazonaws\.com|ec2-') { return $true }
+        return $false
+    }
+    if ($UpdateName) {
+        # Keep prior/history name only for the same host (never invent a host leak as the label)
+        if (-not $nm -or (& $isBadSshName $nm $t)) {
+            $nm = ''
+            $prevT = [string](Get-PromptParleProp $state 'ssh_target' '')
+            $prevP = ConvertTo-PromptParleSshPort -Value (Get-PromptParleProp $state 'ssh_port' 22)
+            if ($prevT -eq $t -and $prevP -eq $port) {
+                $cand = [string](Get-PromptParleProp $state 'ssh_name' '')
+                if ($cand -and -not (& $isBadSshName $cand $t)) { $nm = $cand }
+            }
+            if (-not $nm) {
+                try {
+                    foreach ($h in @(Get-PromptParleSshHistory -Max 30)) {
+                        $hp = ConvertTo-PromptParleSshPort -Value $h.port
+                        $hn = [string]$h.name
+                        if ([string]$h.target -eq $t -and $hp -eq $port -and $hn -and -not (& $isBadSshName $hn $t)) {
+                            $nm = $hn
+                            break
+                        }
+                    }
+                } catch { }
+            }
+        }
+        if ($nm.Length -gt 64) { $nm = $nm.Substring(0, 64) }
+        $stage = 'snapshot-name'
+        $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $t -SshPort $port -SshCwd $cwd -SshName $nm
+    } else {
+        $nm = [string](Get-PromptParleProp $state 'ssh_name' '')
+        if (& $isBadSshName $nm $t) { $nm = '' }
+        $stage = 'snapshot-cwd'
+        $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $t -SshPort $port -SshCwd $cwd -SshName $nm
+    }
+    $stage = 'save-session'
     Save-PromptParleSessionState -State $state
-    return [pscustomobject]@{ target = $t; port = $port; cwd = $cwd }
+    try {
+        $stage = 'save-history'
+        Save-PromptParleSshHistoryEntry -Target $t -Port $port -WorkingDirectory $cwd -Name $nm
+    } catch { }
+    return [pscustomobject]@{ target = $t; port = $port; cwd = $cwd; name = $nm }
+    } catch {
+        $ver = 'unknown'
+        try { $ver = Get-PromptParleClientVersion } catch { }
+        $msg = $_.Exception.Message
+        if (-not $msg) { $msg = "$_" }
+        $etype = $_.Exception.GetType().FullName
+        Write-PromptParleDebugLog ("Set-PromptParleSshTarget FAIL v$ver stage=$stage type=$etype msg=$msg stack=$($_.ScriptStackTrace)")
+        throw ("SSH set target failed [v{0}] at {1}: {2}: {3}" -f $ver, $stage, $etype, $msg)
+    }
 }
 
 function Clear-PromptParleSshTarget {
     $state = Get-PromptParleSessionState
-    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22 -SshCwd ''
+    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22 -SshCwd '' -SshName ''
     Save-PromptParleSessionState -State $state
 }
 
 function Invoke-PromptParleSsh {
     param(
-        [Parameter(Mandatory)][string]$RemoteCommand,
-        [string]$Target,
-        [int]$Port = 0,
-        [string]$WorkingDirectory = '',
+        [Parameter(Mandatory)]$RemoteCommand,
+        $Target,
+        $Port = 0,
+        $WorkingDirectory = '',
         [int]$TimeoutSec = 45,
         # When false, do not prepend session ssh_cwd (used for path checks themselves)
         [switch]$SkipSessionCwd
@@ -8026,11 +10865,14 @@ function Invoke-PromptParleSsh {
     if (-not (Test-PromptParleCommandAvailable -Name 'ssh')) {
         throw 'ssh not found. On Windows install OpenSSH Client (Optional Features) or Git for Windows.'
     }
-    $cwd = $WorkingDirectory
+    $RemoteCommand = ConvertTo-PromptParleSingleString $RemoteCommand
+    $Target = ConvertTo-PromptParleSingleString $Target
+    $Port = ConvertTo-PromptParleInt32 -Value $Port -Default 0
+    $cwd = ConvertTo-PromptParleSingleString $WorkingDirectory
     if (-not $Target) {
         $ws = Get-PromptParleWorkspace
-        $Target = $ws.ssh_target
-        if ($Port -le 0) { $Port = [int]$ws.ssh_port }
+        $Target = ConvertTo-PromptParleSingleString $ws.ssh_target
+        if ($Port -le 0) { $Port = ConvertTo-PromptParleSshPort -Value $ws.ssh_port }
         if (-not $SkipSessionCwd -and -not $cwd) {
             $cwd = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
         }
@@ -9442,9 +12284,11 @@ function Invoke-PromptParleSlashCommand {
                 } else { "$($ws.path) (missing)" }
             } else { '(none — /workspace <path>)' }
             $sshLine = if ($ws.ssh_target) {
-                $s = "$($ws.ssh_target):$($ws.ssh_port)"
+                $sn = [string](Get-PromptParleProp $ws 'ssh_name' '')
                 $sc = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
-                if ($sc) { $s = "$s  cwd $sc" }
+                # Privacy: status shows friendly name only (not host/cwd)
+                $s = if ($sn) { "'$sn'" } else { 'connected' }
+                if ($sc) { $s = "$s · remote dir set" } else { $s = "$s · login home" }
                 $s
             } else { '(none — /ssh user@host [/path])' }
             $message = @"
@@ -9588,10 +12432,39 @@ Paths and credentials stay on this PC.
                             $message = "Workspace: $($ws.path) ($($ws.kind))`nNot a git repo. /github clone or attach a cloned folder."
                         }
                     }
-                } elseif ($arg -match '^(clear|none|off|detach)$') {
-                    Clear-PromptParleWorkspace
-                    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath '' -WorkspaceKind 'none'
-                    $message = 'Workspace detached.'
+                } elseif ($arg -match '^(clear|none|off|detach|clearall)$') {
+                    Clear-PromptParleWorkspace -All
+                    $state = Get-PromptParleSessionState
+                    $message = 'All local folders detached.'
+                } elseif ($arg -match '^(?i)(list|ls-conn)$') {
+                    $rows = @('Local connections:')
+                    foreach ($c in @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'local' })) {
+                        $mark = if ($c.active) { '*' } else { ' ' }
+                        $rows += ("  {0} [{1}] {2}  {3}" -f $mark, $c.id, $c.label, $c.path)
+                    }
+                    if ($rows.Count -eq 1) { $rows += '  (none)' }
+                    $message = $rows -join "`n"
+                } elseif ($arg -match '^(?i)active\s+(.+)$') {
+                    $hit = Set-PromptParleActiveLocalConnection -IdOrLabel $Matches[1].Trim().Trim('"').Trim("'")
+                    $state = Get-PromptParleSessionState
+                    $message = "Active local: $($hit.label) ($($hit.path))"
+                } elseif ($arg -match '^(?i)(rm|remove)\s+(.+)$') {
+                    $key = $Matches[2].Trim().Trim('"').Trim("'")
+                    $rid = $null
+                    foreach ($c in @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'local' })) {
+                        if ($c.id -eq $key -or ($c.label -and $c.label.Equals($key, [StringComparison]::OrdinalIgnoreCase))) {
+                            $rid = $c.id; break
+                        }
+                    }
+                    if (-not $rid) { throw "Local connection not found: $key" }
+                    $null = Remove-PromptParleConnection -Id $rid
+                    $state = Get-PromptParleSessionState
+                    $message = "Detached local $key"
+                } elseif ($arg -match '^(?i)add\s+(.+)$') {
+                    $pathArg = $Matches[1].Trim().Trim('"').Trim("'")
+                    $wsSet = Set-PromptParleWorkspace -Path $pathArg -Mode add
+                    $state = Get-PromptParleSessionState
+                    $message = "Added local $($wsSet.label): $($wsSet.path) (idx $($wsSet.file_count) files on disk, not in chat)"
                 } elseif ($arg -match '^(status)$') {
                     $message = Get-PromptParleGitStatusText
                 } elseif ($arg -match '^(recent)$') {
@@ -9636,7 +12509,7 @@ Paths and credentials stay on this PC.
                         $wsP = ConvertTo-PromptParleSingleString $ws.path
                         $fp = ConvertTo-PromptParleSingleString $file.path
                         if ($wsP -and (Test-PromptParlePathStartsWith -Path $fp -Prefix $wsP)) {
-                            $relName = $fp.Substring($wsP.Length).TrimStart([char[]]@([char]0x5C, [char]0x2F)).Replace([char]0x5C, [char]0x2F)
+                            $relName = $fp.Substring($wsP.Length).TrimStart([char]0x5C, [char]0x2F).Replace([char]0x5C, [char]0x2F)
                             $files = @(@{ name = $relName; text = $file.text })
                         }
                     } catch { }
@@ -9654,10 +12527,10 @@ Paths and credentials stay on this PC.
                         $message = "Attached $($packed.Count) file(s) matching '$pat'. Ask a question or /review."
                     }
                 } else {
-                    # Treat arg as path to attach (any local directory)
+                    # Treat arg as path to attach (add to multi-local list)
                     $pathArg = $arg.Trim().Trim('"').Trim("'")
-                    $wsSet = Set-PromptParleWorkspace -Path $pathArg
-                    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $wsSet.path -WorkspaceKind $wsSet.kind -WorkspaceRecent $wsSet.recent
+                    $wsSet = Set-PromptParleWorkspace -Path $pathArg -Mode add
+                    $state = Get-PromptParleSessionState
                     $extra = ''
                     if ($wsSet.is_git) {
                         try { $extra = "`n" + (Get-PromptParleGitStatusText) } catch { }
@@ -9698,6 +12571,86 @@ Paths and credentials stay on this PC.
                 $message = "Git error: $_"
             }
         }
+        '^/(know|knowledge)$' {
+            try {
+                if (-not $arg -or $arg -match '^(?i)list$') {
+                    $rows = @('Knowledge repos (indexed on PC; not dumped into chat):')
+                    foreach ($c in @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'knowledge' })) {
+                        $src = if ($c.source -eq 'ssh') { 'ssh' } else { 'local' }
+                        $loc = if ($c.path) { $c.path } elseif ($c.ssh_name) { $c.ssh_name } else { $c.ssh_target }
+                        $rows += ("  [{0}] {1} ({2}) idx={3}  {4}" -f $c.id, $c.label, $src, $c.file_count, $loc)
+                    }
+                    if ($rows.Count -eq 1) { $rows += '  (none — /know add C:\docs or /know ssh name "Docs" user@host /path)' }
+                    $rows += '  Search: tools know_search / know_read (on demand)'
+                    $message = $rows -join "`n"
+                } elseif ($arg -match '^(?i)(rm|remove|detach)\s+(.+)$') {
+                    $key = $Matches[2].Trim().Trim('"').Trim("'")
+                    $rid = $null
+                    foreach ($c in @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'knowledge' })) {
+                        if ($c.id -eq $key -or ($c.label -and $c.label.Equals($key, [StringComparison]::OrdinalIgnoreCase))) {
+                            $rid = $c.id; break
+                        }
+                    }
+                    if (-not $rid) { throw "Knowledge connection not found: $key" }
+                    $null = Remove-PromptParleConnection -Id $rid
+                    $state = Get-PromptParleSessionState
+                    $message = "Knowledge detached: $key"
+                } elseif ($arg -match '^(?i)reindex(?:\s+(.+))?$') {
+                    $key = if ($Matches[1]) { $Matches[1].Trim().Trim('"').Trim("'") } else { '' }
+                    $cHit = $null
+                    foreach ($c in @(Get-PromptParleConnections | Where-Object { $_.kind -eq 'knowledge' })) {
+                        if (-not $key -or $c.id -eq $key -or ($c.label -and $c.label.Equals($key, [StringComparison]::OrdinalIgnoreCase))) {
+                            $cHit = $c; break
+                        }
+                    }
+                    if (-not $cHit) { throw 'No knowledge connection to reindex' }
+                    $idx = Update-PromptParleConnectionCatalog -Connection $cHit
+                    $list = @(Get-PromptParleConnections)
+                    foreach ($c in $list) {
+                        if ($c.id -eq $cHit.id) {
+                            $c.indexed_at = [string]$idx.indexed_at
+                            $c.file_count = [int]$idx.file_count
+                        }
+                    }
+                    $null = Save-PromptParleConnectionsState -Connections $list
+                    $state = Get-PromptParleSessionState
+                    $message = "Reindexed $($cHit.label): $($idx.file_count) files on disk"
+                } elseif ($arg -match '^(?i)ssh\s+(.+)$') {
+                    $rest = $Matches[1].Trim()
+                    $nameArg = ''
+                    if ($rest -match '^(?i)name\s+(?:"([^"]+)"|''([^'']+)''|(\S+))\s+(.+)$') {
+                        $nameArg = if ($Matches[1]) { $Matches[1] } elseif ($Matches[2]) { $Matches[2] } else { $Matches[3] }
+                        $rest = $Matches[4].Trim()
+                    }
+                    $targetArg = $rest
+                    $cwdArg = ''
+                    if ($rest -match '^(\S+)(?:\s+(.+))?$') {
+                        $targetArg = $Matches[1]
+                        if ($Matches[2]) { $cwdArg = $Matches[2].Trim().Trim('"').Trim("'") }
+                    }
+                    $port = 22
+                    if ($targetArg -match '^(.+):(\d+)$') {
+                        $targetArg = $Matches[1]
+                        $port = [int]$Matches[2]
+                    }
+                    $added = Add-PromptParleKnowledgeConnection -Source ssh -SshTarget $targetArg -SshPort $port -SshCwd $cwdArg -SshName $nameArg -Label $nameArg
+                    $state = Get-PromptParleSessionState
+                    $message = "Knowledge SSH '$($added.label)' attached (idx $($added.file_count); content on demand only)"
+                } elseif ($arg -match '^(?i)add\s+(.+)$') {
+                    $pathArg = $Matches[1].Trim().Trim('"').Trim("'")
+                    $added = Add-PromptParleKnowledgeConnection -Path $pathArg -Source local
+                    $state = Get-PromptParleSessionState
+                    $message = "Knowledge '$($added.label)' → $($added.path) (idx $($added.file_count) on disk; use know_search, not prompt dump)"
+                } else {
+                    $pathArg = $arg.Trim().Trim('"').Trim("'")
+                    $added = Add-PromptParleKnowledgeConnection -Path $pathArg -Source local
+                    $state = Get-PromptParleSessionState
+                    $message = "Knowledge '$($added.label)' → $($added.path) (idx $($added.file_count) on disk)"
+                }
+            } catch {
+                $message = "Knowledge error: $_"
+            }
+        }
         '^/(github|gh)$' {
             try {
                 if (-not $arg -or $arg -match '^(status)$') {
@@ -9706,8 +12659,9 @@ Paths and credentials stay on this PC.
                     $repo = $Matches[2]
                     $dest = if ($Matches[3]) { $Matches[3].Trim().Trim('"').Trim("'") } else { $null }
                     $cloned = Invoke-PromptParleGitClone -UrlOrRepo $repo -Destination $dest
-                    $state = New-PromptParleSessionSnapshot -Base $state -WorkspacePath $cloned.path -WorkspaceKind $cloned.kind
-                    $message = "Cloned $repo → $($cloned.path)`nAttached as workspace ($($cloned.kind)).`n$($cloned.log)"
+                    try { $null = Set-PromptParleWorkspace -Path $cloned.path -Mode add } catch { }
+                    $state = Get-PromptParleSessionState
+                    $message = "Cloned $repo → $($cloned.path)`nAttached as local connection ($($cloned.kind)).`n$($cloned.log)"
                 } elseif ($arg -match '^(pr|prs|pulls)$') {
                     if (-not (Test-PromptParleCommandAvailable -Name 'gh')) {
                         $message = 'GitHub CLI (gh) not installed. Install from https://cli.github.com/ or use /git.'
@@ -9744,11 +12698,13 @@ Uses your local git remotes / SSH keys / gh auth — PromptParle never stores th
                 if (-not $arg) {
                     $ws = Get-PromptParleWorkspace
                     if ($ws.ssh_target) {
-                        $cwdShow = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
-                        if (-not $cwdShow) { $cwdShow = '(login home — set with /ssh cwd /path)' }
+                        $dispNm = [string](Get-PromptParleProp $ws 'ssh_name' '')
+                        if (-not $dispNm) { $dispNm = 'SSH connection' }
+                        $hasCwd = [bool]([string](Get-PromptParleProp $ws 'ssh_cwd' ''))
+                        $cwdNote = if ($hasCwd) { 'remote directory set (hidden in sidebar)' } else { 'login home (set with /ssh cwd)' }
                         $message = @"
-SSH target: $($ws.ssh_target) port $($ws.ssh_port)
-Working dir: $cwdShow
+SSH connected as '$dispNm' · $cwdNote
+Host and path stay out of the sidebar (open Connect / Dir to edit).
 
   /ssh ls [path]       list remote dir (relative to cwd when set)
   /ssh cat <path>      fetch file → attachment
@@ -9775,21 +12731,43 @@ Requires OpenSSH client on this PC. Private keys stay local.
                     }
                 } elseif ($arg -match '^(disconnect|clear|off|none)$') {
                     Clear-PromptParleSshTarget
-                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22 -SshCwd ''
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget '' -SshPort 22 -SshCwd '' -SshName ''
                     $message = 'SSH target cleared.'
+                } elseif ($arg -match '^(?i)rename\s+(.+)$') {
+                    # Rename only (not connect). UI connect uses: /ssh name "Lab" user@host [/cwd]
+                    $ws = Get-PromptParleWorkspace
+                    if (-not $ws.ssh_target) { throw 'No SSH target. Connect first, then /ssh rename <friendly-name>.' }
+                    $newName = $Matches[1].Trim().Trim('"').Trim("'")
+                    if (-not $newName) { throw 'Usage: /ssh rename <friendly-name>' }
+                    if ($newName.Length -gt 64) { $newName = $newName.Substring(0, 64) }
+                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory ([string]$ws.ssh_cwd) -Name $newName -ValidateCwd $false -UpdateName $true
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd -SshName $set.name
+                    $message = "SSH display name set to '$($set.name)' (host details stay hidden in the sidebar)."
+                } elseif ($arg -match '^(?i)name\s+(?:"([^"]+)"|''([^'']+)''|(\S+))\s*$') {
+                    # /ssh name "Lab box"  (no host after — rename alias)
+                    $ws = Get-PromptParleWorkspace
+                    if (-not $ws.ssh_target) { throw 'No SSH target. Connect first, then /ssh name <friendly-name>.' }
+                    $newName = if ($Matches[1]) { [string]$Matches[1] } elseif ($Matches[2]) { [string]$Matches[2] } else { [string]$Matches[3] }
+                    $newName = $newName.Trim()
+                    if (-not $newName) { throw 'Usage: /ssh name <friendly-name>' }
+                    if ($newName.Length -gt 64) { $newName = $newName.Substring(0, 64) }
+                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory ([string]$ws.ssh_cwd) -Name $newName -ValidateCwd $false -UpdateName $true
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd -SshName $set.name
+                    $message = "SSH display name set to '$($set.name)' (host details stay hidden in the sidebar)."
                 } elseif ($arg -match '^(cwd|cd|dir)(?:\s+(.*))?$') {
                     $ws = Get-PromptParleWorkspace
                     if (-not $ws.ssh_target) { throw 'No SSH target. /ssh user@host first.' }
                     $cwdIn = if ($null -ne $Matches[2]) { $Matches[2].Trim().Trim('"').Trim("'") } else { '' }
                     if ($cwdIn -match '^(clear|none|off)$') { $cwdIn = '' }
                     if ($cwdIn -and $cwdIn -match '[;|&`$]') { throw 'Invalid remote path' }
-                    # Validates remote dir exists; stores resolved absolute path
-                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory $cwdIn -ValidateCwd $true
+                    # Validates remote dir exists; stores resolved absolute path (keep friendly name)
+                    $set = Set-PromptParleSshTarget -Target $ws.ssh_target -Port ([int]$ws.ssh_port) -WorkingDirectory $cwdIn -ValidateCwd $true -UpdateName $false
                     $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd
+                    $disp = if ($set.name) { $set.name } else { 'SSH' }
                     if ($set.cwd) {
-                        $message = "SSH working directory OK: $($set.cwd) (on $($set.target))"
+                        $message = "SSH working directory OK for $disp."
                     } else {
-                        $message = "SSH working directory cleared (login home on $($set.target))."
+                        $message = "SSH working directory cleared for $disp (login home)."
                     }
                 } elseif ($arg -match '^(ls|list)(?:\s+(.+))?$') {
                     $rpath = if ($Matches[2]) { $Matches[2].Trim() } else { '.' }
@@ -9828,8 +12806,14 @@ Requires OpenSSH client on this PC. Private keys stay local.
                     $r = Test-PromptParleSsh
                     $message = "SSH test $($r.target):$($r.port) exit $($r.exit_code)`n$($r.text)"
                 } else {
-                    # user@host[:port] [optional remote working directory]
+                    # [name <friendly>] user@host[:port] [optional remote working directory]
+                    # UI sends: /ssh name "Lab box" user@host /var/www
                     $rest = $arg.Trim()
+                    $nameArg = ''
+                    if ($rest -match '^(?i)name\s+(?:"([^"]+)"|''([^'']+)''|(\S+))\s+(.+)$') {
+                        $nameArg = if ($Matches[1]) { $Matches[1] } elseif ($Matches[2]) { $Matches[2] } else { $Matches[3] }
+                        $rest = $Matches[4].Trim()
+                    }
                     $targetArg = $rest
                     $cwdArg = ''
                     if ($rest -match '^(\S+)(?:\s+(.+))?$') {
@@ -9842,21 +12826,39 @@ Requires OpenSSH client on this PC. Private keys stay local.
                         $port = [int]$Matches[2]
                     }
                     if ($cwdArg -and $cwdArg -match '[;|&`$]') { throw 'Invalid remote working directory' }
-                    # Save host first (cwd validated when non-empty)
-                    $set = Set-PromptParleSshTarget -Target $targetArg -Port $port -WorkingDirectory $cwdArg -ValidateCwd ([bool]$cwdArg)
-                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd
+                    if ($nameArg -and $nameArg.Length -gt 64) { $nameArg = $nameArg.Substring(0, 64) }
+                    # Save host first. If history/UI cwd is stale, still connect host and report cwd separately.
+                    $targetArg = ConvertTo-PromptParleSingleString $targetArg
+                    $nameArg = ConvertTo-PromptParleSingleString $nameArg
+                    $cwdArg = ConvertTo-PromptParleSingleString $cwdArg
+                    $port = ConvertTo-PromptParleSshPort -Value $port
+                    $cwdNote = ''
+                    $cwdToSave = $cwdArg
+                    if ($cwdArg) {
+                        try {
+                            $cwdCheck = Test-PromptParleSshWorkingDirectory -Path $cwdArg -Target $targetArg -Port $port
+                            if ($cwdCheck.ok) {
+                                if ($cwdCheck.resolved) { $cwdToSave = (ConvertTo-PromptParleSingleString $cwdCheck.resolved).Trim() }
+                            } else {
+                                $cwdNote = " Working directory not applied: $(ConvertTo-PromptParleSingleString $cwdCheck.error). Use Dir to set a valid remote folder."
+                                $cwdToSave = ''
+                            }
+                        } catch {
+                            $cwdNote = " Working directory not applied: $_. Use Dir to set a valid remote folder."
+                            $cwdToSave = ''
+                        }
+                    }
+                    $set = Set-PromptParleSshTarget -Target $targetArg -Port $port -WorkingDirectory $cwdToSave -Name $nameArg -ValidateCwd $false -UpdateName $true
+                    $state = New-PromptParleSessionSnapshot -Base $state -SshTarget $set.target -SshPort $set.port -SshCwd $set.cwd -SshName $set.name
                     $r = Test-PromptParleSsh -Target $set.target -Port $set.port
-                    $cwdMsg = if ($set.cwd) { "`nWorking dir: $($set.cwd)" } else { '' }
+                    $disp = if ($set.name) { $set.name } else { 'SSH' }
                     if ($r.exit_code -eq 0) {
-                        $message = "SSH target set: $($set.target):$($set.port)$cwdMsg`nOK`n$($r.text)"
+                        $message = "SSH connected as '$disp' (details hidden in sidebar). OK$cwdNote"
                     } else {
                         $message = @"
-SSH target saved: $($set.target):$($set.port)$cwdMsg
-Connectivity test failed (exit $($r.exit_code)):
-$($r.text)
-
+SSH saved as '$disp' but connectivity test failed (exit $($r.exit_code)).
 Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
-  ssh -p $($set.port) $($set.target)
+$cwdNote
 "@
                     }
                 }
@@ -9889,11 +12891,14 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
 
     # Re-read workspace/ssh from disk if commands updated via helpers
     $fresh = Get-PromptParleSessionState
+    $freshPort = ConvertTo-PromptParleSshPort -Value (Get-PromptParleProp $fresh 'ssh_port' 22)
     $state = New-PromptParleSessionSnapshot -Base $state `
         -WorkspacePath ([string](Get-PromptParleProp $fresh 'workspace_path' '')) `
         -WorkspaceKind ([string](Get-PromptParleProp $fresh 'workspace_kind' 'none')) `
         -SshTarget ([string](Get-PromptParleProp $fresh 'ssh_target' '')) `
-        -SshPort ([int](Get-PromptParleProp $fresh 'ssh_port' 22))
+        -SshPort $freshPort `
+        -SshCwd ([string](Get-PromptParleProp $fresh 'ssh_cwd' '')) `
+        -SshName ([string](Get-PromptParleProp $fresh 'ssh_name' ''))
 
     Save-PromptParleSessionState -State $state
     $agentOut = Get-PromptParleAgent -Name $state.active_agent
@@ -9912,7 +12917,9 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
         workspace_remote = $wsOut.remote
         workspace_recent = @($wsOut.recent)
         ssh_target       = [string]$wsOut.ssh_target
-        ssh_port         = [int]$wsOut.ssh_port
+        ssh_port         = ConvertTo-PromptParleSshPort -Value $wsOut.ssh_port
+        ssh_cwd          = [string]$wsOut.ssh_cwd
+        ssh_name         = [string]$wsOut.ssh_name
         agent_name      = if ($agentOut) { $agentOut.name } else { $state.active_agent }
         agent_system    = if ($agentOut) { $agentOut.system } else { '' }
         agent_commands  = @()
@@ -9931,7 +12938,7 @@ Check: ssh-agent loaded? key in ~/.ssh? host allows key auth?
         quit    = $quit
         clear   = $clear
         files   = @($files)
-        session = [pscustomobject]$sessionOut
+        session = (ConvertTo-PromptParleCustomObject $sessionOut)
     }
 }
 
@@ -10076,18 +13083,28 @@ function Get-PromptParleConfig {
         '(not set)'
     }
 
+    $localMap = @{}
+    try { $localMap = Get-PromptParleLocalProviderMap } catch { $localMap = @{} }
+    $localSummary = @()
+    foreach ($k in @($localMap.Keys)) {
+        $localSummary += ("{0}=…{1}" -f $k, $localMap[$k].LastFour)
+    }
+
     [pscustomobject]@{
-        BaseUrl    = $c.BaseUrl
-        ApiKey     = $masked
-        ConfigPath = $script:PromptParleConfigPath
-        HasApiKey  = [bool]$c.ApiKey
+        BaseUrl         = $c.BaseUrl
+        ApiKey          = $masked
+        ConfigPath      = $script:PromptParleConfigPath
+        HasApiKey       = [bool]$c.ApiKey
+        LocalFirst      = $true
+        SecretPolicy    = $(try { Get-PromptParleSecretPolicy } catch { 'strict' })
+        LocalProviders  = if ($localSummary.Count) { ($localSummary -join ', ') } else { '(none — Set-PromptParleProviderKey)' }
     }
 }
 
 function Get-PromptParleProvider {
     <#
     .SYNOPSIS
-      List AI providers available to your account and which keys are configured.
+      List AI providers and which keys are configured on this PC (local-first).
 
     .EXAMPLE
       Get-PromptParleProvider
@@ -10095,7 +13112,7 @@ function Get-PromptParleProvider {
     [CmdletBinding()]
     param()
 
-    $result = Invoke-PromptParleApi -Method GET -Path '/api/v1/providers'
+    $result = Get-PromptParleLocalProvidersPublic
     $list = @($result.providers)
     foreach ($p in $list) {
         [pscustomobject]@{
@@ -10104,6 +13121,9 @@ function Get-PromptParleProvider {
             Routing      = [bool]$p.routing
             DefaultModel = $p.default_model
             Configured   = [bool]$p.configured
+            KeySource    = [string](Get-PromptParleProp $p 'key_source' 'none')
+            LastFour     = Get-PromptParleProp $p 'last_four' $null
+            LocalFirst   = $true
         }
     }
 }
@@ -10247,6 +13267,8 @@ function Invoke-PromptParle {
         [object]$Images,
 
         [switch]$OptimizeOnly,
+        [string]$SessionTitle = '',
+        [string]$ClientSessionId = '',
 
         [switch]$Quiet,
 
@@ -10254,26 +13276,27 @@ function Invoke-PromptParle {
     )
 
     begin {
-        $contextChunks = New-Object System.Collections.Generic.List[string]
+        # ArrayList not List[string] — PS 5.1 "Argument types do not match" on .Add with string wrappers
+        $contextChunks = New-Object System.Collections.ArrayList
     }
 
     process {
         if ($null -eq $InputObject) { return }
         if ($InputObject -is [System.IO.FileInfo]) {
-            $leaf = $InputObject.Name
+            $leaf = [string]$InputObject.Name
             $raw = Get-Content -LiteralPath $InputObject.FullName -Raw -ErrorAction Stop
-            $contextChunks.Add("===== FILE: $leaf =====`n$raw")
+            [void]$contextChunks.Add([string]("===== FILE: $leaf =====`n$raw"))
         } elseif ($InputObject -is [string]) {
-            $contextChunks.Add($InputObject)
+            [void]$contextChunks.Add([string]$InputObject)
         } else {
-            $contextChunks.Add([string]$InputObject)
+            [void]$contextChunks.Add([string]$InputObject)
         }
     }
 
     end {
         # Named -Context is one blob (do not treat as char array)
         if ($PSBoundParameters.ContainsKey('Context') -and -not [string]::IsNullOrEmpty($Context)) {
-            $contextChunks.Add($Context)
+            [void]$contextChunks.Add([string]$Context)
         }
 
         if ($Path) {
@@ -10282,12 +13305,12 @@ function Invoke-PromptParle {
             }
             $leaf = Split-Path -Leaf $Path
             $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-            $contextChunks.Add("===== FILE: $leaf =====`n$raw")
+            [void]$contextChunks.Add([string]("===== FILE: $leaf =====`n$raw"))
         }
 
         $contextText = $null
         if ($contextChunks.Count -gt 0) {
-            $contextText = ($contextChunks -join "`n")
+            $contextText = ([string[]]@($contextChunks.ToArray())) -join "`n"
         }
 
         # Always plain CLR types — avoid char[] / PSObject surprises that 400 Zod
@@ -10312,50 +13335,70 @@ function Invoke-PromptParle {
             $body.runtime = [string]$Runtime
         }
         if ($OptimizeOnly) { $body.optimize_only = $true }
+        if ($SessionTitle) { $body.session_title = [string]$SessionTitle }
+        if ($ClientSessionId) { $body.client_session_id = [string]$ClientSessionId }
 
         $imageList = @(ConvertTo-PromptParleImageList -Images $Images)
-        if ($imageList.Count -gt 0 -and -not $OptimizeOnly) {
-            # Explicit Object[] of hashtables — never a single nested array element
-            $body.images = [object[]]$imageList
-        }
 
-        $result = Invoke-PromptParleApi -Method POST -Path '/api/v1/prompt' -Body $body
+        # ---- Local-first (0.25+): keys + optimize + model call on this PC ----
+        # Portal is licensing only (pp_live_ / entitlements). No prompt bodies to cloud.
+        $lfParams = @{
+            Prompt            = $promptText
+            Context           = $(if ($contextText) { [string]$contextText } else { '' })
+            Provider          = $Provider
+            Profile           = $Profile
+            CompressionLevel  = $CompressionLevel
+        }
+        if ($Model) { $lfParams.Model = [string]$Model }
+        if ($PSBoundParameters.ContainsKey('System') -and -not [string]::IsNullOrWhiteSpace($System)) {
+            $lfParams.System = [string]$System
+        }
+        if ($PSBoundParameters.ContainsKey('Runtime') -and -not [string]::IsNullOrWhiteSpace($Runtime)) {
+            $lfParams.Runtime = [string]$Runtime
+        }
+        if ($OptimizeOnly) { $lfParams.OptimizeOnly = $true }
+        if ($imageList.Count -gt 0 -and -not $OptimizeOnly) { $lfParams.Images = $imageList }
+        if ($Quiet) { $lfParams.Quiet = $true }
+
+        $result = Invoke-PromptParleLocalFirst @lfParams
 
         if ($Raw) {
             return $result
         }
 
         $meta = Get-PromptParleProp $result 'metadata'
+        if ($null -eq $meta) { $meta = Get-PromptParleProp $result 'Metadata' }
         if (-not $Quiet) {
             Write-PromptParleMetadata -Metadata $meta
         }
 
         if ($OptimizeOnly) {
             if (-not $Quiet) {
-                Write-Host 'Optimized prompt:' -ForegroundColor Cyan
+                Write-Host 'Optimized prompt (local-first):' -ForegroundColor Cyan
             }
             return [pscustomobject]@{
-                OptimizedPrompt = Get-PromptParleProp $result 'optimized_prompt'
+                OptimizedPrompt = Get-PromptParleProp $result 'optimized_prompt' (Get-PromptParleProp $result 'OptimizedPrompt')
                 Metadata        = $meta
                 Provider        = $Provider
                 Profile         = $Profile
                 OptimizeOnly    = $true
+                LocalFirst      = $true
             }
         }
 
         if (-not $Quiet) {
-            Write-Host 'AI Response:' -ForegroundColor Cyan
+            Write-Host 'AI Response (local-first · provider direct):' -ForegroundColor Cyan
         }
 
-        $responseText = [string](Get-PromptParleProp $result 'response' '')
-        # Also emit response text for simple capture: $out = Invoke-PromptParle ... ; $out.Response
+        $responseText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
         [pscustomobject]@{
-            Response = $responseText
-            Metadata = $meta
-            Provider = if (Get-PromptParleProp $meta 'provider') { Get-PromptParleProp $meta 'provider' } else { $Provider }
-            Model    = if (Get-PromptParleProp $meta 'model') { Get-PromptParleProp $meta 'model' } else { $Model }
-            Profile  = if (Get-PromptParleProp $meta 'optimization_profile') { Get-PromptParleProp $meta 'optimization_profile' } else { $Profile }
+            Response     = $responseText
+            Metadata     = $meta
+            Provider     = if (Get-PromptParleProp $meta 'provider') { Get-PromptParleProp $meta 'provider' } else { $Provider }
+            Model        = if (Get-PromptParleProp $meta 'model') { Get-PromptParleProp $meta 'model' } else { $Model }
+            Profile      = if (Get-PromptParleProp $meta 'optimization_profile') { Get-PromptParleProp $meta 'optimization_profile' } else { $Profile }
             OptimizeOnly = $false
+            LocalFirst   = $true
         }
     }
 }
@@ -10690,23 +13733,57 @@ function Test-PromptParleModulePackage {
         return [pscustomobject]@{ ok = $false; message = 'Package manifest has no ModuleVersion' }
     }
 
+    # Local UI script hygiene (0.25.2 shipped a syntax error → nothing clickable)
     try {
-        $parseErrs = $null
-        $parseTok = $null
-        $null = [System.Management.Automation.Language.Parser]::ParseFile(
-            $psm1,
-            [ref]$parseTok,
-            [ref]$parseErrs
-        )
-        if ($parseErrs -and $parseErrs.Count -gt 0) {
-            $first = $parseErrs[0]
-            $where = if ($first.Extent) {
-                "line $($first.Extent.StartLineNumber): $($first.Message)"
-            } else { [string]$first.Message }
+        $uiRaw = Get-Content -LiteralPath $ui -Raw -ErrorAction Stop
+        if ($uiRaw -notmatch '__PP_UI_READY__') {
             return [pscustomobject]@{
                 ok      = $false
-                message = "Module parse failed ($where)"
+                message = 'local-ui/index.html missing __PP_UI_READY__ ready marker'
                 version = $ver
+            }
+        }
+        # Known broken pattern: unquoted "(treat as relevant..." after string concat
+        if ($uiRaw -match "(?s)\+\s*\r?\n\s*\(treat as relevant") {
+            return [pscustomobject]@{
+                ok      = $false
+                message = 'local-ui/index.html has broken attach-prompt string (JS would not parse)'
+                version = $ver
+            }
+        }
+    } catch {
+        return [pscustomobject]@{
+            ok      = $false
+            message = "Could not read local-ui/index.html: $_"
+            version = $ver
+        }
+    }
+
+    # Parse psm1 + optional LocalFirst.ps1 (dot-sourced at import; must be PS 5.1 clean)
+    $filesToParse = @($psm1)
+    $lf = Join-Path $ModuleDir 'LocalFirst.ps1'
+    if (Test-Path -LiteralPath $lf) { $filesToParse += $lf }
+
+    try {
+        foreach ($parsePath in $filesToParse) {
+            $parseErrs = $null
+            $parseTok = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+                $parsePath,
+                [ref]$parseTok,
+                [ref]$parseErrs
+            )
+            if ($parseErrs -and $parseErrs.Count -gt 0) {
+                $first = $parseErrs[0]
+                $leaf = Split-Path -Leaf $parsePath
+                $where = if ($first.Extent) {
+                    "${leaf} line $($first.Extent.StartLineNumber): $($first.Message)"
+                } else { "$leaf : $([string]$first.Message)" }
+                return [pscustomobject]@{
+                    ok      = $false
+                    message = "Module parse failed ($where)"
+                    version = $ver
+                }
             }
         }
     } catch {
@@ -10833,13 +13910,13 @@ function Install-PromptParleModuleTree {
         New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
     }
 
-    $sourceRoot = (Resolve-Path -LiteralPath $SourceDir).Path.TrimEnd('\', '/')
-    $destRoot = (Resolve-Path -LiteralPath $DestDir).Path.TrimEnd('\', '/')
+    $sourceRoot = (Resolve-Path -LiteralPath $SourceDir).Path.TrimEnd([char]0x5C, [char]0x2F)
+    $destRoot = (Resolve-Path -LiteralPath $DestDir).Path.TrimEnd([char]0x5C, [char]0x2F)
     $wanted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 
     Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force -ErrorAction Stop | ForEach-Object {
         $full = $_.FullName
-        $rel = $full.Substring($sourceRoot.Length).TrimStart('\', '/')
+        $rel = $full.Substring($sourceRoot.Length).TrimStart([char]0x5C, [char]0x2F)
         if (-not $rel) { return }
         [void]$wanted.Add(($rel -replace '/', '\'))
         $target = Join-Path $DestDir $rel
@@ -10886,7 +13963,7 @@ function Install-PromptParleModuleTree {
             try { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue } catch { }
             return
         }
-        $rel = $full.Substring($destRoot.Length).TrimStart('\', '/')
+        $rel = $full.Substring($destRoot.Length).TrimStart([char]0x5C, [char]0x2F)
         $norm = ($rel -replace '/', '\')
         if ($norm -and -not $wanted.Contains($norm)) {
             try { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue } catch { }
@@ -11498,9 +14575,9 @@ function Open-PromptParleBrowser {
     #>
     [CmdletBinding()]
     param(
-        # Open cloud portal chat instead of local UI
+        # Open cloud portal (dashboard) instead of local UI
         [switch]$Cloud,
-        [string]$Path = '/app/chat'
+        [string]$Path = '/app'
     )
 
     if ($Cloud) {
@@ -11509,12 +14586,89 @@ function Open-PromptParleBrowser {
         if (-not $Path.StartsWith('/')) { $Path = "/$Path" }
         $url = "$base$Path"
         Write-Host "Opening cloud portal: $url" -ForegroundColor Yellow
-        Write-Host '(Prefer local: Open-PromptParleBrowser  or  pp)' -ForegroundColor DarkGray
+        Write-Host '(Chat is local: Open-PromptParleBrowser  or  pp)' -ForegroundColor DarkGray
         Open-PromptParleUrl -Url $url
         return
     }
 
     Start-PromptParleLocalServer
+}
+
+function Test-PromptParleLocalUiRequest {
+    <#
+    .SYNOPSIS
+      Auth + origin gate for the local HttpListener (desktop Achilles heel).
+      Requires X-PromptParle-Local matching the per-run token.
+      Rejects non-loopback Host and cross-origin browser calls.
+    #>
+    param(
+        [Parameter(Mandatory)]$Request,
+        [Parameter(Mandatory)][string]$ExpectedToken,
+        [Parameter(Mandatory)][int]$Port
+    )
+
+    if (-not $ExpectedToken) { return $false }
+
+    # Token header (primary). Query fallback only for rare form GETs — still same machine.
+    $got = $null
+    try { $got = [string]$Request.Headers['X-PromptParle-Local'] } catch { $got = $null }
+    if (-not $got) {
+        try { $got = [string]$Request.QueryString['pp_local'] } catch { $got = $null }
+    }
+    if (-not $got -or $got -ne $ExpectedToken) { return $false }
+
+    # Host must be loopback
+    $hostHdr = ''
+    try { $hostHdr = [string]$Request.UserHostName } catch { }
+    if (-not $hostHdr) {
+        try { $hostHdr = [string]$Request.Headers['Host'] } catch { }
+    }
+    if ($hostHdr) {
+        $h = $hostHdr.ToLowerInvariant()
+        $okHost = (
+            $h -eq "127.0.0.1:$Port" -or
+            $h -eq "localhost:$Port" -or
+            $h -eq '[::1]:' + $Port -or
+            $h -eq '127.0.0.1' -or
+            $h -eq 'localhost'
+        )
+        if (-not $okHost) { return $false }
+    }
+
+    # If browser sent Origin, it must be this local UI
+    $origin = ''
+    try { $origin = [string]$Request.Headers['Origin'] } catch { }
+    if ($origin) {
+        $o = $origin.TrimEnd('/').ToLowerInvariant()
+        $allowed = @(
+            "http://127.0.0.1:$Port",
+            "http://localhost:$Port",
+            "http://[::1]:$Port"
+        )
+        if ($allowed -notcontains $o) { return $false }
+    }
+
+    # Referer: if present, must point at this local origin
+    $referer = ''
+    try { $referer = [string]$Request.Headers['Referer'] } catch { }
+    if ($referer) {
+        $okRef = $false
+        foreach ($prefix in @(
+            "http://127.0.0.1:$Port/",
+            "http://localhost:$Port/",
+            "http://[::1]:$Port/",
+            "http://127.0.0.1:$Port",
+            "http://localhost:$Port"
+        )) {
+            if ($referer.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $okRef = $true
+                break
+            }
+        }
+        if (-not $okRef) { return $false }
+    }
+
+    return $true
 }
 
 function Write-PromptParleHttpResponse {
@@ -11612,12 +14766,22 @@ function Clear-PromptParleLocalPort {
     }
 
     # Quick polite stop (short timeout - only when something is actually listening)
+    # Local UI requires X-PromptParle-Local (per-run token written to local-ui.token).
     $stopUrl = "http://127.0.0.1:$Port/api/stop"
+    $localTok = ''
     try {
+        $tokPath = Join-Path $script:PromptParleConfigDir 'local-ui.token'
+        if (Test-Path -LiteralPath $tokPath) {
+            $localTok = (Get-Content -LiteralPath $tokPath -Raw -ErrorAction Stop).Trim()
+        }
+    } catch { $localTok = '' }
+    try {
+        $headers = @{}
+        if ($localTok) { $headers['X-PromptParle-Local'] = $localTok }
         if ($PSVersionTable.PSVersion.Major -le 5) {
-            Invoke-WebRequest -Uri $stopUrl -Method POST -UseBasicParsing -TimeoutSec 1 | Out-Null
+            Invoke-WebRequest -Uri $stopUrl -Method POST -Headers $headers -UseBasicParsing -TimeoutSec 1 | Out-Null
         } else {
-            Invoke-WebRequest -Uri $stopUrl -Method POST -TimeoutSec 1 | Out-Null
+            Invoke-WebRequest -Uri $stopUrl -Method POST -Headers $headers -TimeoutSec 1 | Out-Null
         }
         if (-not $Quiet) { Write-Host "Asked server on port $Port to stop." -ForegroundColor DarkGray }
         Start-Sleep -Milliseconds 200
@@ -11660,6 +14824,185 @@ function Clear-PromptParleLocalPort {
     }
 
     Start-Sleep -Milliseconds 150
+}
+
+function Test-PromptParleConsoleInteractive {
+    <# True when this host can poll console keys (not redirected / headless). #>
+    try {
+        if ([Console]::IsInputRedirected) { return $false }
+        # KeyAvailable throws when there is no console attached
+        $null = [Console]::KeyAvailable
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Write-PromptParleConsoleHotkeyHelp {
+    param([string]$Url = '')
+    Write-Host '  Console keys (focus this window):' -ForegroundColor Yellow
+    Write-Host '    [U] Update client      [Shift+U] Force reinstall' -ForegroundColor White
+    Write-Host '    [R] Restart server     [O] Open browser UI' -ForegroundColor White
+    Write-Host '    [Q] Quit / stop        [H] or [?] Help' -ForegroundColor White
+    Write-Host '    Ctrl+C also stops' -ForegroundColor DarkGray
+    if ($Url) {
+        Write-Host ("  UI: {0}" -f $Url) -ForegroundColor DarkGray
+    }
+}
+
+function Read-PromptParleConsoleHotkey {
+    <#
+      Non-blocking: return action name or $null.
+      Actions: update | force-update | restart | quit | open | help
+    #>
+    try {
+        if (-not [Console]::KeyAvailable) { return $null }
+        $k = [Console]::ReadKey($true)
+    } catch {
+        return $null
+    }
+    $key = $k.Key
+    $ch = $k.KeyChar
+    $shift = $false
+    try {
+        $shift = ($k.Modifiers -band [System.ConsoleModifiers]::Shift) -ne 0
+    } catch { $shift = $false }
+
+    # Letter keys (Key enum) — prefer Key over KeyChar for layout independence
+    if ($key -eq [System.ConsoleKey]::U) {
+        if ($shift -or $ch -ceq 'U') { return 'force-update' }
+        return 'update'
+    }
+    if ($key -eq [System.ConsoleKey]::R) { return 'restart' }
+    if ($key -eq [System.ConsoleKey]::Q -or $key -eq [System.ConsoleKey]::S) { return 'quit' }
+    if ($key -eq [System.ConsoleKey]::O) { return 'open' }
+    if ($key -eq [System.ConsoleKey]::H -or $key -eq [System.ConsoleKey]::F1) { return 'help' }
+    if ($key -eq [System.ConsoleKey]::Escape) { return 'quit' }
+    if ($ch -eq '?' -or $ch -eq '/') { return 'help' }
+    if ($ch -eq 'u') { return 'update' }
+    if ($ch -eq 'U') { return 'force-update' }
+    if ($ch -eq 'r' -or $ch -eq 'R') { return 'restart' }
+    if ($ch -eq 'q' -or $ch -eq 'Q' -or $ch -eq 's' -or $ch -eq 'S') { return 'quit' }
+    if ($ch -eq 'o' -or $ch -eq 'O') { return 'open' }
+    if ($ch -eq 'h' -or $ch -eq 'H') { return 'help' }
+    return $null
+}
+
+function Invoke-PromptParleConsoleHotkey {
+    <#
+      Handle one console hotkey while the local server is idle (between HTTP requests).
+      Returns $true if the main wait loop should break (quit/restart/update-handoff).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Action,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$Url,
+        $Listener
+    )
+
+    if ($script:PromptParleConsoleBusy) {
+        Write-Host '  (console busy — try again in a moment)' -ForegroundColor DarkGray
+        return $false
+    }
+
+    switch ($Action) {
+        'help' {
+            Write-Host ''
+            Write-PromptParleConsoleHotkeyHelp -Url $Url
+            Write-Host ''
+            return $false
+        }
+        'open' {
+            Write-Host ("  Opening {0}" -f $Url) -ForegroundColor Cyan
+            try { Open-PromptParleUrl -Url $Url } catch {
+                Write-Host ("  Could not open browser: {0}" -f $_) -ForegroundColor Yellow
+            }
+            return $false
+        }
+        'quit' {
+            Write-Host ''
+            Write-Host 'Q — stopping local PromptParle...' -ForegroundColor Yellow
+            $script:PromptParleShouldStop = $true
+            $script:PromptParleStopAnnounced = $true
+            $script:PromptParleConsoleRestart = $false
+            try {
+                if ($Listener -and $Listener.IsListening) { $Listener.Stop() }
+            } catch { }
+            return $true
+        }
+        'restart' {
+            Write-Host ''
+            Write-Host 'R — restarting local server (same port)...' -ForegroundColor Cyan
+            $script:PromptParleConsoleRestart = $true
+            $script:PromptParleShouldStop = $true
+            $script:PromptParleStopAnnounced = $true
+            $script:PromptParleExitProcessAfterStop = $false
+            try {
+                if ($Listener -and $Listener.IsListening) { $Listener.Stop() }
+            } catch { }
+            return $true
+        }
+        { $_ -eq 'update' -or $_ -eq 'force-update' } {
+            $force = ($Action -eq 'force-update')
+            Write-Host ''
+            if ($force) {
+                Write-Host 'Shift+U — force reinstall from portal...' -ForegroundColor Yellow
+            } else {
+                Write-Host 'U — checking portal for client update...' -ForegroundColor Cyan
+            }
+            $script:PromptParleConsoleBusy = $true
+            try {
+                if ($force) {
+                    $result = Update-PromptParleClient -Force -RestartPort $Port
+                } else {
+                    $result = Update-PromptParleClient -RestartPort $Port
+                }
+            } catch {
+                Write-Host ("  update error: {0}" -f $_) -ForegroundColor Red
+                Write-Host '  Server still running. Press H for keys.' -ForegroundColor DarkGray
+                $script:PromptParleConsoleBusy = $false
+                return $false
+            }
+            $script:PromptParleConsoleBusy = $false
+
+            $ok = $true
+            try { $ok = [bool](Get-PromptParleProp $result 'ok' $true) } catch { $ok = $true }
+            $updated = $false
+            try { $updated = [bool](Get-PromptParleProp $result 'updated' $false) } catch { $updated = $false }
+            $restartReq = $false
+            try { $restartReq = [bool](Get-PromptParleProp $result 'restart_required' $false) } catch { $restartReq = $false }
+            $msg = [string](Get-PromptParleProp $result 'message' '')
+
+            if (-not $ok) {
+                Write-Host ("  update failed: {0}" -f $(if ($msg) { $msg } else { 'unknown error' })) -ForegroundColor Red
+                Write-Host '  Previous version kept; server still running.' -ForegroundColor DarkGray
+                return $false
+            }
+            if (-not $updated) {
+                Write-Host ("  {0}" -f $(if ($msg) { $msg } else { 'Already up to date.' })) -ForegroundColor Green
+                Write-Host '  Server still running. Press H for keys.' -ForegroundColor DarkGray
+                return $false
+            }
+            if ($restartReq) {
+                Write-Host ("  {0}" -f $(if ($msg) { $msg } else { 'Updated' })) -ForegroundColor Green
+                Write-Host '  New window starting; this window will close.' -ForegroundColor DarkGray
+                $script:PromptParleExitProcessAfterStop = $true
+                $script:PromptParleConsoleRestart = $false
+                $script:PromptParleShouldStop = $true
+                $script:PromptParleStopAnnounced = $true
+                try {
+                    if ($Listener -and $Listener.IsListening) { $Listener.Stop() }
+                } catch { }
+                return $true
+            }
+            Write-Host ("  {0}" -f $(if ($msg) { $msg } else { 'Updated' })) -ForegroundColor Green
+            Write-Host '  No auto-restart; press R to restart or run  pp  in a new window.' -ForegroundColor Yellow
+            return $false
+        }
+        default {
+            return $false
+        }
+    }
 }
 
 function Stop-PromptParleLocalServer {
@@ -11709,10 +15052,11 @@ function Start-PromptParleLocalServer {
       optimize + your stored provider keys. AI token spend is on YOUR
       provider account (BYOK), not the PromptParle OpenAI bill.
 
-      Stop options:
-        - Ctrl+C in this window
-        - Click "Stop server" in the browser
-        - Another window: Stop-PromptParleLocalServer
+      Stop / control options (this PowerShell window):
+        - [U] Update  [Shift+U] Force  [R] Restart  [Q] Quit  [O] Open UI  [H] Help
+        - Ctrl+C
+        - Browser: Stop server / Update
+        - Other window: Stop-PromptParleLocalServer
         - Close this PowerShell window with the X
 
     .PARAMETER Port
@@ -11743,6 +15087,54 @@ function Start-PromptParleLocalServer {
         throw "Local UI not found at $uiPath - reinstall the module (git pull + Install-PromptParle.ps1)."
     }
     $html = Get-Content -LiteralPath $uiPath -Raw -Encoding UTF8
+
+    # Per-run local API token — blocks malicious pages from calling 127.0.0.1 tools/FS/SSH.
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $tokBytes = New-Object byte[] 32
+    $rng.GetBytes($tokBytes)
+    $rng.Dispose()
+    $localUiToken = -join ($tokBytes | ForEach-Object { $_.ToString('x2') })
+    $script:PromptParleLocalUiToken = $localUiToken
+    $tokenFile = Join-Path $script:PromptParleConfigDir 'local-ui.token'
+    try {
+        if (-not (Test-Path -LiteralPath $script:PromptParleConfigDir)) {
+            New-Item -ItemType Directory -Path $script:PromptParleConfigDir -Force | Out-Null
+        }
+        Set-Content -LiteralPath $tokenFile -Value $localUiToken -Encoding ASCII -NoNewline
+        Set-PromptParleConfigAcl -Path $tokenFile
+    } catch {
+        Write-Warning "Could not write local UI token file: $_"
+    }
+    # Inject token + fetch wrapper into the HTML served to the browser only
+    $inject = @"
+<script>
+window.__PP_LOCAL_TOKEN__ = '$localUiToken';
+(function () {
+  var _fetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    init = init || {};
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    var isLocalApi = false;
+    if (url.indexOf('/api/') === 0) isLocalApi = true;
+    else if (url.indexOf('http://127.0.0.1') === 0 && url.indexOf('/api/') !== -1) isLocalApi = true;
+    else if (url.indexOf('http://localhost') === 0 && url.indexOf('/api/') !== -1) isLocalApi = true;
+    if (isLocalApi) {
+      var h = new Headers(init.headers || {});
+      if (!h.has('X-PromptParle-Local')) {
+        h.set('X-PromptParle-Local', window.__PP_LOCAL_TOKEN__ || '');
+      }
+      init.headers = h;
+    }
+    return _fetch(input, init);
+  };
+})();
+</script>
+"@
+    if ($html -match '(?i)<head[^>]*>') {
+        $html = [regex]::Replace($html, '(?i)<head[^>]*>', { param($m) $m.Value + $inject }, 1)
+    } else {
+        $html = $inject + $html
+    }
 
     # Free preferred port only if busy, then bind. Try next ports only on failure.
     $listener = $null
@@ -11787,8 +15179,11 @@ function Start-PromptParleLocalServer {
     # When true, process exits after stop (successful Update handoff closes this window).
     # Always assign under StrictMode — never read an unset $script: var.
     $script:PromptParleExitProcessAfterStop = $false
+    $script:PromptParleConsoleRestart = $false
+    $script:PromptParleConsoleBusy = $false
     # Shared ref so cancel handler and main loop can both print progress
     $script:PromptParleListener = $listener
+    $consoleKeys = Test-PromptParleConsoleInteractive
 
     $cancelHandler = [System.ConsoleCancelEventHandler]{
         param($sender, $eventArgs)
@@ -11826,18 +15221,24 @@ function Start-PromptParleLocalServer {
     Write-Host ''
     Write-Host "  $url" -ForegroundColor Green
     Write-Host ''
-    Write-Host '  Stop any of these ways:' -ForegroundColor Yellow
-    Write-Host '    - Ctrl+C in this window' -ForegroundColor White
-    Write-Host '    - Browser button: Stop server' -ForegroundColor White
-    Write-Host '    - Close this window with the X' -ForegroundColor White
-    Write-Host '    - Other window: Stop-PromptParleLocalServer' -ForegroundColor White
+    if ($consoleKeys) {
+        Write-PromptParleConsoleHotkeyHelp -Url $url
+        Write-Host ''
+        Write-Host '  Also: browser Stop/Update · other window: Stop-PromptParleLocalServer' -ForegroundColor DarkGray
+    } else {
+        Write-Host '  Stop any of these ways:' -ForegroundColor Yellow
+        Write-Host '    - Ctrl+C in this window' -ForegroundColor White
+        Write-Host '    - Browser button: Stop server' -ForegroundColor White
+        Write-Host '    - Close this window with the X' -ForegroundColor White
+        Write-Host '    - Other window: Stop-PromptParleLocalServer' -ForegroundColor White
+    }
     Write-Host ''
 
     Open-PromptParleUrl -Url $url
 
     try {
         while ($listener.IsListening -and -not $script:PromptParleShouldStop) {
-            # Polling GetContext so Ctrl+C / Stop can interrupt (blocking GetContext ignores Ctrl+C)
+            # Polling GetContext so Ctrl+C / Stop / console keys can interrupt
             $async = $null
             try {
                 $async = $listener.BeginGetContext($null, $null)
@@ -11853,6 +15254,16 @@ function Start-PromptParleLocalServer {
                     }
                     try { $listener.Stop() } catch { }
                     break
+                }
+                # Console hotkeys only while idle (waiting for next HTTP request)
+                if ($consoleKeys -and -not $script:PromptParleConsoleBusy) {
+                    try {
+                        $hk = Read-PromptParleConsoleHotkey
+                        if ($hk) {
+                            $breakWait = Invoke-PromptParleConsoleHotkey -Action $hk -Port $Port -Url $url -Listener $listener
+                            if ($breakWait) { break }
+                        }
+                    } catch { }
                 }
                 Start-Sleep -Milliseconds 100
             }
@@ -11871,6 +15282,29 @@ function Start-PromptParleLocalServer {
             if (-not $path) { $path = '/' }
 
             try {
+                # --- Local UI auth gate (Achilles heel) ---
+                # Static shell + logo: no token. Everything under /api/* needs
+                # X-PromptParle-Local matching this process's per-run token.
+                # Also reject non-loopback Host and bad Origin/Referer.
+                $isStaticShell = (
+                    ($req.HttpMethod -eq 'GET') -and (
+                        $path -eq '/' -or
+                        $path -eq '/index.html' -or
+                        $path -eq '/logo.png' -or
+                        $path -eq '/favicon.ico' -or
+                        $path -eq '/favicon-32.png' -or
+                        $path -eq '/apple-touch-icon.png' -or
+                        $path -match '\.(png|ico|svg|css|js|woff2?)$'
+                    )
+                )
+                if (-not $isStaticShell) {
+                    $authOk = Test-PromptParleLocalUiRequest -Request $req -ExpectedToken $localUiToken -Port $Port
+                    if (-not $authOk) {
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 401 -ContentType 'application/json; charset=utf-8' -Body '{"error":"local_ui_unauthorized","message":"Missing or invalid local UI token. Open the UI from the PowerShell session (pp), not a bookmark from another origin."}'
+                        continue
+                    }
+                }
+
                 # Stop server from browser or Stop-PromptParleLocalServer
                 if (($req.HttpMethod -eq 'POST' -or $req.HttpMethod -eq 'GET') -and $path -eq '/api/stop') {
                     Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body '{"ok":true,"stopped":true}'
@@ -11915,16 +15349,36 @@ function Start-PromptParleLocalServer {
                     continue
                 }
 
-                if ($req.HttpMethod -eq 'GET' -and ($path -eq '/logo.png' -or $path -eq '/local-ui/logo.png')) {
-                    $logoPath = Join-Path $root 'local-ui\logo.png'
-                    if (-not (Test-Path -LiteralPath $logoPath)) {
-                        $logoPath = Join-Path $root 'local-ui/logo.png'
+                # Brand assets for browser tab + sidebar (no auth; loopback only via listener bind)
+                if ($req.HttpMethod -eq 'GET' -and (
+                        $path -eq '/logo.png' -or $path -eq '/local-ui/logo.png' -or
+                        $path -eq '/favicon.ico' -or $path -eq '/favicon-32.png' -or
+                        $path -eq '/apple-touch-icon.png'
+                    )) {
+                    $assetName = switch -Regex ($path) {
+                        'favicon\.ico$' { 'favicon.ico' }
+                        'favicon-32\.png$' { 'favicon-32.png' }
+                        'apple-touch-icon\.png$' { 'apple-touch-icon.png' }
+                        default { 'logo.png' }
                     }
-                    if (Test-Path -LiteralPath $logoPath) {
-                        $bytes = [System.IO.File]::ReadAllBytes($logoPath)
-                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'image/png' -Bytes $bytes
+                    $assetPath = Join-Path $root ("local-ui\" + $assetName)
+                    if (-not (Test-Path -LiteralPath $assetPath)) {
+                        $assetPath = Join-Path $root ("local-ui/" + $assetName)
+                    }
+                    # Fall back to logo.png when a size-specific icon is missing
+                    if (-not (Test-Path -LiteralPath $assetPath) -and $assetName -ne 'logo.png') {
+                        $assetPath = Join-Path $root 'local-ui\logo.png'
+                        if (-not (Test-Path -LiteralPath $assetPath)) {
+                            $assetPath = Join-Path $root 'local-ui/logo.png'
+                        }
+                        $assetName = 'logo.png'
+                    }
+                    if (Test-Path -LiteralPath $assetPath) {
+                        $bytes = [System.IO.File]::ReadAllBytes($assetPath)
+                        $ctype = if ($assetName -match '\.ico$') { 'image/x-icon' } else { 'image/png' }
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType $ctype -Bytes $bytes
                     } else {
-                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 404 -ContentType 'text/plain; charset=utf-8' -Body 'logo not found'
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 404 -ContentType 'text/plain; charset=utf-8' -Body 'icon not found'
                     }
                     continue
                 }
@@ -12073,39 +15527,81 @@ function Start-PromptParleLocalServer {
 
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/providers') {
                     try {
-                        # Include model catalogs for desktop chat model selector (dynamic)
-                        $qProv = [string]$req.Url.Query
-                        $pathProv = '/api/v1/providers?models=1'
-                        if ($qProv -match '(?:^|[?&])refresh=1') { $pathProv += '&refresh=1' }
-                        $result = Invoke-PromptParleApi -Method GET -Path $pathProv
-                        $json = ($result | ConvertTo-Json -Depth 10 -Compress)
+                        # 0.25 Local-first: keys on this PC; curated model lists (no portal key vault)
+                        if (-not (Get-Command Get-PromptParleLocalProvidersPublic -ErrorAction SilentlyContinue)) {
+                            throw 'Get-PromptParleLocalProvidersPublic missing — reinstall module (LocalFirst.ps1).'
+                        }
+                        $result = Get-PromptParleLocalProvidersPublic
+                        $json = $null
+                        try {
+                            $json = ($result | ConvertTo-Json -Depth 10 -Compress)
+                        } catch {
+                            throw "ConvertTo-Json failed for providers: $_"
+                        }
+                        if (-not $json -or $json -eq 'null') {
+                            throw 'Providers JSON was empty (serialization). Update to 0.25.7+.'
+                        }
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
                     } catch {
                         $err = @{ error = "$_" } | ConvertTo-Json -Compress
-                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 500 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
                     continue
                 }
 
-                # Dynamic model list for one provider (live refresh when key present)
+                # Local-first: store provider key on this PC only (never uploaded to portal)
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/providers/local-key') {
+                    try {
+                        $encPk = $req.ContentEncoding
+                        if (-not $encPk) { $encPk = [System.Text.Encoding]::UTF8 }
+                        $readerPk = New-Object System.IO.StreamReader($req.InputStream, $encPk)
+                        $rawPk = $readerPk.ReadToEnd()
+                        $readerPk.Close()
+                        $bodyPk = ConvertFrom-PromptParleJson -Json $rawPk
+                        $provPk = [string](Get-PromptParleProp $bodyPk 'provider' '')
+                        $keyPk = [string](Get-PromptParleProp $bodyPk 'api_key' (Get-PromptParleProp $bodyPk 'apiKey' ''))
+                        if (-not $provPk -or -not $keyPk) { throw 'provider and api_key required' }
+                        Set-PromptParleProviderKey -Provider $provPk.ToLowerInvariant() -ApiKey $keyPk
+                        $outPk = @{
+                            ok         = $true
+                            provider   = $provPk.ToLowerInvariant()
+                            local_first = $true
+                            message    = 'Key stored on this PC only (DPAPI when available).'
+                        } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $outPk
+                    } catch {
+                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                # Dynamic model list for one provider (local curated catalog; no portal key)
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/models') {
                     try {
                         $qM = [string]$req.Url.Query
                         $provM = ''
-                        $refreshM = $false
                         if ($qM -and $qM -match '(?:^|[?&])provider=([^&]*)') {
                             $provM = [Uri]::UnescapeDataString(($Matches[1] -replace '\+', ' '))
                         }
-                        if ($qM -match '(?:^|[?&])refresh=1') { $refreshM = $true }
                         if (-not $provM) { throw 'Query provider=openai|anthropic|gemini|grok required' }
-                        $pathM = '/api/v1/models?provider=' + [Uri]::EscapeDataString($provM.ToLowerInvariant())
-                        if ($refreshM) { $pathM += '&refresh=1' }
-                        $result = Invoke-PromptParleApi -Method GET -Path $pathM
+                        $allP = Get-PromptParleLocalProvidersPublic
+                        $hit = $null
+                        foreach ($pr in @($allP.providers)) {
+                            if ([string](Get-PromptParleProp $pr 'id' '') -eq $provM.ToLowerInvariant()) { $hit = $pr; break }
+                        }
+                        if (-not $hit) { throw "Unknown provider: $provM" }
+                        $result = [ordered]@{
+                            provider    = $provM.ToLowerInvariant()
+                            models      = @(Get-PromptParleProp $hit 'models' @())
+                            default     = Get-PromptParleProp $hit 'default_model' ''
+                            local_first = $true
+                        }
                         $json = ($result | ConvertTo-Json -Depth 8 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
                     } catch {
                         $err = @{ error = "$_" } | ConvertTo-Json -Compress
-                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
                     continue
                 }
@@ -12266,6 +15762,8 @@ function Start-PromptParleLocalServer {
                             ssh_target       = [string]$ws.ssh_target
                             ssh_port         = [int]$ws.ssh_port
                             ssh_cwd          = [string](Get-PromptParleProp $ws 'ssh_cwd' '')
+                            ssh_name         = [string](Get-PromptParleProp $ws 'ssh_name' (Get-PromptParleProp $st 'ssh_name' ''))
+                            connections      = @(Get-PromptParleConnections)
                             agent_name       = if ($ag) { $ag.name } else { $st.active_agent }
                             agent_system     = if ($ag) { $ag.system } else { '' }
                             agent_commands   = $cmdList
@@ -12353,6 +15851,30 @@ function Start-PromptParleLocalServer {
                     continue
                 }
 
+                # SSH connection history (friendly names; no passwords) — sorted recent-first
+                if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/ssh/history') {
+                    try {
+                        $hist = @(Get-PromptParleSshHistory -Max 30)
+                        $payload = @{
+                            ok      = $true
+                            history = @($hist | ForEach-Object {
+                                [ordered]@{
+                                    name      = [string]$_.name
+                                    target    = [string]$_.target
+                                    port      = ConvertTo-PromptParleSshPort -Value $_.port
+                                    cwd       = [string]$_.cwd
+                                    last_used = [string]$_.last_used
+                                }
+                            })
+                        } | ConvertTo-Json -Depth 5 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                    } catch {
+                        $err = @{ ok = $false; error = "$_"; history = @() } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
                 # SSH remote directory autocomplete (working-dir field + terminal)
                 if ($req.HttpMethod -eq 'GET' -and $path -eq '/api/ssh/complete') {
                     try {
@@ -12411,15 +15933,16 @@ function Start-PromptParleLocalServer {
                         if ($req.HttpMethod -eq 'GET') {
                             $ws = Get-PromptParleWorkspace
                             $payload = @{
-                                ok       = $true
-                                path     = $ws.path
-                                kind     = $ws.kind
-                                exists   = $ws.exists
-                                is_git   = $ws.is_git
-                                branch   = $ws.branch
-                                remote   = $ws.remote
-                                recent   = @($ws.recent)
-                            } | ConvertTo-Json -Depth 5 -Compress
+                                ok          = $true
+                                path        = $ws.path
+                                kind        = $ws.kind
+                                exists      = $ws.exists
+                                is_git      = $ws.is_git
+                                branch      = $ws.branch
+                                remote      = $ws.remote
+                                recent      = @($ws.recent)
+                                connections = @(Get-PromptParleConnections)
+                            } | ConvertTo-Json -Depth 6 -Compress
                             Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
                         } else {
                             $encW = $req.ContentEncoding
@@ -12428,15 +15951,76 @@ function Start-PromptParleLocalServer {
                             $rawW = $readerW.ReadToEnd()
                             $readerW.Close()
                             $bodyW = ConvertFrom-PromptParleJson -Json $rawW
-                            $action = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'action' 'set')
-                            if (-not $action) { $action = 'set' }
-                            if ($action -eq 'clear') {
-                                Clear-PromptParleWorkspace
-                                $payload = @{ ok = $true; path = ''; kind = 'none'; message = 'Workspace detached.' } | ConvertTo-Json -Compress
+                            $action = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'action' 'add')
+                            if (-not $action) { $action = 'add' }
+                            $action = $action.ToLowerInvariant()
+                            if ($action -eq 'clear' -or $action -eq 'clear_all') {
+                                Clear-PromptParleWorkspace -All
+                                $payload = @{ ok = $true; path = ''; kind = 'none'; connections = @(Get-PromptParleConnections); message = 'All local folders detached.' } | ConvertTo-Json -Depth 6 -Compress
+                            } elseif ($action -eq 'remove' -or $action -eq 'detach') {
+                                $rid = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'id' '')
+                                if (-not $rid) {
+                                    $rp = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'path' '')
+                                    if ($rp) {
+                                        foreach ($c in @(Get-PromptParleConnections)) {
+                                            if ($c.kind -eq 'local' -and $c.path -and (Test-PromptParlePathEqual -A $c.path -B $rp)) {
+                                                $rid = $c.id; break
+                                            }
+                                        }
+                                    }
+                                }
+                                if (-not $rid) { throw 'Missing id for remove' }
+                                $null = Remove-PromptParleConnection -Id $rid
+                                $wsNow = Get-PromptParleWorkspace
+                                $payload = @{
+                                    ok = $true; path = $wsNow.path; kind = $wsNow.kind
+                                    connections = @(Get-PromptParleConnections)
+                                    message = "Detached $rid"
+                                } | ConvertTo-Json -Depth 6 -Compress
+                            } elseif ($action -eq 'active') {
+                                $aid = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'id' (Get-PromptParleProp $bodyW 'label' ''))
+                                if (-not $aid) { throw 'Missing id for active' }
+                                $hit = Set-PromptParleActiveLocalConnection -IdOrLabel $aid
+                                $wsNow = Get-PromptParleWorkspace
+                                $payload = @{
+                                    ok = $true; path = $wsNow.path; kind = $wsNow.kind
+                                    active_id = $hit.id; connections = @(Get-PromptParleConnections)
+                                    message = "Active local: $($hit.label)"
+                                } | ConvertTo-Json -Depth 6 -Compress
+                            } elseif ($action -eq 'reindex') {
+                                $rid = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'id' '')
+                                $cHit = $null
+                                foreach ($c in @(Get-PromptParleConnections)) {
+                                    if (-not $rid -or $c.id -eq $rid) {
+                                        if ($c.kind -in @('local', 'knowledge')) {
+                                            $cHit = $c
+                                            if ($rid) { break }
+                                            if ($c.active) { break }
+                                        }
+                                    }
+                                }
+                                if (-not $cHit) { throw 'No connection to reindex' }
+                                $idx = Update-PromptParleConnectionCatalog -Connection $cHit
+                                $list = @(Get-PromptParleConnections)
+                                foreach ($c in $list) {
+                                    if ($c.id -eq $cHit.id) {
+                                        $c.indexed_at = [string]$idx.indexed_at
+                                        $c.file_count = [int]$idx.file_count
+                                    }
+                                }
+                                $null = Save-PromptParleConnectionsState -Connections $list
+                                $payload = @{
+                                    ok = $true; id = $cHit.id; file_count = [int]$idx.file_count
+                                    connections = @(Get-PromptParleConnections)
+                                    message = "Indexed $($idx.file_count) files for $($cHit.label)"
+                                } | ConvertTo-Json -Depth 6 -Compress
                             } else {
+                                # add (default) or replace
                                 $wp = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'path' '')
                                 if (-not $wp) { throw 'Missing path' }
-                                $wsSet = Set-PromptParleWorkspace -Path $wp
+                                $mode = if ($action -eq 'replace' -or $action -eq 'set') { 'replace' } else { 'add' }
+                                $lab = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyW 'label' '')
+                                $wsSet = Set-PromptParleWorkspace -Path $wp -Mode $mode -Label $lab
                                 $wsFull = Get-PromptParleWorkspace
                                 $recentOut = @()
                                 foreach ($r in @($wsSet.recent)) {
@@ -12444,15 +16028,81 @@ function Start-PromptParleLocalServer {
                                     if ($rs) { $recentOut += $rs }
                                 }
                                 $payload = @{
-                                    ok      = $true
-                                    path    = [string]$wsSet.path
-                                    kind    = [string]$wsSet.kind
-                                    is_git  = [bool]$wsSet.is_git
-                                    branch  = $wsFull.branch
-                                    remote  = $wsFull.remote
-                                    recent  = $recentOut
-                                    message = "Attached $($wsSet.path)"
-                                } | ConvertTo-Json -Depth 5 -Compress
+                                    ok          = $true
+                                    path        = [string]$wsSet.path
+                                    kind        = [string]$wsSet.kind
+                                    is_git      = [bool]$wsSet.is_git
+                                    branch      = $wsFull.branch
+                                    remote      = $wsFull.remote
+                                    recent      = $recentOut
+                                    id          = [string](Get-PromptParleProp $wsSet 'id' '')
+                                    label       = [string](Get-PromptParleProp $wsSet 'label' '')
+                                    file_count  = $(try { [int](Get-PromptParleProp $wsSet 'file_count' 0) } catch { 0 })
+                                    connections = @(Get-PromptParleConnections)
+                                    message     = "Attached $($wsSet.path) ($mode · idx $(try { [int](Get-PromptParleProp $wsSet 'file_count' 0) } catch { 0 }) on disk)"
+                                } | ConvertTo-Json -Depth 6 -Compress
+                            }
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                        }
+                    } catch {
+                        $errMsg = "$_"
+                        $exType = ''
+                        try {
+                            Write-PromptParleDebugLog ("/api/workspace FAIL: " + $_.Exception.ToString() + " :: " + $_.ScriptStackTrace)
+                            $exType = $_.Exception.GetType().FullName
+                            $errMsg = $_.Exception.Message
+                            if ($_.ScriptStackTrace) {
+                                $top = @($_.ScriptStackTrace -split "`r?`n" | Select-Object -First 4)
+                                $errMsg = $errMsg + ' | ' + ($top -join ' > ')
+                            }
+                        } catch {
+                            $errMsg = "$_"
+                        }
+                        $err = @{ ok = $false; error = $errMsg; exception_type = $exType } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if (($req.HttpMethod -eq 'GET' -or $req.HttpMethod -eq 'POST') -and $path -eq '/api/knowledge') {
+                    try {
+                        if ($req.HttpMethod -eq 'GET') {
+                            $know = @((Get-PromptParleConnections) | Where-Object { $_.kind -eq 'knowledge' })
+                            $payload = @{ ok = $true; knowledge = $know; connections = @(Get-PromptParleConnections) } | ConvertTo-Json -Depth 6 -Compress
+                            Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
+                        } else {
+                            $encK = $req.ContentEncoding
+                            if (-not $encK) { $encK = [System.Text.Encoding]::UTF8 }
+                            $readerK = New-Object System.IO.StreamReader($req.InputStream, $encK)
+                            $rawK = $readerK.ReadToEnd()
+                            $readerK.Close()
+                            $bodyK = ConvertFrom-PromptParleJson -Json $rawK
+                            $actionK = (ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'action' 'add')).ToLowerInvariant()
+                            if ($actionK -eq 'remove' -or $actionK -eq 'detach') {
+                                $kid = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'id' '')
+                                if (-not $kid) { throw 'Missing id' }
+                                $null = Remove-PromptParleConnection -Id $kid
+                                $payload = @{ ok = $true; connections = @(Get-PromptParleConnections); message = "Knowledge detached $kid" } | ConvertTo-Json -Depth 6 -Compress
+                            } else {
+                                $src = (ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'source' 'local')).ToLowerInvariant()
+                                if ($src -ne 'ssh') { $src = 'local' }
+                                $kpath = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'path' '')
+                                $klab = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'label' '')
+                                $kst = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'ssh_target' (Get-PromptParleProp $bodyK 'target' ''))
+                                $ksp = 22
+                                try { $ksp = [int](Get-PromptParleProp $bodyK 'ssh_port' (Get-PromptParleProp $bodyK 'port' 22)) } catch { $ksp = 22 }
+                                $ksc = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'ssh_cwd' (Get-PromptParleProp $bodyK 'cwd' ''))
+                                $ksn = ConvertTo-PromptParleSingleString (Get-PromptParleProp $bodyK 'ssh_name' (Get-PromptParleProp $bodyK 'name' ''))
+                                $added = Add-PromptParleKnowledgeConnection -Path $kpath -Label $klab -Source $src -SshTarget $kst -SshPort $ksp -SshCwd $ksc -SshName $ksn
+                                $payload = @{
+                                    ok = $true
+                                    id = $added.id
+                                    label = $added.label
+                                    path = $added.path
+                                    file_count = $added.file_count
+                                    connections = @(Get-PromptParleConnections)
+                                    message = "Knowledge attached: $($added.label) (indexed $($added.file_count) files; not dumped into chat)"
+                                } | ConvertTo-Json -Depth 6 -Compress
                             }
                             Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $payload
                         }
@@ -12724,13 +16374,42 @@ function Start-PromptParleLocalServer {
                     continue
                 }
 
-                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/chat') {
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/feedback') {
                     $enc = $req.ContentEncoding
                     if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
                     $reader = New-Object System.IO.StreamReader($req.InputStream, $enc)
                     $rawBody = $reader.ReadToEnd()
                     $reader.Close()
                     try {
+                        if ([string]::IsNullOrWhiteSpace($rawBody)) { throw 'Empty body' }
+                        $fb = ConvertFrom-PromptParleJson -Json $rawBody
+                        $kind = [string](Get-PromptParleProp $fb 'kind' 'suggest')
+                        $title = [string](Get-PromptParleProp $fb 'title' '')
+                        $bodyText = [string](Get-PromptParleProp $fb 'body' '')
+                        $payload = [ordered]@{
+                            kind  = $kind
+                            title = $title
+                            body  = $bodyText
+                        }
+                        $result = Invoke-PromptParleApi -Method POST -Path '/api/v1/feedback' -Body $payload
+                        $json = $result | ConvertTo-Json -Depth 8 -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 200 -ContentType 'application/json; charset=utf-8' -Body $json
+                    } catch {
+                        $err = @{ ok = $false; error = "$_" } | ConvertTo-Json -Compress
+                        Write-PromptParleHttpResponse -Context $ctx -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body $err
+                    }
+                    continue
+                }
+
+                if ($req.HttpMethod -eq 'POST' -and $path -eq '/api/chat') {
+                    $enc = $req.ContentEncoding
+                    if (-not $enc) { $enc = [System.Text.Encoding]::UTF8 }
+                    $reader = New-Object System.IO.StreamReader($req.InputStream, $enc)
+                    $rawBody = $reader.ReadToEnd()
+                    $reader.Close()
+                    $chatStage = 'init'
+                    try {
+                        $chatStage = 'parse-body'
                         if ([string]::IsNullOrWhiteSpace($rawBody)) { throw 'Empty request body' }
                         $body = ConvertFrom-PromptParleJson -Json $rawBody
                         # StrictMode: never touch $body.foo if foo may be absent
@@ -12768,6 +16447,10 @@ function Start-PromptParleLocalServer {
 
                         $images = @(ConvertTo-PromptParleImageList -Images (Get-PromptParleProp $body 'images' $null))
 
+                        $sessionTitleChat = [string](Get-PromptParleProp $body 'session_title' (Get-PromptParleProp $body 'sessionTitle' ''))
+                        $clientSessionIdChat = [string](Get-PromptParleProp $body 'client_session_id' (Get-PromptParleProp $body 'clientSessionId' ''))
+
+
                         # Optional prior-turn history for [MEM] brief (UI multi-turn fidelity)
                         $histArr = @()
                         $histRaw = Get-PromptParleProp $body 'history' $null
@@ -12788,12 +16471,12 @@ function Start-PromptParleLocalServer {
                         $toolsEnChat = $true
                         $teBody = Get-PromptParleProp $body 'tools_enabled' (Get-PromptParleProp $body 'toolsEnabled' $null)
                         if ($null -ne $teBody) {
-                            $toolsEnChat = [bool]$teBody
+                            $toolsEnChat = ConvertTo-PromptParleBool -Value $teBody -Default $true
                         } else {
                             try {
                                 $stChat = Get-PromptParleSessionState
                                 if ($null -ne (Get-PromptParleProp $stChat 'tools_enabled' $null)) {
-                                    $toolsEnChat = [bool]$stChat.tools_enabled
+                                    $toolsEnChat = ConvertTo-PromptParleBool -Value (Get-PromptParleProp $stChat 'tools_enabled' $true) -Default $true
                                 }
                             } catch { $toolsEnChat = $true }
                         }
@@ -12816,25 +16499,100 @@ function Start-PromptParleLocalServer {
                             Save-PromptParleSessionState -State $stSave
                         } catch { }
 
-                        # You → local prep → cloud optimize (dial) → model. No agent router.
+                        # You → local prep → local-first optimize + provider (dial). Portal = license only.
                         $prep = $null
+                        $prepTokensBefore = 0
+                        $prepTokensAfter = 0
                         $groundingContext = if ($context) { [string]$context } else { '' }
+                        $chatStage = 'local-prep'
                         try {
                             $prepParams = @{
                                 Prompt       = $prompt
-                                Context      = $(if ($context) { $context } else { '' })
+                                Context      = $(if ($context) { [string]$context } else { '' })
                                 ToolsEnabled = $toolsEnChat
                                 Dial         = $dial
                                 Profile      = $profile
                             }
                             if ($histArr.Count -gt 0) { $prepParams.History = $histArr }
                             elseif ($histText) { $prepParams.HistoryText = $histText }
-                            $prep = Invoke-PromptParleAgentLocalPrep @prepParams
-                            $prompt = [string]$prep.prompt
-                            if ($null -ne $prep.context) { $context = [string]$prep.context }
-                            if ($prep.notes) { $localNotes = @($localNotes) + @($prep.notes) }
+                            if ($clientSessionIdChat) { $prepParams.ClientSessionId = $clientSessionIdChat.Trim() }
+                            # User-pinned session Knowledge (★) from local UI — key present = UI is source of truth (empty clears)
+                            $pkArr = @()
+                            $pkRaw = $null
+                            $pkKeyPresent = $false
+                            try {
+                                if ($body.PSObject.Properties['priority_knowledge'] -or $body.PSObject.Properties['priorityKnowledge']) {
+                                    $pkKeyPresent = $true
+                                    $pkRaw = Get-PromptParleProp $body 'priority_knowledge' $null
+                                    if ($null -eq $pkRaw) { $pkRaw = Get-PromptParleProp $body 'priorityKnowledge' $null }
+                                }
+                            } catch {
+                                $pkRaw = Get-PromptParleProp $body 'priority_knowledge' $null
+                                if ($null -eq $pkRaw) { $pkRaw = Get-PromptParleProp $body 'priorityKnowledge' $null }
+                                if ($null -ne $pkRaw) { $pkKeyPresent = $true }
+                            }
+                            if ($null -ne $pkRaw) {
+                                foreach ($pk in @($pkRaw)) {
+                                    if ($null -eq $pk) { continue }
+                                    $pkt = [string](Get-PromptParleProp $pk 'text' (Get-PromptParleProp $pk 'Text' ''))
+                                    if (-not $pkt) { continue }
+                                    $pkr = [string](Get-PromptParleProp $pk 'role' (Get-PromptParleProp $pk 'Role' 'assistant'))
+                                    $pki = [string](Get-PromptParleProp $pk 'id' (Get-PromptParleProp $pk 'Id' ''))
+                                    $pkArr += [pscustomobject]@{ id = $pki; role = $pkr; text = $pkt }
+                                    if ($pkArr.Count -ge 12) { break }
+                                }
+                            }
+                            if ($pkKeyPresent) {
+                                $prepParams.PriorityKnowledge = $pkArr
+                                $prepParams.PriorityKnowledgeReplace = $true
+                            }
+                            $prepRaw = Invoke-PromptParleAgentLocalPrep @prepParams
+                            # PS 5.1: pipeline pollution can wrap prep as Object[]; take last real object
+                            $prep = $null
+                            if ($null -ne $prepRaw) {
+                                if ($prepRaw -is [System.Array]) {
+                                    for ($pi = $prepRaw.Length - 1; $pi -ge 0; $pi--) {
+                                        $cand = $prepRaw[$pi]
+                                        if ($null -eq $cand) { continue }
+                                        if ($cand -is [int] -or $cand -is [long]) { continue }
+                                        $probe = Get-PromptParleProp $cand 'prompt' $null
+                                        if ($null -eq $probe) { $probe = Get-PromptParleProp $cand 'context' $null }
+                                        if ($null -ne $probe -or (Get-PromptParleProp $cand 'tokens_before' $null) -ne $null) {
+                                            $prep = $cand
+                                            break
+                                        }
+                                    }
+                                    if ($null -eq $prep -and $prepRaw.Length -gt 0) { $prep = $prepRaw[-1] }
+                                } else {
+                                    $prep = $prepRaw
+                                }
+                            }
+                            if ($null -eq $prep) { throw 'local prep returned empty result' }
+                            $prepPrompt = Get-PromptParleProp $prep 'prompt' $null
+                            if ($null -ne $prepPrompt -and [string]$prepPrompt) { $prompt = [string]$prepPrompt }
+                            $prepCtx = Get-PromptParleProp $prep 'context' $null
+                            if ($null -ne $prepCtx) { $context = [string]$prepCtx }
+                            $prepNotes = Get-PromptParleProp $prep 'notes' $null
+                            if ($prepNotes) { $localNotes = @($localNotes) + @($prepNotes) }
+                            # Turn baseline: raw prompt+history+attach before MEM/fleet densify
+                            try {
+                                $ptb = Get-PromptParleProp $prep 'tokens_before' $null
+                                $pta = Get-PromptParleProp $prep 'tokens_after' $null
+                                if ($null -eq $ptb) {
+                                    $ci = Get-PromptParleProp $prep 'chars_in' 0
+                                    if ($ci -gt 0) { $ptb = [Math]::Max(1, [int][Math]::Ceiling([int]$ci / 4.0)) }
+                                }
+                                if ($null -eq $pta) {
+                                    $co = Get-PromptParleProp $prep 'chars_out' 0
+                                    if ($co -gt 0) { $pta = [Math]::Max(1, [int][Math]::Ceiling([int]$co / 4.0)) }
+                                }
+                                if ($null -ne $ptb) { $prepTokensBefore = [int]$ptb }
+                                if ($null -ne $pta) { $prepTokensAfter = [int]$pta }
+                            } catch { }
                         } catch {
                             Write-Host ("  chat: local prep warning - {0}" -f $_) -ForegroundColor DarkYellow
+                            Write-PromptParleDebugLog ("chat local-prep: " + $_.Exception.ToString())
+                            $prep = $null
                         }
                         # 0.20: freeze prep evidence for grounding/provenance post-pass
                         # (agent rounds may compress context; post-pass must still see OBSERVE/PROVENANCE)
@@ -12847,28 +16605,47 @@ function Start-PromptParleLocalServer {
                         if (-not $oblForRt) {
                             try { $oblForRt = Resolve-PromptParleTurnObligation -Prompt $prompt -History $histArr } catch { }
                         }
-                        $rtNote = 'Prep ran (0.20). Tags may include [PROJECT][CONN][SSH][MEM][ATTACH][WEB][OBSERVE][GROUNDING][PROVENANCE]. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn; never invent product facts not in evidence.'
+                        # Prep owns evidence_mode + hands_allowed (product dispatch, not chat special cases)
+                        $evidenceMode = 'live'
+                        $handsAllowed = [bool]$toolsEnChat
+                        $evidenceReason = ''
+                        try {
+                            if ($prep) {
+                                $em0 = Get-PromptParleProp $prep 'evidence_mode' $null
+                                if ($em0) { $evidenceMode = [string]$em0 }
+                                $ha0 = Get-PromptParleProp $prep 'hands_allowed' $null
+                                if ($null -ne $ha0) { $handsAllowed = [bool]$ha0 -and $toolsEnChat }
+                                $evidenceReason = [string](Get-PromptParleProp $prep 'evidence_reason' '')
+                            }
+                        } catch { }
+                        if (-not $toolsEnChat) { $handsAllowed = $false }
+
+                        $rtNote = 'Prep ran. Tags may include [PROJECT][CONN][SSH][MEM][KNOW][ATTACH][WEB][OBSERVE][GROUNDING][PROVENANCE]. [KNOW]=user-pinned session truth. Doctrine: if client can obtain the fact, do not answer with the method; if document owed, emit ```file``` this turn; never invent product facts not in evidence.'
                         if ($oblForRt -and $oblForRt.mode -eq 'mutate') {
-                            $rtNote = 'MUTATE TURN 0.20 · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
+                            $rtNote = 'MUTATE TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` only for pipeline cmds client executes. NEVER dump homework. No Ready/Name-it theater.'
                             $turnForRt = 'implement'
                         } elseif ($oblForRt -and $oblForRt.mode -eq 'deliver') {
-                            $rtNote = 'DELIVER TURN 0.20 · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
+                            $rtNote = 'DELIVER TURN · document owed. Emit ```file name=…``` with FULL body NOW. Use [WEB]/[OBSERVE]/[ATTACH] as source — never [MEM] invention when observe evidence exists. Never "Generating now" without the file fence.'
                         } elseif ($oblForRt -and $oblForRt.mode -eq 'observe') {
-                            $rtNote = 'OBSERVE TURN 0.20 · client already filled [OBSERVE]/[WEB] when possible. Present results only; invent nothing beyond evidence. NEVER ```run ls``` or search-homework as the answer.'
+                            $rtNote = 'OBSERVE TURN · client already filled [OBSERVE]/[WEB] when possible. Present results only; invent nothing beyond evidence. NEVER ```run ls``` or search-homework as the answer.'
                         } elseif ($turnForRt -eq 'implement') {
                             $rtNote = 'IMPLEMENT TURN · capability=obligation. Emit full-file ```apply path=...```; ```run``` for migrate/build client executes. NEVER tell the user to run npx. No theater.'
                         } elseif ($turnForRt -eq 'question') {
-                            $rtNote = 'QUESTION TURN 0.20. Answer from [PROJECT]/[OBSERVE]/[WEB]/[PROVENANCE] evidence first. Client-first observe already ran when applicable — do not answer with methods/commands. Never invent capabilities.'
+                            $rtNote = 'QUESTION TURN. Answer from [PROJECT]/[OBSERVE]/[WEB]/[PROVENANCE]/[MEM][KNOW] evidence first. Never invent capabilities.'
+                        }
+                        if ($evidenceMode -eq 'session') {
+                            $rtNote = $rtNote + ' EVIDENCE_MODE=session: answer from [MEM]/[KNOW]/[PROJECT]/[CONN] only. No hands. No re-discovery. Offer refresh if incomplete.'
+                        } elseif ($evidenceMode -eq 'refresh') {
+                            $rtNote = $rtNote + ' EVIDENCE_MODE=refresh: user forced live re-pull; prefer [SSH]/[OBSERVE] this turn.'
                         }
                         if ($groundingContext -match '(?m)\[PROVENANCE\]') {
                             $rtNote = $rtNote + ' PROVENANCE OWED: report client YES/NO on-source and prior-assistant origin. Never only "nowhere".'
                         }
-                        # Document turns: this-turn attachment beats prior MEM summaries
                         try {
                             $ctxHasAttach = $context -and ($context -match '(?m)^\[ATTACH\]' -or $context -match '===== FILE:')
                             $prHasAttach = $prompt -match '\[ATTACHED THIS TURN'
                             if ($ctxHasAttach -or $prHasAttach) {
-                                $rtNote = $rtNote + ' ATTACH PRIMARY: summarize/create deliverables from THIS turn FILE only. Do not reuse prior [MEM] document topic or prior executive summary when a new file is attached.'
+                                $rtNote = $rtNote + ' ATTACH PRIMARY: summarize/create deliverables from THIS turn FILE only. Do not reuse prior [MEM] document topic when a new file is attached.'
                             }
                         } catch { }
                         if ($localNotes -and $localNotes.Count -gt 0) {
@@ -12877,8 +16654,8 @@ function Start-PromptParleLocalServer {
                         $frame = Get-PromptParleChatFraming -Prompt $prompt -RuntimeNote $rtNote
 
                         $ctxLen = if ($context) { $context.Length } else { 0 }
-                        Write-Host ("  chat: provider={0} model={1} profile={2} dial={3} tools={4} optimize_only={5} prompt={6}c system={7}c context={8}c images={9} local_notes={10}" -f `
-                            $provider, $(if ($modelChat) { $modelChat } else { '(default)' }), $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count) -ForegroundColor DarkGray
+                        Write-Host ("  chat: provider={0} model={1} profile={2} dial={3} tools={4} optimize_only={5} prompt={6}c system={7}c context={8}c images={9} local_notes={10} evidence={11} hands={12}" -f `
+                            $provider, $(if ($modelChat) { $modelChat } else { '(default)' }), $profile, $dial, $toolsEnChat, $optOnly, $frame.Prompt.Length, $frame.System.Length, $ctxLen, $images.Count, $localNotes.Count, $evidenceMode, $handsAllowed) -ForegroundColor DarkGray
 
                         $params = @{
                             Prompt            = [string]$frame.Prompt
@@ -12892,23 +16669,43 @@ function Start-PromptParleLocalServer {
                             $params.Model = [string]$modelChat
                             Write-Host ("  chat: forcing model={0}" -f $modelChat) -ForegroundColor DarkCyan
                         } else {
-                            Write-Host '  chat: no model in body/session — portal preferred/default will apply' -ForegroundColor DarkYellow
+                            Write-Host '  chat: no model in body/session — local default model will apply' -ForegroundColor DarkYellow
                         }
-                        # Pass as single string - never as char-unrolled array
                         if ($context) { $params.Context = [string]$context }
                         if ($optOnly) { $params.OptimizeOnly = $true }
                         if ($images.Count -gt 0) { $params.Images = $images }
+                        if ($sessionTitleChat) { $params.SessionTitle = $sessionTitleChat.Trim() }
+                        if ($clientSessionIdChat) { $params.ClientSessionId = $clientSessionIdChat.Trim() }
 
-                        # 0.22: multi-AI native tool agent (pass-through; captures under ~/.promptparle/captures)
-                        if (-not $toolsEnChat) {
-                            # Tools off → single completion via portal optimize path
+                        # Dispatch from prep.hands_allowed only (no MaxRounds/session special cases)
+                        $chatStage = 'model-call'
+                        if (-not $handsAllowed -or -not $toolsEnChat -or $optOnly) {
                             $params.Quiet = $true
                             $params.Raw = $true
+                            foreach ($dropK in @('MaxRounds', 'ClientSessionId', 'SessionTitle')) {
+                                if ($params.ContainsKey($dropK)) { $params.Remove($dropK) | Out-Null }
+                            }
+                            Write-Host ("  chat: single completion (evidence={0} hands={1})" -f $evidenceMode, $handsAllowed) -ForegroundColor Green
                             $result = Invoke-PromptParle @params
                         } else {
-                            $result = Invoke-PromptParleAgentTurn @params
+                            try {
+                                $result = Invoke-PromptParleAgentTurn @params
+                            } catch {
+                                $msg = "$_"
+                                if ($msg -match 'parameter name') {
+                                    Write-Host ("  chat: agent turn param retry after: {0}" -f $msg) -ForegroundColor DarkYellow
+                                    $params.Remove('ClientSessionId') | Out-Null
+                                    $params.Remove('SessionTitle') | Out-Null
+                                    $params.Remove('Quiet') | Out-Null
+                                    $params.Remove('Raw') | Out-Null
+                                    $result = Invoke-PromptParleAgentTurn @params
+                                } else {
+                                    throw
+                                }
+                            }
                         }
                         # Normalize metadata keys for the browser UI (always snake_case numbers)
+                        $chatStage = 'meta-normalize'
                         $metaIn = Get-PromptParleProp $result 'metadata'
                         if ($null -eq $metaIn) { $metaIn = Get-PromptParleProp $result 'Metadata' }
                         $metaOut = $null
@@ -12921,28 +16718,55 @@ function Start-PromptParleLocalServer {
                             if ($null -eq $pctT) { $pctT = Get-PromptParleProp $metaIn 'tokenReductionPercent' }
                             $dialT = Get-PromptParleProp $metaIn 'compression_level'
                             if ($null -eq $dialT) { $dialT = Get-PromptParleProp $metaIn 'compressionLevel' }
-                            $metaOut = [ordered]@{
-                                original_tokens         = if ($null -ne $origT) { [int]$origT } else { 0 }
-                                optimized_tokens        = if ($null -ne $optT) { [int]$optT } else { 0 }
-                                token_reduction_percent = if ($null -ne $pctT) { [int]$pctT } else { 0 }
+                            # Prefer the dial the UI actually sent this turn (authoritative).
+                            # Older native-agent builds hardcoded compression_level=1; never let that win.
+                            $dialForMeta = $dial
+                            if ($null -ne $dialT) {
+                                $dialMetaN = ConvertTo-PromptParleInt32 -Value $dialT -Default $dial
+                                if ($dialMetaN -ge 1 -and $dialMetaN -le 5) {
+                                    if ($dial -lt 1 -or $dialMetaN -eq $dial) { $dialForMeta = $dialMetaN }
+                                    else { $dialForMeta = $dial }
+                                }
+                            }
+                            # Plain hashtable only — never [ordered] + cast / ConvertTo-Json footguns
+                            $metaOut = @{
+                                original_tokens         = (ConvertTo-PromptParleInt32 -Value $origT -Default 0)
+                                optimized_tokens        = (ConvertTo-PromptParleInt32 -Value $optT -Default 0)
+                                token_reduction_percent = (ConvertTo-PromptParleInt32 -Value $pctT -Default 0)
                                 tokens_saved            = 0
                                 expanded                = $false
                                 provider                = [string](Get-PromptParleProp $metaIn 'provider' '')
                                 model                   = [string](Get-PromptParleProp $metaIn 'model' '')
                                 optimization_profile    = [string](Get-PromptParleProp $metaIn 'optimization_profile' (Get-PromptParleProp $metaIn 'optimizationProfile' ''))
-                                compression_level       = if ($null -ne $dialT) { [int]$dialT } else { $dial }
+                                compression_level       = (ConvertTo-PromptParleInt32 -Value $dialForMeta -Default 3)
                                 strategy                = [string](Get-PromptParleProp $metaIn 'strategy' '')
-                                secrets_masked          = [bool](Get-PromptParleProp $metaIn 'secrets_masked' $false)
-                                notes                   = @(Get-PromptParleProp $metaIn 'notes' @())
-                                signals                 = Get-PromptParleProp $metaIn 'signals' @{}
+                                secrets_masked          = (ConvertTo-PromptParleBool -Value (Get-PromptParleProp $metaIn 'secrets_masked' $false) -Default $false)
+                                notes                   = @()
+                                signals                 = @{}
                                 image_count             = 0
                                 local_tools             = @($localNotes)
                             }
+                            $notesRaw = Get-PromptParleProp $metaIn 'notes' @()
+                            if ($null -ne $notesRaw) {
+                                $nAcc = New-Object System.Collections.ArrayList
+                                foreach ($n in @($notesRaw)) {
+                                    if ($null -eq $n) { continue }
+                                    [void]$nAcc.Add([string]$n)
+                                }
+                                $metaOut.notes = @($nAcc.ToArray())
+                            }
+                            $sigRaw = Get-PromptParleProp $metaIn 'signals' $null
+                            if ($null -ne $sigRaw -and $sigRaw -is [System.Collections.IDictionary]) {
+                                $metaOut.signals = @{}
+                                foreach ($sk in @($sigRaw.Keys)) {
+                                    $metaOut.signals[[string]$sk] = $sigRaw[$sk]
+                                }
+                            }
                             $imgC = Get-PromptParleProp $metaIn 'image_count'
                             if ($null -eq $imgC) { $imgC = Get-PromptParleProp $metaIn 'imageCount' }
-                            if ($null -ne $imgC) { $metaOut.image_count = [int]$imgC }
+                            if ($null -ne $imgC) { $metaOut.image_count = ConvertTo-PromptParleInt32 -Value $imgC -Default 0 }
                             $expF = Get-PromptParleProp $metaIn 'expanded'
-                            if ($null -ne $expF) { $metaOut.expanded = [bool]$expF }
+                            if ($null -ne $expF) { $metaOut.expanded = ConvertTo-PromptParleBool -Value $expF -Default $false }
                             elseif ($metaOut.optimized_tokens -gt $metaOut.original_tokens) { $metaOut.expanded = $true }
                             $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
                             if ($metaOut.token_reduction_percent -eq 0 -and $metaOut.original_tokens -gt 0 -and -not $metaOut.expanded) {
@@ -12971,12 +16795,41 @@ function Start-PromptParleLocalServer {
                                         $metaOut.optimized_tokens = [int]$sumZ
                                         $metaOut.tokens_sum_optimized = [int]$sumZ
                                     }
-                                    if ($metaOut.original_tokens -gt 0) {
-                                        $metaOut.tokens_saved = [Math]::Max(0, $metaOut.original_tokens - $metaOut.optimized_tokens)
-                                        $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
-                                    }
                                 }
                             } catch { }
+                            # Turn meter: prep wire baseline → tokens actually sent this turn (one formula)
+                            if ($prepTokensBefore -gt 0) {
+                                $metaOut.prep_tokens_before = [int]$prepTokensBefore
+                                $metaOut.prep_tokens_after = [int]$prepTokensAfter
+                                $sendAfter = [int]$metaOut.optimized_tokens
+                                if ($sendAfter -le 0 -and $prepTokensAfter -gt 0) { $sendAfter = [int]$prepTokensAfter }
+                                if ($sendAfter -le 0) { $sendAfter = [int]$metaOut.original_tokens }
+                                $metaOut.original_tokens = [int]$prepTokensBefore
+                                $metaOut.optimized_tokens = [int]$sendAfter
+                            }
+                            try {
+                                $metaOut.evidence_mode = $evidenceMode
+                                $metaOut.hands_allowed = [bool]$handsAllowed
+                                if ($evidenceReason) { $metaOut.evidence_reason = $evidenceReason }
+                            } catch { }
+                            if ($metaOut.optimized_tokens -gt $metaOut.original_tokens -and $metaOut.original_tokens -gt 0) {
+                                $metaOut.expanded = $true
+                                $metaOut.tokens_saved = 0
+                                $metaOut.token_reduction_percent = 0
+                            } else {
+                                $metaOut.expanded = $false
+                                $metaOut.tokens_saved = [Math]::Max(0, [int]$metaOut.original_tokens - [int]$metaOut.optimized_tokens)
+                                if ($metaOut.original_tokens -gt 0) {
+                                    $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $metaOut.original_tokens)
+                                } else {
+                                    $metaOut.token_reduction_percent = 0
+                                }
+                            }
+                            if ([int]$metaOut.optimized_tokens -eq [int]$metaOut.original_tokens) {
+                                $metaOut.expanded = $false
+                                $metaOut.tokens_saved = 0
+                                $metaOut.token_reduction_percent = 0
+                            }
                         }
                         $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
                         # 0.16.1: always run implement pipeline post-pass when implement OR any apply/run/homework signal
@@ -13094,9 +16947,16 @@ function Start-PromptParleLocalServer {
                                     $metaOut.provenance_reason = [string]$pp.reason
                                 }
                             }
-                            # Quality gate is the claim auditor. clean-silent still means "evaluated".
-                            # 0.22.3: do NOT fall back to Grounding 0.20 n-gram banner (false near-quote flags).
-                            $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
+                            # Quality gate: product-claim auditor vs fetched evidence — not session/menu turns
+                            $qg = $null
+                            if ($evidenceMode -eq 'session') {
+                                $qg = [pscustomobject]@{
+                                    text = $respText; applied = $false; reason = 'session-mode'
+                                    claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
+                                }
+                            } else {
+                                $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
+                            }
                             if ($qg.applied) {
                                 $respText = [string]$qg.text
                                 Write-Host ("  chat: quality gate {0}% ({1} supported, {2} unverified, corrected={3})" -f `
@@ -13124,7 +16984,7 @@ function Start-PromptParleLocalServer {
                             }
                             # Last-resort high-severity only if gate never evaluated claims at all
                             $gateEvaluated = $qg.applied -or ($null -ne $qg.score_pct) -or (
-                                [string]$qg.reason -match 'clean-silent|partial-silent|scored|unverified|corrected|no-claims|no-scored|no-evidence-meta|thin-evidence|empty-evidence|no-evidence|too-short'
+                                [string]$qg.reason -match 'clean-silent|partial-silent|scored|unverified|corrected|no-claims|no-scored|no-evidence-meta|thin-evidence|empty-evidence|no-evidence|too-short|session-mode|procedural-menu|hands-only-nonproduct'
                             )
                             if (-not $gateEvaluated) {
                                 $gp = Invoke-PromptParleGroundingPostPass -ResponseText $respText -Context $gctx
@@ -13140,15 +17000,20 @@ function Start-PromptParleLocalServer {
                         } catch {
                             Write-Host ("  chat: quality/provenance post-pass warning: {0}" -f $_) -ForegroundColor DarkYellow
                         }
-                        $payload = [ordered]@{
-                            response         = $respText
+                        $chatStage = 'serialize'
+                        $payload = @{
+                            response         = [string]$respText
                             optimized_prompt = Get-PromptParleProp $result 'optimized_prompt' (Get-PromptParleProp $result 'OptimizedPrompt' $null)
                             metadata         = $metaOut
                         }
                         # Keep error field if present
                         $errField = Get-PromptParleProp $result 'error'
                         if ($errField) { $payload.error = [string]$errField }
-                        $json = ($payload | ConvertTo-Json -Depth 10 -Compress)
+                        try {
+                            $json = ConvertTo-PromptParleJson -InputObject $payload -Depth 12
+                        } catch {
+                            $json = ($payload | ConvertTo-Json -Depth 12 -Compress)
+                        }
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
                         if ($metaOut) {
                             Write-Host ("  chat: ok  {0} → {1} tokens (−{2}%) dial={3} strat={4}" -f `
@@ -13158,8 +17023,16 @@ function Start-PromptParleLocalServer {
                             Write-Host '  chat: ok (no metadata)' -ForegroundColor DarkGreen
                         }
                     } catch {
-                        Write-Host ("  chat: error - {0}" -f $_) -ForegroundColor Red
-                        $err = @{ error = "$_" } | ConvertTo-Json -Compress
+                        $verChat = 'unknown'
+                        try { $verChat = Get-PromptParleClientVersion } catch { }
+                        $etype = ''
+                        try { $etype = $_.Exception.GetType().FullName } catch { $etype = 'Exception' }
+                        $emsg = $_.Exception.Message
+                        if (-not $emsg) { $emsg = "$_" }
+                        $full = ("Chat failed [v{0}] at {1}: {2}: {3}" -f $verChat, $chatStage, $etype, $emsg)
+                        Write-Host ("  chat: error - {0}" -f $full) -ForegroundColor Red
+                        Write-PromptParleDebugLog ("chat FAIL " + $full + " stack=" + $_.ScriptStackTrace)
+                        $err = @{ error = $full } | ConvertTo-Json -Compress
                         Write-PromptParleHttpResponse -Context $ctx -StatusCode 502 -ContentType 'application/json; charset=utf-8' -Body $err
                     }
                     continue
@@ -13173,6 +17046,7 @@ function Start-PromptParleLocalServer {
             }
         }
     } finally {
+        # Cleanup only — PowerShell forbids return/break/continue (and prefer no exit) in finally.
         if (-not $script:PromptParleStopAnnounced) {
             Write-Host 'Shutting down local PromptParle...' -ForegroundColor Yellow
             $script:PromptParleStopAnnounced = $true
@@ -13185,29 +17059,67 @@ function Start-PromptParleLocalServer {
             }
         } catch { }
         try { if ($listener) { $listener.Close() } } catch { }
+        # Drop per-run local UI token so a dead port cannot be abused with a stale token file
+        try {
+            $script:PromptParleLocalUiToken = $null
+            $tokPath = Join-Path $script:PromptParleConfigDir 'local-ui.token'
+            if (Test-Path -LiteralPath $tokPath) {
+                Remove-Item -LiteralPath $tokPath -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
         $script:PromptParleShouldStop = $false
         $script:PromptParleStopAnnounced = $false
         $script:PromptParleListener = $null
-        $exitAfter = $false
+        # Capture post-stop actions into function-scope flags (handled AFTER finally)
+        $script:PromptParlePostStopExit = $false
+        $script:PromptParlePostStopRestart = $false
+        $script:PromptParlePostStopPort = $Port
         try {
             $gv = Get-Variable -Name PromptParleExitProcessAfterStop -Scope Script -ErrorAction SilentlyContinue
-            if ($null -ne $gv) { $exitAfter = [bool]$gv.Value }
-        } catch { $exitAfter = $false }
+            if ($null -ne $gv -and [bool]$gv.Value) { $script:PromptParlePostStopExit = $true }
+        } catch { }
+        try {
+            $gvR = Get-Variable -Name PromptParleConsoleRestart -Scope Script -ErrorAction SilentlyContinue
+            if ($null -ne $gvR -and [bool]$gvR.Value) { $script:PromptParlePostStopRestart = $true }
+        } catch { }
         try { $script:PromptParleExitProcessAfterStop = $false } catch { }
-        if ($exitAfter) {
-            Write-Host 'Local PromptParle server stopped — update handoff complete.' -ForegroundColor Green
-            Write-Host 'Closing this window (new server is in the other PowerShell window)...' -ForegroundColor Cyan
-            Start-Sleep -Milliseconds 400
-            # Hard exit so the console window closes (return alone leaves an idle PS window)
-            try {
-                [System.Environment]::Exit(0)
-            } catch {
-                exit 0
-            }
-        }
-        Write-Host 'Local PromptParle server stopped.' -ForegroundColor Green
-        Write-Host 'You can close this window or run:  pp' -ForegroundColor DarkGray
+        try { $script:PromptParleConsoleRestart = $false } catch { }
+        try { $script:PromptParleConsoleBusy = $false } catch { }
     }
+
+    # Post-finally control flow (return / re-enter / exit are illegal inside finally)
+    $postExit = $false
+    $postRestart = $false
+    $postPort = $Port
+    try {
+        $gvE = Get-Variable -Name PromptParlePostStopExit -Scope Script -ErrorAction SilentlyContinue
+        if ($null -ne $gvE) { $postExit = [bool]$gvE.Value }
+        $gvS = Get-Variable -Name PromptParlePostStopRestart -Scope Script -ErrorAction SilentlyContinue
+        if ($null -ne $gvS) { $postRestart = [bool]$gvS.Value }
+        $gvP = Get-Variable -Name PromptParlePostStopPort -Scope Script -ErrorAction SilentlyContinue
+        if ($null -ne $gvP -and $gvP.Value) { $postPort = [int]$gvP.Value }
+    } catch { }
+    try { $script:PromptParlePostStopExit = $false } catch { }
+    try { $script:PromptParlePostStopRestart = $false } catch { }
+
+    if ($postExit) {
+        Write-Host 'Local PromptParle server stopped — update handoff complete.' -ForegroundColor Green
+        Write-Host 'Closing this window (new server is in the other PowerShell window)...' -ForegroundColor Cyan
+        Start-Sleep -Milliseconds 400
+        try {
+            [System.Environment]::Exit(0)
+        } catch {
+            exit 0
+        }
+    }
+    if ($postRestart) {
+        Write-Host 'Local PromptParle server stopped — restarting...' -ForegroundColor Green
+        Start-Sleep -Milliseconds 250
+        Start-PromptParleLocalServer -Port $postPort
+        return
+    }
+    Write-Host 'Local PromptParle server stopped.' -ForegroundColor Green
+    Write-Host 'You can close this window or run:  pp' -ForegroundColor DarkGray
 }
 
 function Start-PromptParle {
@@ -13220,7 +17132,7 @@ function Start-PromptParle {
       The chat page runs on your machine (not hosted as your daily UI on AWS).
 
       -Cli     terminal chat
-      -Cloud   open portal web chat on promptparle.com instead
+      -Cloud   open portal dashboard on promptparle.com (chat is desktop-only)
 
     .EXAMPLE
       pp
@@ -13250,7 +17162,7 @@ function Start-PromptParle {
     )
 
     if ($Cloud) {
-        Open-PromptParleBrowser -Cloud -Path '/app/chat'
+        Open-PromptParleBrowser -Cloud -Path '/app'
         return
     }
 
@@ -13402,11 +17314,26 @@ function Start-PromptParle {
                     Profile      = $sessionProfile
                     ToolsEnabled = $true
                 }
-                $cliPrep = Invoke-PromptParleAgentLocalPrep @cliPrepParams
-                $trimmed = [string]$cliPrep.prompt
-                if ($null -ne $cliPrep.context) { $cliCtx = [string]$cliPrep.context }
-                if ($cliPrep.notes) {
-                    Write-Host ("  local: {0}" -f ($cliPrep.notes -join ', ')) -ForegroundColor DarkGray
+                $cliPrepRaw = Invoke-PromptParleAgentLocalPrep @cliPrepParams
+                $cliPrep = $cliPrepRaw
+                if ($cliPrepRaw -is [System.Array]) {
+                    $cliPrep = $null
+                    for ($ci = $cliPrepRaw.Length - 1; $ci -ge 0; $ci--) {
+                        $c = $cliPrepRaw[$ci]
+                        if ($null -eq $c -or $c -is [int] -or $c -is [long]) { continue }
+                        if ($null -ne (Get-PromptParleProp $c 'prompt' $null) -or $null -ne (Get-PromptParleProp $c 'context' $null)) {
+                            $cliPrep = $c; break
+                        }
+                    }
+                    if ($null -eq $cliPrep -and $cliPrepRaw.Length -gt 0) { $cliPrep = $cliPrepRaw[-1] }
+                }
+                $cp = Get-PromptParleProp $cliPrep 'prompt' $null
+                if ($null -ne $cp -and [string]$cp) { $trimmed = [string]$cp }
+                $cc = Get-PromptParleProp $cliPrep 'context' $null
+                if ($null -ne $cc) { $cliCtx = [string]$cc }
+                $cn = Get-PromptParleProp $cliPrep 'notes' $null
+                if ($cn) {
+                    Write-Host ("  local: {0}" -f (@($cn) -join ', ')) -ForegroundColor DarkGray
                 }
             } catch {
                 Write-Host ("  local prep warning: {0}" -f $_) -ForegroundColor DarkYellow
@@ -13602,8 +17529,12 @@ Export-ModuleMember -Function @(
     'Sync-PromptParlePortalSettings',
     'Get-PromptParleConfig',
     'Get-PromptParleProvider',
+    'Set-PromptParleProviderKey',
+    'Remove-PromptParleProviderKey',
+    'Set-PromptParleSecretPolicy',
     'Get-PromptParleUsage',
     'Invoke-PromptParle',
+    'Invoke-PromptParleLocalFirst',
     'Invoke-PromptParleAgentTurn',
     'Invoke-PromptParleNativeAgentTurn',
     'Invoke-PromptParleSecurityReview',
@@ -13632,6 +17563,20 @@ Export-ModuleMember -Function @(
     'Get-PromptParleWorkspace',
     'Set-PromptParleWorkspace',
     'Clear-PromptParleWorkspace',
+    'Get-PromptParleConnections',
+    'Set-PromptParleActiveLocalConnection',
+    'Add-PromptParleKnowledgeConnection',
+    'Remove-PromptParleConnection',
+    'Update-PromptParleConnectionCatalog',
+    'Search-PromptParleKnowledgeCatalog',
+    'Read-PromptParleKnowledgeFile',
+    'Get-PromptParleConnections',
+    'Set-PromptParleActiveLocalConnection',
+    'Add-PromptParleKnowledgeConnection',
+    'Remove-PromptParleConnection',
+    'Update-PromptParleConnectionCatalog',
+    'Search-PromptParleKnowledgeCatalog',
+    'Read-PromptParleKnowledgeFile',
     'Get-PromptParleGitHubStatusText',
     'Set-PromptParleSshTarget',
     'Clear-PromptParleSshTarget',

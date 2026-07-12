@@ -21,7 +21,7 @@ export async function GET() {
 }
 
 /**
- * DELETE /api/usage?all=1 — clear Request History for the signed-in user.
+ * DELETE /api/usage?all=1. clear Request History for the signed-in user.
  * Soft-hide only: token totals / request counts / by-provider stats stay.
  */
 export async function DELETE(req: NextRequest) {

@@ -14,7 +14,7 @@ const schema = z.object({
 });
 
 /**
- * Desktop UI heartbeat — claims a concurrent seat and returns feature flags.
+ * Desktop UI heartbeat. claims a concurrent seat and returns feature flags.
  * Free plan: max 1 active desktop client.
  */
 export async function POST(req: NextRequest) {

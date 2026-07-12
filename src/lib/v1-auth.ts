@@ -4,6 +4,7 @@ import {
   getClientIpFromHeaders,
   isIpAllowed,
 } from "./ip-allowlist";
+import { recordUserPresence } from "./user-presence";
 
 export type V1User = {
   id: string;
@@ -73,11 +74,16 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
       preferredModels: true,
       defaultDial: true,
       defaultToolsEnabled: true,
+      disabledAt: true,
     },
   });
 
   if (!user || !user.emailVerifiedAt) {
     throw new V1AuthError("Account email is not verified", 403);
+  }
+
+  if (user.disabledAt) {
+    throw new V1AuthError("Account has been disabled", 403);
   }
 
   const clientIp = getClientIpFromHeaders(req.headers);
@@ -86,6 +92,12 @@ export async function requireApiKey(req: HeaderSource): Promise<V1Auth> {
       `API key blocked: your IP (${clientIp || "unknown"}) is not on this account's allowlist. Update Settings → API IP allowlist from the portal (browser session is not gated).`,
       403
     );
+  }
+
+  // Throttle presence writes via lastUsedAt path: record IP on each API auth
+  // (cheap update; geo is cached).
+  if (clientIp) {
+    void recordUserPresence(user.id, clientIp, req.headers);
   }
 
   return {

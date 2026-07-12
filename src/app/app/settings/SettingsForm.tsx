@@ -51,7 +51,6 @@ export function SettingsForm({
   const limits = getPlanLimits(user.plan);
   const [name, setName] = useState(user.name || "");
   const [retentionPolicy, setRetentionPolicy] = useState(user.retentionPolicy);
-  const [storePrompts, setStorePrompts] = useState(user.storePrompts);
   const [featProjectPc, setFeatProjectPc] = useState(user.featProjectPc !== false);
   const [featProjectSsh, setFeatProjectSsh] = useState(
     user.featProjectSsh !== false
@@ -106,7 +105,8 @@ export function SettingsForm({
         body: JSON.stringify({
           name,
           retentionPolicy,
-          storePrompts: retentionPolicy === "none" ? false : storePrompts,
+          // Product policy: stats + session titles only, never store prompt/context text
+          storePrompts: false,
           featProjectPc,
           featProjectSsh,
           featProjectGit,
@@ -165,7 +165,7 @@ export function SettingsForm({
         </div>
         <div className="field !mb-0">
           <label className="label !mb-1 text-xs" htmlFor="retention">
-            Prompt retention
+            Usage history retention
           </label>
           <select
             id="retention"
@@ -182,20 +182,13 @@ export function SettingsForm({
         </div>
       </div>
 
-      <label className="flex items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-sm">
-        <input
-          type="checkbox"
-          checked={storePrompts && retentionPolicy !== "none"}
-          disabled={retentionPolicy === "none"}
-          onChange={(e) => setStorePrompts(e.target.checked)}
-        />
-        <span>
-          <span className="font-medium">Store before/after prompt text</span>
-          <span className="ml-1 text-[var(--text-muted)]">
-            (plan-capped · secrets masked)
-          </span>
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-soft)] px-3 py-2.5 text-sm text-[var(--text-muted)]">
+        <span className="font-medium text-[var(--text)]">Usage privacy</span>
+        <span className="ml-1">
+          We store token stats and session titles only. Prompt text and context
+          are never captured or stored in the cloud (portal or desktop).
         </span>
-      </label>
+      </div>
 
       <div className="rounded-lg border border-[var(--border)] px-3 py-2.5">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">

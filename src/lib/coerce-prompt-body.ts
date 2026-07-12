@@ -1,7 +1,7 @@
 /**
  * Normalize desktop / browser JSON bodies before Zod.
  * PowerShell ConvertTo-Json and older clients sometimes send strings for
- * numbers/bools, null context, or char-array prompts — which used to 400
+ * numbers/bools, null context, or char-array prompts: which used to 400
  * as a bare "Invalid request".
  */
 
@@ -48,7 +48,7 @@ export function coercePromptBody(raw: unknown): Record<string, unknown> {
       prompt.length > PROMPT_MAX ? prompt.slice(0, PROMPT_MAX) : prompt;
   }
 
-  // Native system / runtime (0.14.12+) — coerce strings, drop empties
+  // Native system / runtime (0.14.12+): coerce strings, drop empties
   for (const k of [
     "system",
     "system_prompt",
@@ -132,7 +132,7 @@ function flattenImageList(raw: unknown): unknown[] {
   const pushImg = (item: unknown) => {
     if (item == null) return;
     if (Array.isArray(item)) {
-      // Nested array (PS accident) or rarely key/value pairs — recurse
+      // Nested array (PS accident) or rarely key/value pairs: recurse
       for (const x of item) pushImg(x);
       return;
     }

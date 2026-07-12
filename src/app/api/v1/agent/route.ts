@@ -41,6 +41,10 @@ const schema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   include_raw: z.boolean().optional(),
   includeRaw: z.boolean().optional(),
+  session_title: z.string().max(120).optional(),
+  sessionTitle: z.string().max(120).optional(),
+  client_session_id: z.string().max(80).optional(),
+  clientSessionId: z.string().max(80).optional(),
 });
 
 /**
@@ -52,6 +56,24 @@ const schema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const auth = await requireApiKey(req);
+    const { checkRateLimit, RL, rateLimitResponse } = await import(
+      "@/lib/rate-limit"
+    );
+    const rl = checkRateLimit(
+      `v1:agent:${auth.apiKeyId}`,
+      RL.v1AgentKey.max,
+      RL.v1AgentKey.windowMs
+    );
+    if (!rl.ok) {
+      const r = rateLimitResponse(
+        rl.retryAfterSec,
+        "Desktop API rate limit exceeded for agent. Retry shortly."
+      );
+      return NextResponse.json(r.body, {
+        status: r.status,
+        headers: r.headers,
+      });
+    }
     const body = await req.json();
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
@@ -69,7 +91,7 @@ export async function POST(req: NextRequest) {
       userId: auth.user.id,
       plan: auth.user.plan,
       retentionPolicy: auth.user.retentionPolicy,
-      storePrompts: auth.user.storePrompts,
+      storePrompts: false,
       provider: data.provider,
       model: data.model,
       preferredModels: auth.user.preferredModels,
@@ -92,6 +114,8 @@ export async function POST(req: NextRequest) {
       maxTokens: data.max_tokens || data.maxTokens,
       temperature: data.temperature,
       includeRaw: data.include_raw ?? data.includeRaw ?? true,
+      sessionTitle: data.session_title || data.sessionTitle,
+      clientSessionId: data.client_session_id || data.clientSessionId,
     });
 
     if (!result.ok) {

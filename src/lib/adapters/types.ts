@@ -17,7 +17,7 @@ export type AdapterRequest = {
    */
   system?: string;
   /**
-   * Per-turn runtime note (tools/prep). Not cached — changes every call.
+   * Per-turn runtime note (tools/prep). Not cached: changes every call.
    * Anthropic: second system block without cache_control.
    * Others: appended to system string.
    */

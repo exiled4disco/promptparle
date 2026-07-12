@@ -55,7 +55,9 @@ export async function GET(req: NextRequest) {
         const listed = await listModelsForProvider({
           provider: p.id as ProviderId,
           apiKey,
-          refresh: refresh && Boolean(apiKey),
+          // When key present: always allow live (listModels uses cache unless refresh=1).
+          // Passing `false` used to skip live entirely and stranded the UI on curated-only.
+          refresh: refresh ? true : undefined,
         });
         entry.models = listed.models.map((m) => ({
           id: m.id,

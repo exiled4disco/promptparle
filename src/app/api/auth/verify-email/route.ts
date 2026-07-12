@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
     const sessionToken = await createSession(result.userId, {
       userAgent: req.headers.get("user-agent") || undefined,
       ipAddress: req.headers.get("x-forwarded-for") || undefined,
+      headers: req.headers,
     });
     await setSessionCookie(sessionToken);
 
@@ -43,6 +44,7 @@ export async function GET(req: NextRequest) {
   const sessionToken = await createSession(result.userId, {
     userAgent: req.headers.get("user-agent") || undefined,
     ipAddress: req.headers.get("x-forwarded-for") || undefined,
+    headers: req.headers,
   });
   await setSessionCookie(sessionToken);
 

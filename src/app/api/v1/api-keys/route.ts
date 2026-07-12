@@ -3,7 +3,7 @@ import { requireApiKey, V1AuthError } from "@/lib/v1-auth";
 import { listApiKeys } from "@/lib/api-keys";
 
 /**
- * Read-only list of desktop API key metadata (prefix only — never full secrets).
+ * Read-only list of desktop API key metadata (prefix only. never full secrets).
  * Used by local UI modal so users need not open the full portal page to glance.
  */
 export async function GET(req: Request) {

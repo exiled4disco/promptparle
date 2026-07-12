@@ -1,5 +1,5 @@
 /**
- * Context fleet — multi-agent style routing for docs, code, sheets, logs.
+ * Context fleet: multi-agent style routing for docs, code, sheets, logs.
  *
  * Each part is compressed by the specialist that preserves the right fidelity
  * for that modality, then merged into one low-token packet.
@@ -281,7 +281,7 @@ function compressPart(
         return {
           text: r2.text,
           notes: [
-            "Document hybrid had no net savings — denser pass applied",
+            "Document hybrid had no net savings; denser pass applied",
             ...r2.notes,
           ],
           strategy: r2.strategy || "signal-brief",
@@ -290,7 +290,7 @@ function compressPart(
         };
       }
     }
-    // Structure-preserving markdown lean (tables/sections) — last safe shrink
+    // Structure-preserving markdown lean (tables/sections): last safe shrink
     if (part.text.length >= 600) {
       const lean = leanMarkdownDocument(part.text, {
         dial,
@@ -301,7 +301,7 @@ function compressPart(
           text: lean.text,
           notes: [
             ...attemptNotes.filter(Boolean),
-            "Document brief skipped — md-lean applied",
+            "Document brief skipped; md-lean applied",
             ...lean.notes,
           ],
           strategy: "md-lean",

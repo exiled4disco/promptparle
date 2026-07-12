@@ -14,8 +14,8 @@ import { getPlanLimits } from "@/lib/plans";
 
 /**
  * Desktop ↔ portal settings sync.
- * GET  — pull preferred provider/model, dial, tools, features
- * PATCH — push client settings up to portal (and vice versa from portal UI)
+ * GET. pull preferred provider/model, dial, tools, features
+ * PATCH. push client settings up to portal (and vice versa from portal UI)
  */
 
 const patchSchema = z.object({
@@ -23,11 +23,11 @@ const patchSchema = z.object({
   preferred_models: z.record(z.string(), z.string().max(120)).optional(),
   /** Set one provider's preferred model without replacing the whole map */
   preferred_model: z
-    .object({
+.object({
       provider: z.string().max(40),
       model: z.string().max(120),
     })
-    .optional(),
+.optional(),
   default_dial: z.number().int().min(1).max(5).optional(),
   default_tools_enabled: z.boolean().optional(),
   store_prompts: z.boolean().optional(),
@@ -81,7 +81,7 @@ export async function PATCH(req: NextRequest) {
 
     let preferredModels = parsePreferredModelsJson(auth.user.preferredModels);
     if (d.preferred_models) {
-      preferredModels = { ...preferredModels, ...d.preferred_models };
+      preferredModels = {...preferredModels,...d.preferred_models };
     }
     if (d.preferred_model) {
       const p = d.preferred_model.provider.toLowerCase();
@@ -111,23 +111,23 @@ export async function PATCH(req: NextRequest) {
       data: {
         preferredProvider,
         preferredModels: serializePreferredModels(preferredModels),
-        ...(dial !== undefined ? { defaultDial: dial } : {}),
-        ...(d.default_tools_enabled !== undefined
+...(dial !== undefined ? { defaultDial: dial } : {}),
+...(d.default_tools_enabled !== undefined
           ? { defaultToolsEnabled: d.default_tools_enabled }
           : {}),
-        ...(d.store_prompts !== undefined
+...(d.store_prompts !== undefined
           ? { storePrompts: d.store_prompts }
           : {}),
-        ...(d.retention_policy !== undefined
+...(d.retention_policy !== undefined
           ? { retentionPolicy: d.retention_policy }
           : {}),
-        ...(d.feat_project_pc !== undefined
+...(d.feat_project_pc !== undefined
           ? { featProjectPc: d.feat_project_pc }
           : {}),
-        ...(d.feat_project_ssh !== undefined
+...(d.feat_project_ssh !== undefined
           ? { featProjectSsh: d.feat_project_ssh }
           : {}),
-        ...(d.feat_project_git !== undefined
+...(d.feat_project_git !== undefined
           ? { featProjectGit: d.feat_project_git }
           : {}),
       },

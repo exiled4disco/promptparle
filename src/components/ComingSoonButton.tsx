@@ -13,7 +13,7 @@ export function ComingSoonButton({
   children,
   className = "btn btn-secondary",
   title = "Coming soon",
-  message = "The PromptParle desktop client is almost ready. Create a free account today — we’ll open desktop install as soon as it ships.",
+  message = "The PromptParle desktop client is almost ready. Create a free account today; we'll open desktop install as soon as it ships.",
 }: Props) {
   const [open, setOpen] = useState(false);
   const titleId = useId();

@@ -1,5 +1,5 @@
 /**
- * SHEET CARD — high-fidelity spreadsheet/CSV compression.
+ * SHEET CARD: high-fidelity spreadsheet/CSV compression.
  * Models get schema + stats + stratified samples, not 50k raw rows.
  */
 
@@ -59,7 +59,7 @@ function detectDelimiter(lines: string[]): string {
   return best;
 }
 
-/** Minimal CSV split — handles quoted fields with commas. */
+/** Minimal CSV split: handles quoted fields with commas. */
 export function splitCsvLine(line: string, delim: string): string[] {
   const out: string[] = [];
   let cur = "";

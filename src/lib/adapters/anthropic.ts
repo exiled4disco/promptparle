@@ -80,11 +80,21 @@ export const anthropicAdapter: ProviderAdapter = {
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const msg =
+      const raw =
         data?.error?.message ||
         data?.error ||
         `Anthropic error ${res.status}`;
-      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      let msg = typeof raw === "string" ? raw : JSON.stringify(raw);
+      // Anthropic not_found often returns only "model: <id>": make it actionable
+      if (/^model:\s*/i.test(msg) || (res.status === 404 && /model/i.test(msg))) {
+        const id = msg.replace(/^model:\s*/i, "").trim() || req.model;
+        msg =
+          `Anthropic model not found: ${id}. That snapshot may be retired. ` +
+          `Pick a current id (e.g. claude-sonnet-4-5, claude-opus-4-6) from the Model list.`;
+      } else if (data?.error?.type) {
+        msg = `${data.error.type}: ${msg}`;
+      }
+      throw new Error(msg);
     }
 
     const blocks = Array.isArray(data?.content) ? data.content : [];

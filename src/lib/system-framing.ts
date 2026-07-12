@@ -2,7 +2,7 @@
  * Product system framing helpers.
  *
  * Desktop 0.14.12+ sends a separate `system` field (native role:system).
- * Older clients bake [SYS]/[RT]/[USER] into the user prompt — strip for
+ * Older clients bake [SYS]/[RT]/[USER] into the user prompt: strip for
  * storage/usage so Before/After shows real user content, not the product brief.
  */
 

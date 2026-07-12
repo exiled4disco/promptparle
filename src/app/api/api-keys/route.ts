@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { AuthError, requireUser } from "@/lib/auth";
 import { createApiKey, listApiKeys } from "@/lib/api-keys";
+import { writeAudit } from "@/lib/audit";
+import { getClientIpFromHeaders } from "@/lib/ip-allowlist";
 
 export async function GET() {
   try {
@@ -31,6 +33,12 @@ export async function POST(req: NextRequest) {
     }
 
     const { record, fullKey } = await createApiKey(user.id, parsed.data.name);
+    await writeAudit({
+      action: "apikey.create",
+      userId: user.id,
+      ip: getClientIpFromHeaders(req.headers),
+      meta: { keyId: record.id, name: record.name, prefix: record.keyPrefix },
+    });
 
     return NextResponse.json({
       key: {
@@ -41,7 +49,7 @@ export async function POST(req: NextRequest) {
         status: record.status,
         createdAt: record.createdAt,
       },
-      // Shown once — never stored or returned again
+      // Shown once. never stored or returned again
       fullKey,
     });
   } catch (err) {

@@ -22,17 +22,18 @@ export const PROVIDERS = [
     placeholder: "sk-...",
     enabled: true,
     routing: true,
-    defaultModel: "gpt-4o",
+    defaultModel: "gpt-5.4",
   },
   {
     id: "anthropic",
     name: "Anthropic Claude",
-    description: "Claude Opus/Sonnet/Haiku 4.x and 3.x models",
+    description: "Claude Opus / Sonnet / Haiku (current 4.x-5.x API ids)",
     docsUrl: "https://console.anthropic.com/settings/keys",
     placeholder: "sk-ant-...",
     enabled: true,
     routing: true,
-    defaultModel: "claude-sonnet-4-20250514",
+    // Snapshot ids retire; prefer a current stable Sonnet default
+    defaultModel: "claude-sonnet-4-5-20250929",
   },
   {
     id: "gemini",
@@ -47,12 +48,12 @@ export const PROVIDERS = [
   {
     id: "grok",
     name: "xAI Grok",
-    description: "Grok 4 / 3 / 2 models via the xAI API",
+    description: "Grok 4.5 / 4.3 / 4 / 3 models via the xAI API",
     docsUrl: "https://console.x.ai/",
     placeholder: "xai-...",
     enabled: true,
     routing: true,
-    defaultModel: "grok-3",
+    defaultModel: "grok-4.5",
   },
 ] as const;
 
@@ -87,7 +88,7 @@ export const OPTIMIZATION_PROFILES = [
   {
     id: "executive-summary",
     name: "Executive Summary",
-    description: "Aggressive doc compress — outline + high-signal excerpts",
+    description: "Aggressive doc compress: outline + high-signal excerpts",
   },
 ] as const;
 

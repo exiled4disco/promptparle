@@ -39,6 +39,9 @@ export type RunPromptInput = {
   maxTokens?: number;
   /** Vision images (not optimized; forwarded to the model on full AI calls) */
   images?: AdapterImage[];
+  /** Desktop chat title (metadata only; never prompt body). */
+  sessionTitle?: string | null;
+  clientSessionId?: string | null;
 };
 
 export type RunPromptSuccess = {
@@ -80,7 +83,7 @@ export type RunPromptResult = RunPromptSuccess | RunPromptFailure;
 
 /**
  * Shared optimize → (optional) provider call → usage row.
- * Used by desktop /api/v1/prompt and browser /api/chat.
+ * Used by desktop /api/v1/prompt (portal browser chat is disabled).
  */
 export async function runOptimizedPrompt(
   input: RunPromptInput
@@ -133,7 +136,7 @@ export async function runOptimizedPrompt(
   if (framed.system || framed.runtime) {
     notes.push(
       framed.system
-        ? "system role (native) — product brief not in user payload / usage Before"
+        ? "system role (native): product brief not in user payload / usage Before"
         : "system framing stripped for storage"
     );
   }
@@ -141,7 +144,7 @@ export async function runOptimizedPrompt(
     const hasImageNote = notes.some((n) => /image/i.test(n));
     if (!hasImageNote) {
       notes.push(
-        `${images.length} image(s) attached — full pixels to vision; text channel got IMAGE SIGNAL focus brief`
+        `${images.length} image(s) attached: full pixels to vision; text channel got IMAGE SIGNAL focus brief`
       );
     }
   }
@@ -169,12 +172,12 @@ export async function runOptimizedPrompt(
     system_role: Boolean(framed.system || framed.runtime),
   };
 
-  // Usage Before/After = user content only (never product [SYS] essay)
+  // Usage = token stats + session title only (never prompt/context bodies)
   const recordBase = {
     userId: input.userId,
     plan: input.plan,
     retentionPolicy: input.retentionPolicy,
-    storePrompts: input.storePrompts,
+    storePrompts: false,
     provider: providerId,
     model,
     optimizationProfile: profile,
@@ -183,6 +186,8 @@ export async function runOptimizedPrompt(
     prompt: framed.storagePrompt,
     context: input.context,
     optimizedPrompt: optimized.optimizedPrompt,
+    sessionTitle: input.sessionTitle,
+    clientSessionId: input.clientSessionId,
   };
 
   if (optimizeOnly) {

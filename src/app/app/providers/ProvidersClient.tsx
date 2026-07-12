@@ -65,11 +65,11 @@ export function ProvidersClient({
         const rest = prev.filter((c) => c.provider !== data.credential.provider);
         return [
           {
-            ...data.credential,
+...data.credential,
             createdAt: data.credential.createdAt,
             lastUsedAt: data.credential.lastUsedAt,
           },
-          ...rest,
+...rest,
         ];
       });
       router.refresh();
@@ -92,7 +92,13 @@ export function ProvidersClient({
   return (
     <div className="grid gap-6 lg:grid-cols-5">
       <form onSubmit={onSubmit} className="card grid gap-4 p-6 lg:col-span-2">
-        <h2 className="text-lg font-semibold">Add provider key</h2>
+        <h2 className="text-lg font-semibold">Optional: portal vault (legacy)</h2>
+        <p className="text-xs leading-relaxed text-[var(--text-dim)]">
+          <strong className="text-[var(--text-muted)]">Not used by desktop chat (0.25+).</strong>{" "}
+          Day-to-day keys go in the local UI (⋯ → Providers) or{" "}
+          <code className="text-[0.7rem]">Set-PromptParleProviderKey</code>. This form only
+          stores a key on the portal for optional cloud API experiments, prefer local.
+        </p>
         {error && <div className="alert alert-error">{error}</div>}
         {success && <div className="alert alert-success">{success}</div>}
 
@@ -159,22 +165,28 @@ export function ProvidersClient({
         </div>
 
         <button className="btn btn-primary" disabled={loading || !selected?.enabled}>
-          {loading ? "Encrypting & saving…" : "Save encrypted key"}
+          {loading ? "Encrypting & saving…" : "Save to portal (optional)"}
         </button>
 
         <p className="text-xs leading-relaxed text-[var(--text-dim)]">
-          Keys are encrypted with AES-256-GCM before storage. Only the last four
-          characters are shown in the portal. Full keys never appear in logs.
+          Portal-stored keys (if any) are AES-256-GCM encrypted; only last four
+          characters are shown. Desktop chat does not read these keys.
         </p>
       </form>
 
       <section className="card overflow-hidden lg:col-span-3">
         <div className="border-b border-[var(--border)] px-6 py-4">
-          <h2 className="text-lg font-semibold">Configured providers</h2>
+          <h2 className="text-lg font-semibold">Portal-stored keys (legacy)</h2>
+          <p className="mt-1 text-xs text-[var(--text-dim)]">
+            Safe to delete if you only use the desktop client. Local keys on your
+            PC are separate.
+          </p>
         </div>
         {credentials.length === 0 ? (
           <p className="p-6 text-sm text-[var(--text-muted)]">
-            No provider keys yet. Add OpenAI or Anthropic to get started.
+            No keys in the portal vault. For chat, set keys on your PC:{" "}
+            <code className="text-xs">pp</code> → ⋯ → Providers, or{" "}
+            <code className="text-xs">Set-PromptParleProviderKey</code>.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -195,7 +207,7 @@ export function ProvidersClient({
                     <tr key={c.id}>
                       <td className="font-medium">{meta?.name || c.provider}</td>
                       <td className="text-[var(--text-muted)]">
-                        {c.label || "—"}
+                        {c.label || "-"}
                       </td>
                       <td className="mono text-[var(--text-muted)]">
                         ••••{c.keyLastFour}

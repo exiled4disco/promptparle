@@ -19,10 +19,25 @@ const schema = z.object({
   maxTokens: z.number().int().positive().optional(),
 });
 
-/** Optimize only — no provider call. */
+/** Optimize only. no provider call. */
 export async function POST(req: NextRequest) {
   try {
-    await requireApiKey(req);
+    const auth = await requireApiKey(req);
+    const { checkRateLimit, RL, rateLimitResponse } = await import(
+      "@/lib/rate-limit"
+    );
+    const rl = checkRateLimit(
+      `v1:optimize:${auth.apiKeyId}`,
+      RL.v1PromptKey.max,
+      RL.v1PromptKey.windowMs
+    );
+    if (!rl.ok) {
+      const r = rateLimitResponse(rl.retryAfterSec);
+      return NextResponse.json(r.body, {
+        status: r.status,
+        headers: r.headers,
+      });
+    }
     const body = coercePromptBody(await req.json());
     const parsed = schema.safeParse(body);
     if (!parsed.success) {

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { FreePlanToast } from "@/components/FreePlanToast";
+import { PageHeader } from "@/components/PageHeader";
 import { getSessionUser } from "@/lib/auth";
 import { formatNumber, providerLabel } from "@/lib/format";
 import { getUsageSummary } from "@/lib/usage";
@@ -13,7 +14,7 @@ export default async function UsagePage() {
 
   const usage = await getUsageSummary(user.id, {
     plan: user.plan,
-    includePromptBodies: true,
+    includePromptBodies: false,
   });
 
   const isFree = usage.planLimits.id === "free";
@@ -35,13 +36,15 @@ export default async function UsagePage() {
 
   return (
     <div className={`grid gap-5 ${isFree ? "pb-28 sm:pb-24" : ""}`}>
-      <div>
-        <h1 className="page-title !text-left">Usage</h1>
-        <p className="page-sub !mx-0 !text-left max-w-xl">
-          Token savings and <strong>Request History</strong> — expand a row for
-          before/after, delete any request, or clear all.
-        </p>
-      </div>
+      <PageHeader
+        title="Usage"
+        description={
+          <>
+            Token savings and request history. We store <strong>stats and
+            session titles only</strong>, never prompt or context text.
+          </>
+        }
+      />
 
       {/* Stats + by-provider on one bar; history full width below */}
       <div className="card overflow-hidden">
@@ -106,13 +109,13 @@ export default async function UsagePage() {
         <div className="border-b border-[var(--border)] px-4 py-3 sm:px-5">
           <h2 className="text-sm font-semibold">Request History</h2>
           <p className="mt-0.5 text-xs text-[var(--text-dim)]">
-            Stored optimize/chat requests. Delete a row or clear all — token
-            stats above stay (history only is hidden).
+            Session titles and token stats only, no prompt or context text.
+            Delete a row or clear all; aggregate stats above stay.
           </p>
         </div>
         <UsageHistory
           rows={usage.recent.map((r) => ({
-            ...r,
+...r,
             createdAt:
               r.createdAt instanceof Date
                 ? r.createdAt.toISOString()

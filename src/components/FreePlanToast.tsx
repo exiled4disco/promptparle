@@ -24,40 +24,35 @@ export function FreePlanToast({ limits }: FreePlanToastProps) {
       <div className="pointer-events-auto flex w-full max-w-4xl flex-col gap-3 rounded-2xl border border-[var(--accent)]/40 bg-[rgba(10,14,24,0.94)] px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.55)] backdrop-blur-md sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-3.5">
         <div className="min-w-0">
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-strong)]">
-            Free plan limits
+            Free plan
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-[var(--text)]">
             <span>
-              <span className="text-[var(--text-dim)]">Free plan limit: </span>
-              <strong className="font-semibold">
-                {formatNumber(limits.dailyRequests)} requests per day
-              </strong>
+              <span className="text-[var(--text-dim)]">Flat price: </span>
+              <strong className="font-semibold">$0</strong>
             </span>
             <span className="hidden text-[var(--border-strong)] sm:inline" aria-hidden>
               ·
             </span>
             <span>
-              <span className="text-[var(--text-dim)]">View limit: </span>
-              <strong className="font-semibold">
-                {formatNumber(limits.originalChars)} characters
-              </strong>
-            </span>
-            <span className="hidden text-[var(--border-strong)] sm:inline" aria-hidden>
-              ·
-            </span>
-            <span>
-              <span className="text-[var(--text-dim)]">AI carriers limit: </span>
+              <span className="text-[var(--text-dim)]">Providers: </span>
               <strong className="font-semibold">
                 {formatNumber(limits.maxProviders)}
               </strong>
             </span>
+            <span className="hidden text-[var(--border-strong)] sm:inline" aria-hidden>
+              ·
+            </span>
+            <span className="text-[var(--text-dim)]">
+              Pro from $29.99/mo · Team of 5 $99.99/mo
+            </span>
           </div>
         </div>
         <Link
-          href="/app/settings?upgrade=1"
+          href="/pricing"
           className="btn btn-primary shrink-0 whitespace-nowrap px-5 py-2.5 text-sm"
         >
-          Upgrade Now
+          View pricing
         </Link>
       </div>
     </div>

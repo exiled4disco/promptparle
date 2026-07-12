@@ -2,13 +2,13 @@
 
 **Trim the prompt. Keep the signal.**
 
-AI context optimization gateway — thin bloated context, keep the signal, route cleaner prompts to OpenAI, Claude, Gemini, or Grok.
+AI context optimization gateway: thin bloated context, keep the signal, route cleaner prompts to OpenAI, Claude, Gemini, or Grok.
 
 | Surface | What it is |
 |---------|------------|
 | **Desktop (recommended)** | Free local PowerShell chat UI on your PC |
-| **Portal** | https://promptparle.com — account, provider keys, usage, desktop API keys |
-| **API** | `https://promptparle.com/api/v1` — optimize + route |
+| **Portal** | https://promptparle.com: account, plan, desktop license key (`pp_live_`) — licensing only |
+| **API** | License/entitlements; day-to-day chat is local-first on the desktop |
 
 This repo contains both the **portal** (Next.js) and the **PowerShell module** (`powershell/`).
 
@@ -18,11 +18,11 @@ This repo contains both the **portal** (Next.js) and the **PowerShell module** (
 
 **You need:** [Git for Windows](https://git-scm.com/download/win), PowerShell 5.1+, and a free [promptparle.com](https://promptparle.com) account.
 
-### 1. Portal (2 minutes)
+### 1. Portal (2 minutes) — licensing only
 
-1. Register → **verify email**  
-2. **Providers** → add OpenAI / Claude / Gemini / Grok key  
-3. **API Keys** → create desktop key → copy `pp_live_...`  
+1. Sign in with **Google** or **GitHub** (or email)  
+2. **API Keys** → create desktop license key → copy `pp_live_...` (shown once)  
+3. **Do not** put OpenAI/Claude/Gemini/Grok keys in the portal for desktop chat  
 
 ### 2. Install module
 
@@ -30,15 +30,20 @@ This repo contains both the **portal** (Next.js) and the **PowerShell module** (
 irm https://promptparle.com/install.ps1 | iex
 ```
 
-Paste your `pp_live_...` key when prompted.
+Paste your `pp_live_...` license key when prompted.
 
-### 3. Chat
+### 3. Chat + provider keys on this PC
 
 ```powershell
 pp
 ```
 
 Browser opens **http://127.0.0.1:7788/** (local only). Leave the PowerShell window open.
+
+Then set model keys (local-first):
+
+- Local UI: **⋯ → Providers** → paste key → **Save on this PC**  
+- Or PowerShell: `Set-PromptParleProviderKey -Provider openai -ApiKey '…'`
 
 ### Update
 
@@ -73,19 +78,30 @@ Includes: alternate install paths, uninstall, workspace/SSH/Git, and a **Trouble
 ## How it works
 
 ```text
-You (PowerShell / browser local UI)
-  ↓  desktop key pp_live_…
-PromptParle API  →  auth · secret scan · optimize
+You (PowerShell / browser local UI)          [desktop 0.25+ local-first]
+  ↓  secret gate (strict by default)
+  ↓  local optimize (dial / profile / drop journal)
+  ↓  provider key from local DPAPI store
+Your provider  →  OpenAI / Claude / Gemini / Grok
   ↓
-Your provider     →  OpenAI / Claude / Gemini / Grok
-  ↓
-Response + token reduction metadata
+Response + savings metadata (on PC)
+
+PromptParle portal (separate, rare):
+  license / invite / plan / pp_live_ desktop key only
+  — no prompt bodies, no provider keys
 ```
 
-- **Provider keys** stay encrypted in the portal (AES-256-GCM).  
-- **Desktop key** is shown once; only a hash is stored server-side.  
-- **Local UI HTML** runs on your PC — not served as a full chat SPA from AWS per keystroke.  
-- **SSH / git credentials never leave your PC.**
+**Local-first:** optimize, provider keys, and model calls run on your PC. The portal is **licensing only**.
+
+- **Provider keys** → `Set-PromptParleProviderKey` (DPAPI on Windows); never uploaded.  
+- **Desktop key** `pp_live_…` → license/entitlements only; hash on server.  
+- **Local UI** binds to `127.0.0.1` with a **per-run local token**.  
+- **SSH / git tool credentials** stay on your PC.  
+- **Secret gate** masks credential-shaped patterns on the PC before the provider call.  
+
+
+
+Security policy & reporting: **[SECURITY.md](SECURITY.md)** · Threat model: **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**
 
 ---
 
@@ -97,8 +113,8 @@ Auth: `Authorization: Bearer pp_live_...` (or `X-PromptParle-Key`).
 |--------|------|---------|
 | POST | `/api/v1/prompt` | Optimize + route (or `optimize_only: true`) |
 | POST | `/api/v1/prompt/optimize` | Optimize only |
-| GET | `/api/v1/providers` | Providers + configured flags |
-| GET | `/api/v1/usage` | Usage summary |
+| GET | `/api/v1/providers` | Legacy portal vault flags (desktop uses local keys) |
+| GET | `/api/v1/usage` | Optional usage summary |
 
 ```bash
 curl -s https://promptparle.com/api/v1/prompt \
@@ -123,14 +139,14 @@ For contributing to the **website / API**, not required for desktop install.
 
 - Next.js 16 (App Router) + TypeScript + Tailwind  
 - Postgres via Prisma  
-- AES-256-GCM provider keys · HTTP-only sessions · bcrypt  
+- HTTP-only sessions · bcrypt · desktop license key hashes · (legacy portal key vault AES-256-GCM if used)  
 
 ### Quick start
 
 ```bash
 # Prerequisites: Node 20+, Docker (or Postgres 14+)
 docker compose up -d
-cp .env.example .env
+cp.env.example.env
 # Set ENCRYPTION_KEY + SESSION_SECRET (openssl rand -hex 32 each)
 # Set DATABASE_URL, NEXT_PUBLIC_APP_URL
 
@@ -145,8 +161,11 @@ Open [http://localhost:3000](http://localhost:3000).
 |----------|---------|
 | `DATABASE_URL` | Postgres connection string |
 | `ENCRYPTION_KEY` | 64-char hex for provider key encryption |
-| `SESSION_SECRET` | Session signing |
+| `SESSION_SECRET` | Session / OAuth state signing |
 | `NEXT_PUBLIC_APP_URL` | e.g. `http://localhost:3000` |
+| `GOOGLE_CLIENT_ID` / `SECRET` | Optional one-click Google signup |
+| `GITHUB_CLIENT_ID` / `SECRET` | Optional one-click GitHub signup |
+| `TRUSTED_PROXY_HOPS` | X-Forwarded-For trust depth (default 1) |
 
 ### Portal routes
 
@@ -155,9 +174,9 @@ Open [http://localhost:3000](http://localhost:3000).
 | `/` | Marketing |
 | `/register` · `/login` | Auth |
 | `/app` | Dashboard |
-| `/app/chat` | Portal web chat |
-| `/app/providers` | Provider keys |
-| `/app/api-keys` | Desktop API keys |
+| `/app` | Portal dashboard (chat is desktop client only) |
+| `/app/providers` | Guidance: set model keys on the PC (legacy vault optional) |
+| `/app/api-keys` | Desktop license keys (`pp_live_`) |
 | `/app/usage` | Token savings |
 | `/app/settings` | Profile / retention |
 
@@ -174,10 +193,10 @@ npx prisma studio
 
 ## Security model
 
-1. **Provider keys** — AES-256-GCM; only last 4 chars shown in UI.  
-2. **Desktop API keys** — full key once; SHA-256 hash stored.  
-3. **Passwords** — bcrypt (cost 12).  
-4. **Sessions** — random token, hashed in DB, HTTP-only cookie.  
+1. **Provider keys**: AES-256-GCM; only last 4 chars shown in UI.  
+2. **Desktop API keys**: full key once; SHA-256 hash stored.  
+3. **Passwords**: bcrypt (cost 12).  
+4. **Sessions**: random token, hashed in DB, HTTP-only cookie.  
 5. **No plaintext secrets in logs** by design.  
 
 ---
@@ -199,7 +218,7 @@ Live: **https://promptparle.com**
 ```bash
 export PATH="/home/ubuntu/.nvm/versions/node/v22.19.0/bin:$PATH"
 rsync -a --delete \
-  --exclude node_modules --exclude .next --exclude .git --exclude .env \
+  --exclude node_modules --exclude.next --exclude.git --exclude.env \
   /home/ubuntu/projects/promptparle/ /var/www/promptparle/
 cd /var/www/promptparle
 npm ci

@@ -7,7 +7,7 @@ import { getUsageSummary } from "@/lib/usage";
  * Query:
  *   recent=0     totals only (cheapest)
  *   recent=N     last N rows (default 5, max plan limit)
- * Never returns stored prompt bodies — portal page does that for edit/history.
+ * Never returns stored prompt bodies. portal page does that for edit/history.
  */
 export async function GET(req: NextRequest) {
   try {

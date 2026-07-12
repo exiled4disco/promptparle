@@ -1,5 +1,5 @@
 /**
- * Compression dial 1–5 — orthogonal to optimization profile.
+ * Compression dial 1-5. orthogonal to optimization profile.
  * Profile = domain (docs, security, logs). Dial = how hard to compress.
  */
 
@@ -30,28 +30,28 @@ export const COMPRESSION_LEVELS = [
     key: "max-fidelity",
     label: "Max fidelity",
     short: "Near-full text",
-    hint: "~0–15% fewer tokens",
+    hint: "~0-15% fewer tokens",
   },
   {
     id: 2 as const,
     key: "high-fidelity",
     label: "High fidelity",
     short: "Coverage + deep keep",
-    hint: "~25–40% fewer",
+    hint: "~25-40% fewer",
   },
   {
     id: 3 as const,
     key: "balanced",
     label: "Balanced",
     short: "Strong savings, solid coverage",
-    hint: "~45–60% fewer",
+    hint: "~45-60% fewer",
   },
   {
     id: 4 as const,
     key: "high-savings",
     label: "High savings",
     short: "Map + obligations",
-    hint: "~70–85% fewer",
+    hint: "~70-85% fewer",
   },
   {
     id: 5 as const,
@@ -137,7 +137,7 @@ const LEVEL_BASE: Record<CompressionLevel, CompressionAggressiveness> = {
   },
 };
 
-/** Clamp unknown input to 1–5 (default balanced). */
+/** Clamp unknown input to 1-5 (default balanced). */
 export function normalizeCompressionLevel(value: unknown): CompressionLevel {
   const n = typeof value === "string" ? parseInt(value, 10) : Number(value);
   if (n === 1 || n === 2 || n === 3 || n === 4 || n === 5) return n;
@@ -157,7 +157,7 @@ export function aggressivenessFor(
   profile = "general"
 ): CompressionAggressiveness {
   const dial = normalizeCompressionLevel(level);
-  const base = { ...LEVEL_BASE[dial] };
+  const base = {...LEVEL_BASE[dial] };
   const p = (profile || "general").toLowerCase();
 
   // Domain nudges (do not override dial direction)

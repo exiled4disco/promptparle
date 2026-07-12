@@ -46,20 +46,6 @@ export function RegisterForm() {
     <form onSubmit={onSubmit} className="grid gap-4">
       {error && <div className="alert alert-error">{error}</div>}
       <div className="field">
-        <label className="label" htmlFor="name">
-          Name <span className="dim">(optional)</span>
-        </label>
-        <input
-          id="name"
-          className="input"
-          type="text"
-          autoComplete="name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Francesco"
-        />
-      </div>
-      <div className="field">
         <label className="label" htmlFor="email">
           Email
         </label>
@@ -90,12 +76,29 @@ export function RegisterForm() {
           placeholder="At least 8 characters"
         />
       </div>
+      {/* name kept optional + collapsed for low friction; not required */}
+      <details className="text-sm text-[var(--text-muted)]">
+        <summary className="cursor-pointer select-none text-xs text-[var(--text-dim)]">
+          Optional: display name
+        </summary>
+        <div className="field mt-2">
+          <input
+            id="name"
+            className="input"
+            type="text"
+            autoComplete="name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="How we should greet you"
+          />
+        </div>
+      </details>
       <button className="btn btn-primary mt-1 w-full" disabled={loading}>
         {loading ? "Creating account…" : "Create account"}
       </button>
       <p className="text-xs leading-relaxed text-[var(--text-dim)]">
-        We will email you a verification link before you can sign in. Provider
-        API keys are stored encrypted and never written to application logs.
+        Email signup needs a quick verification link. Google/GitHub skip that.
+        Provider keys are encrypted at rest and never written to app logs.
       </p>
     </form>
   );

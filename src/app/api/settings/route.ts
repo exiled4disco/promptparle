@@ -119,9 +119,8 @@ export async function PATCH(req: NextRequest) {
         ...(parsed.data.retentionPolicy !== undefined
           ? { retentionPolicy: parsed.data.retentionPolicy }
           : {}),
-        ...(parsed.data.storePrompts !== undefined
-          ? { storePrompts: parsed.data.storePrompts }
-          : {}),
+        // Product policy: never store prompt/context text (stats + session titles only)
+        storePrompts: false,
         ...(parsed.data.featProjectPc !== undefined
           ? { featProjectPc: parsed.data.featProjectPc }
           : {}),

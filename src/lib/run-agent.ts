@@ -3,7 +3,7 @@
  * No prompt optimization. Desktop owns multi-round tool loop.
  *
  * Portal usage history still stores the request context window (messages + tools)
- * so Before/After is readable — pass-through means After ≈ Before with a header.
+ * so Before/After is readable: pass-through means After ≈ Before with a header.
  */
 
 import {
@@ -38,7 +38,7 @@ export function formatAgentContextWindow(
 
   if (mode === "sent") {
     parts.push(
-      "# Sent to provider (agent pass-through — not optimized)",
+      "# Sent to provider (agent pass-through: not optimized)",
       "Architecture: 0.22-native-agent. Desktop owns the multi-round tool loop; this row is one model step."
     );
   } else {
@@ -114,6 +114,8 @@ export type RunAgentInput = {
   temperature?: number;
   /** Include truncated raw provider body for desktop capture */
   includeRaw?: boolean;
+  sessionTitle?: string | null;
+  clientSessionId?: string | null;
 };
 
 export type RunAgentSuccess = {
@@ -220,7 +222,7 @@ export async function runAgentStep(
         userId: input.userId,
         plan: input.plan,
         retentionPolicy: input.retentionPolicy,
-        storePrompts: input.storePrompts,
+        storePrompts: false,
         provider: providerId,
         model,
         optimizationProfile: "agent-pass-through",
@@ -231,6 +233,8 @@ export async function runAgentStep(
         context: null,
         optimizedPrompt: sentWindow,
         errorMessage: msg,
+        sessionTitle: input.sessionTitle,
+        clientSessionId: input.clientSessionId,
       });
     } catch {
       /* ignore */
@@ -272,7 +276,7 @@ export async function runAgentStep(
       userId: input.userId,
       plan: input.plan,
       retentionPolicy: input.retentionPolicy,
-      storePrompts: input.storePrompts,
+      storePrompts: false,
       provider: providerId,
       model: result.model,
       optimizationProfile: "agent-pass-through",
@@ -282,6 +286,8 @@ export async function runAgentStep(
       prompt: contextWindow,
       context: null,
       optimizedPrompt: afterText,
+      sessionTitle: input.sessionTitle,
+      clientSessionId: input.clientSessionId,
     });
   } catch {
     /* ignore usage write failures */

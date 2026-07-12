@@ -48,7 +48,7 @@ function StatCell({
     (stat.suffix || "");
 
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)]/80 px-4 py-5 text-center">
+    <div className="w-full rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)]/80 px-4 py-5 text-center">
       <div className="bg-gradient-to-r from-[#5b8cff] via-[#7c5cff] to-[#34d399] bg-clip-text text-3xl font-extrabold tracking-tight text-transparent md:text-4xl">
         {formatted}
       </div>
@@ -79,10 +79,15 @@ export function CountUpStats({ stats }: { stats: Stat[] }) {
     return () => io.disconnect();
   }, []);
 
+  const colClass =
+    stats.length <= 3
+      ? "grid-cols-1 sm:grid-cols-3 max-w-3xl"
+      : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 max-w-4xl";
+
   return (
     <div
       ref={ref}
-      className="mx-auto mt-12 grid max-w-4xl gap-3 sm:grid-cols-2 lg:grid-cols-4"
+      className={`mx-auto mt-12 grid w-full justify-items-center gap-3 ${colClass}`}
     >
       {stats.map((s) => (
         <StatCell key={s.label} stat={s} active={active} />

@@ -1,5 +1,5 @@
 /**
- * CODE BRIEF — high-fidelity, low-token code compression.
+ * CODE BRIEF: high-fidelity, low-token code compression.
  *
  * Keeps structure the model needs to reason (imports, signatures, matched bodies)
  * and drops comment noise, blank runs, and deep irrelevant function bodies.
@@ -63,7 +63,7 @@ function stripComments(
   const prefix = shebang ? shebang[0] : "";
   if (shebang) out = out.slice(prefix.length);
 
-  // Block comments /* */  (not inside strings — good enough heuristic)
+  // Block comments /* */  (not inside strings: good enough heuristic)
   out = out.replace(/\/\*[\s\S]*?\*\//g, (m) => {
     // keep license-ish short headers at top are already past first 2kb often
     if (/@license|copyright|SPDX/i.test(m) && m.length < 600) return m;
@@ -177,7 +177,7 @@ function scoreUnit(name: string, header: string, body: string, query: Set<string
 
 /**
  * Lightweight unit split: group by top-level-ish declarations.
- * Not a full parser — good enough for token savings with signature preservation.
+ * Not a full parser: good enough for token savings with signature preservation.
  */
 function splitUnits(text: string, language?: string): Unit[] {
   const lines = text.split("\n");
@@ -476,7 +476,7 @@ export function compressCode(
   const rest = units.filter((u) => u.kind !== "import");
   const ranked = [...rest].sort((a, b) => b.score - a.score);
 
-  // Cap full bodies tightly — high fidelity on what matters, sigs elsewhere
+  // Cap full bodies tightly: high fidelity on what matters, sigs elsewhere
   const fullCap = Math.min(
     ranked.length,
     Math.max(1, query.size >= 2 ? 4 : 2),

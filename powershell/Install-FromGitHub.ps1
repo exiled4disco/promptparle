@@ -1,9 +1,10 @@
-# PromptParle install from GitHub — safe for:  irm <url> | iex
+# PromptParle install from GitHub: safe for:  irm <url> | iex
 # No top-level param() / CmdletBinding() (Invoke-Expression cannot parse those).
 # Optional session overrides before running:
 #   $PromptParleClonePath = 'D:\src\promptparle'
 #   $PromptParleStart = $true
 #   $PromptParleSkipKeyPrompt = $true
+#   $PromptParleInvitationCode = 'PP-XXXX-XXXX'   # from welcome email
 
 $ErrorActionPreference = 'Stop'
 
@@ -12,6 +13,7 @@ $Branch = 'main'
 $ClonePath = $null
 $DoStart = $false
 $SkipKeyPrompt = $false
+$InvitationCode = ''
 
 if (Get-Variable -Name PromptParleClonePath -ErrorAction SilentlyContinue) {
     if ($PromptParleClonePath) { $ClonePath = [string]$PromptParleClonePath }
@@ -21,6 +23,9 @@ if (Get-Variable -Name PromptParleStart -ErrorAction SilentlyContinue) {
 }
 if (Get-Variable -Name PromptParleSkipKeyPrompt -ErrorAction SilentlyContinue) {
     if ($PromptParleSkipKeyPrompt) { $SkipKeyPrompt = $true }
+}
+if (Get-Variable -Name PromptParleInvitationCode -ErrorAction SilentlyContinue) {
+    if ($PromptParleInvitationCode) { $InvitationCode = [string]$PromptParleInvitationCode }
 }
 
 if (-not $ClonePath) {

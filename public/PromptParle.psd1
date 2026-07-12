@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.23.4'
+    ModuleVersion     = '0.27.2'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -12,8 +12,12 @@
         'Sync-PromptParlePortalSettings',
         'Get-PromptParleConfig',
         'Get-PromptParleProvider',
+        'Set-PromptParleProviderKey',
+        'Remove-PromptParleProviderKey',
+        'Set-PromptParleSecretPolicy',
         'Get-PromptParleUsage',
         'Invoke-PromptParle',
+        'Invoke-PromptParleLocalFirst',
         'Invoke-PromptParleAgentTurn',
         'Invoke-PromptParleSecurityReview',
         'Start-PromptParle',
@@ -37,6 +41,13 @@
         'Get-PromptParleWorkspace',
         'Set-PromptParleWorkspace',
         'Clear-PromptParleWorkspace',
+        'Get-PromptParleConnections',
+        'Set-PromptParleActiveLocalConnection',
+        'Add-PromptParleKnowledgeConnection',
+        'Remove-PromptParleConnection',
+        'Update-PromptParleConnectionCatalog',
+        'Search-PromptParleKnowledgeCatalog',
+        'Read-PromptParleKnowledgeFile',
         'Get-PromptParleGitHubStatusText',
         'Set-PromptParleSshTarget',
         'Clear-PromptParleSshTarget',
@@ -57,6 +68,59 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.27.2: Honest savings baseline — always-on client framing ([SELF]/[CONN]/[PROJECT]) now counted into "before" so identical framing nets to 0% instead of showing as expansion. Accounting only; model input unchanged.
+0.27.1: Session catch-up product path — SELF knows chat history is UI/localStorage not .parle/sessions; catch-up modes; quality gate skips menus/hands-only non-product
+0.27.0: Evidence mode session|live|refresh — prep owns depth, chat dispatches hands_allowed; kill 0.26.24–26 hotfixes (no avoided-fleet fiction, no always-true product pack, no chat MEM salvage)
+0.26.26: Session-memory = single model call (no hands/synthesis bill); avoided-fleet savings credit; sanitize tool-theater replies
+0.26.25: Fix local prep crash (ArrayList.Add pipeline pollution) — restore MEM/context; stop 8-round SSH re-fleet
+0.26.24: Session-memory path — re-asks answer from [MEM]/[KNOW], skip heavy SSH re-fleet; honest before/after
+0.26.23: Session Knowledge pins — mark key replies as priority [KNOW] for the chat (survives densify)
+0.26.22: Turn-level token savings include prep densify (MEM/budget) — stop 18k→18k flat when tools saved
+0.26.21: Fix Claude model-call Argument types — Anthropic body + List[string] PS 5.1
+0.26.20: High-fidelity session memory — densify noise/age only, keep recent project signal
+0.26.19: Rolling session memory — compact older turns, keep project spine + recent chat
+0.26.18: Conversational answers after tools — never dump [HANDS] packs to chat
+0.26.17: Live-info web observe + Gemini google_search/tool_call map; emergency web_search never dead-ends
+0.26.16: Bare [HANDS] + tool:arg (Gemini-style) enters hands loop — never shown as final answer
+0.26.15: Deliver FAIL-CLOSED only on real doc asks; session web ledger stops research amnesia
+0.26.14: OpenAI o-series/gpt-5 use max_completion_tokens (fix unsupported max_tokens)
+0.26.13: Running stats static aggregates + usage icon; Bug/Suggest text under composer (no FAB)
+0.26.12: Dark brand scrollbars — color-scheme dark so Windows/WebView2 never paints light OS bars
+0.26.11: Brand dark scrollbars on desktop local-UI (sidebar/chat — no light OS chrome)
+0.26.10: Fix chat Argument types — ArrayList not List[string]; plain hashtables + staged chat errors; safe provider JSON
+0.26.9: Fix chat "Argument types do not match" — LocalFirst metadata used OrderedDictionary cast (every completion)
+0.26.8: Fix chat with Tools ON — Invoke-PromptParleAgentTurn accepts ClientSessionId/SessionTitle (UI splat)
+0.26.7: Fix attach/SSH "Argument types do not match" — never cast OrderedDictionary to PSCustomObject (session load + snapshot)
+0.26.6: Fix module parse — $etype: in throw strings broke PS parser (blocked 0.26.5 update)
+0.26.5: Bulletproof session save (plain hashtables + File.WriteAllText); no TrimEnd/TryParse-ref; versioned errors + debug log
+0.26.4: Hardening PS 5.1 attach/SSH — safe int/path coercion, no List[string].Add, staged error messages for Argument types mismatches
+0.26.3: Fix local folder Add + SSH history connect on Windows PS 5.1 (TrimEnd/TrimStart Argument types do not match); resilient history cwd
+0.26.2: Collapsible left-menu sections (Chat history, Chat, Project connections, Running stats) with remembered open/closed state
+0.26.1: Fix Project connections + buttons (fsTitleEl/knowAddBtn bindings); compact + icons; custom hover help popover
+0.26.0: Multi This PC folders (up to 5) + Knowledge Repo (up to 2). On-disk catalogs; skinny [CONN]; know_search/know_read on demand (no prompt dump)
+0.25.14: Browser tab shows PromptParle favicon (local UI)
+0.25.13: Fix SSH name parse — /ssh name "Label" user@host no longer glues host into sidebar label
+0.25.12: Running stats at bottom of left menu; Tools/Optimize/Terminal pinned in top bar; SSH sidebar never shows host or directories
+0.25.11: Left menu Running stats — tokens, savings %, est. $, messages + per-model breakdown
+0.25.10: Providers Get key buttons open OpenAI / Anthropic / Gemini / xAI key pages
+0.25.9: Fix Providers dark form controls; hide empty Edit pill; fix Bug/Suggest (bind after FAB/modal in DOM)
+0.25.8: Help + docs messaging — provider keys on PC (⋯ → Providers); portal licensing only
+0.25.7: Fix empty providers dropdown — LocalFirst list uses pscustomobject (ConvertTo-Json-safe)
+0.25.6: Fix 0.25.5 package parse — no return inside finally (console restart after stop)
+0.25.5: Console hotkeys while pp runs — [U]pdate [R]estart [Q]uit [O]pen UI [H]elp (works when browser UI is dead)
+0.25.4: Parse-fail recovery banner + package preflight for dead local-ui script (nothing clickable)
+0.25.3: Silence Set-Acl SeSecurityPrivilege on pp start; fix local-ui JS parse (version badge + Update button dead)
+0.25.2: Fix LocalFirst PS5.1 (hashtable case-insensitive keys + multi-assign)
+0.25.1: Fix LocalFirst.ps1 for Windows PowerShell 5.1 parse (hashtable multi-assign broke import probe)
+0.25.0: LOCAL-FIRST — provider keys + optimize + model calls on this PC; portal is licensing only (pp_live_). Set-PromptParleProviderKey; secret gate; drop journal metadata
+0.24.2: Fix module parse — missing comma after ClientSessionId param (blocked 0.24.1 updates on Windows)
+0.24.1: Bug/Suggest floating button (bottom-left) + fixed modal close (backdrop/Escape/Cancel); session titles on chat; feedback proxy to portal
+0.24.0: Terminal savings polish + sticky mid-session model switch
+0.23.8: Fix module parse (try/catch inside hashtable broke PS 5.1)
+0.23.7: SSH privacy — friendly name in sidebar; sorted connection history (no passwords); hide host/cwd
+0.23.6: Live model lists always refresh (Claude/GPT/Grok newest); fix providers curated-only bug
+0.23.5: Composer live model + as-you-type token/cost estimate; fix dial meta (tools-on was stuck at 1/5)
+0.23.4: Savings line explains before/after/tok/$ est + model (green); mid-session model switch sticks (sticky + /api/session)
 0.23.3: Compact chat savings (one thin line; no giant 0% wow cards; quieter top strip)
 0.23.2: Terminal AI chat layout option; slash / command autocomplete in bubble + terminal; /mode /model
 0.23.1: Model list strictly per provider (no GPT under Grok); race-safe refresh; expanded curated catalogs (Grok 4, GPT-5, Claude 4.5, Gemini 2.5)

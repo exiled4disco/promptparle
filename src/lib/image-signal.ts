@@ -1,5 +1,5 @@
 /**
- * IMAGE SIGNAL — high-fidelity vision steering without bloating text tokens.
+ * IMAGE SIGNAL: high-fidelity vision steering without bloating text tokens.
  *
  * Binary images still go to the provider (multimodal). We add a tight focus
  * brief so the model knows what to extract, and we can describe dimensions
@@ -97,7 +97,7 @@ export function readImageDimensions(
     };
   }
 
-  // JPEG — scan for SOF0/2
+  // JPEG: scan for SOF0/2
   if (b[0] === 0xff && b[1] === 0xd8) {
     // need more bytes for JPEG
     const full = headerBytes(dataBase64, 512);
@@ -146,7 +146,7 @@ export function readImageDimensions(
     }
     // VP8 lossy
     if (b[12] === 0x56 && b[13] === 0x50 && b[14] === 0x38 && b[15] === 0x20) {
-      // more complex — skip
+      // more complex: skip
       return { format: "webp" };
     }
     return { format: "webp" };
@@ -167,7 +167,7 @@ export function inspectImage(img: AdapterImage): ImageMeta {
   };
 }
 
-/** Focus keywords from the user ask — steers vision without extra image tokens. */
+/** Focus keywords from the user ask: steers vision without extra image tokens. */
 function focusFromPrompt(prompt: string): string[] {
   const p = (prompt || "").toLowerCase();
   const foci: string[] = [];
@@ -239,7 +239,7 @@ export function buildImageSignal(
     if (m.width && m.height) withDimensions++;
     const kb = Math.max(1, Math.round(m.bytesApprox / 1024));
     lines.push(
-      `${i + 1}. **${m.name || `image-${i + 1}`}** — ${m.format} · ${dim} · ~${kb}KB`
+      `${i + 1}. **${m.name || `image-${i + 1}`}**: ${m.format} · ${dim} · ~${kb}KB`
     );
   });
 
@@ -248,7 +248,7 @@ export function buildImageSignal(
       [
         "- Treat attached images as primary evidence for visual facts.",
         "- Prefer OCR of labels, numbers, errors over vague description.",
-        "- If text is unreadable, say so — do not invent values.",
+        "- If text is unreadable, say so; do not invent values.",
         "- Cross-check image facts against any CODE/SHEET/SIGNAL briefs in context.",
       ].join("\n")
   );
@@ -288,7 +288,7 @@ export function stripInlineDataUrls(context: string): {
       const kb = Math.max(1, Math.round(b64ByteLen(b64) / 1024));
       const dimS =
         dim.width && dim.height ? `${dim.width}×${dim.height}` : "?×?";
-      return `[INLINE IMAGE removed from text context — re-attach as vision image: ${mime} ${dimS} ~${kb}KB]`;
+      return `[INLINE IMAGE removed from text context; re-attach as vision image: ${mime} ${dimS} ~${kb}KB]`;
     }
   );
   if (removed) {

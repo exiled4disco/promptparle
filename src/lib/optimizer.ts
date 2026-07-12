@@ -15,7 +15,7 @@ export type OptimizeInput = {
   profile?: OptimizationProfileId | string;
   /** soft cap for optimized output tokens (estimate) */
   maxTokens?: number;
-  /** Vision images — binary still forwarded separately; we add a focus brief */
+  /** Vision images: binary still forwarded separately; we add a focus brief */
   images?: AdapterImage[];
   /** 1 max fidelity … 5 max savings (default 3 balanced) */
   compressionLevel?: CompressionLevel | number;
@@ -41,7 +41,7 @@ export type OptimizeResult = {
 
 /**
  * Build the payload that actually goes to the model.
- * Notes stay in metadata only — never bake labels that inflate token counts.
+ * Notes stay in metadata only: never bake labels that inflate token counts.
  */
 function buildPayload(
   userPrompt: string,
@@ -129,7 +129,7 @@ function finalizeStats(
 }
 
 /**
- * Context optimizer — modality fleet:
+ * Context optimizer: modality fleet:
  *  - Documents → SIGNAL BRIEF (hybrid)
  *  - Code → CODE BRIEF (signatures + query-deep bodies)
  *  - Sheets → SHEET CARD (schema + stats + samples)
@@ -185,7 +185,7 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     }
   }
 
-  // 4) Image focus brief (text channel) — binaries forwarded separately
+  // 4) Image focus brief (text channel): binaries forwarded separately
   if (input.images && input.images.length > 0) {
     const img = buildImageSignal(input.images, { prompt, profile });
     if (img.applied && img.text) {
@@ -226,7 +226,7 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
   );
 
   // 7) NEVER expand vs the user's original input
-  // Note: image brief can add text while images aren't in originalTokens —
+  // Note: image brief can add text while images aren't in originalTokens
   // allow small growth only when images are present, else pass-through.
   const imageSlack =
     input.images && input.images.length > 0
@@ -294,7 +294,7 @@ export function optimizePrompt(input: OptimizeInput): OptimizeResult {
     }
   }
 
-  // Image brief added intentional tokens — don't flag as bug expansion
+  // Image brief added intentional tokens: don't flag as bug expansion
   if (
     imageSlack > 0 &&
     result.expanded &&

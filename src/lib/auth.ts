@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "./db";
 import { randomToken, sha256 } from "./crypto";
 import { SESSION_COOKIE, SESSION_DAYS } from "./constants";
+import { recordUserPresence } from "./user-presence";
 
 export type SessionUser = {
   id: string;
@@ -21,6 +22,12 @@ export type SessionUser = {
   preferredModels: string | null;
   defaultDial: number;
   defaultToolsEnabled: boolean;
+  /** True if account has a password (false = OAuth-only until they set one). */
+  hasPassword: boolean;
+  /** Portal administrator (invitation manager). */
+  isAdmin: boolean;
+  /** When set, account is disabled by an admin. */
+  disabledAt: Date | null;
 };
 
 export async function hashPassword(password: string): Promise<string> {
@@ -29,14 +36,15 @@ export async function hashPassword(password: string): Promise<string> {
 
 export async function verifyPassword(
   password: string,
-  hash: string
+  hash: string | null | undefined
 ): Promise<boolean> {
+  if (!hash) return false;
   return bcrypt.compare(password, hash);
 }
 
 export async function createSession(
   userId: string,
-  meta?: { userAgent?: string; ipAddress?: string }
+  meta?: { userAgent?: string; ipAddress?: string; headers?: Headers }
 ): Promise<string> {
   const token = randomToken(32);
   const tokenHash = sha256(token);
@@ -52,6 +60,10 @@ export async function createSession(
       ipAddress: meta?.ipAddress,
     },
   });
+
+  if (meta?.ipAddress) {
+    void recordUserPresence(userId, meta.ipAddress, meta.headers);
+  }
 
   return token;
 }
@@ -103,6 +115,9 @@ export async function getSessionUser(): Promise<SessionUser | null> {
           preferredModels: true,
           defaultDial: true,
           defaultToolsEnabled: true,
+          passwordHash: true,
+          isAdmin: true,
+          disabledAt: true,
         },
       },
     },
@@ -115,15 +130,32 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     return null;
   }
 
+  // Admin-disabled accounts lose the session immediately
+  if (session.user.disabledAt) {
+    await prisma.session
+      .delete({ where: { id: session.id } })
+      .catch(() => {});
+    return null;
+  }
+
   const u = session.user;
+  const { passwordHash, ...rest } = u;
   return {
-    ...u,
+    ...rest,
+    hasPassword: Boolean(passwordHash),
+    isAdmin: Boolean(u.isAdmin),
+    disabledAt: u.disabledAt ?? null,
     defaultDial: u.defaultDial ?? 3,
     defaultToolsEnabled: u.defaultToolsEnabled !== false,
     featProjectPc: u.featProjectPc !== false,
     featProjectSsh: u.featProjectSsh !== false,
     featProjectGit: u.featProjectGit !== false,
   };
+}
+
+/** Wipe all browser sessions for a user (disable / password reset). */
+export async function destroyAllSessionsForUser(userId: string): Promise<void> {
+  await prisma.session.deleteMany({ where: { userId } });
 }
 
 export async function requireUser(): Promise<SessionUser> {
@@ -133,6 +165,14 @@ export async function requireUser(): Promise<SessionUser> {
   }
   if (!user.emailVerifiedAt) {
     throw new AuthError("Email not verified", 403);
+  }
+  return user;
+}
+
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!user.isAdmin) {
+    throw new AuthError("Administrator access required", 403);
   }
   return user;
 }

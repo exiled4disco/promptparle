@@ -29,10 +29,18 @@ function openAiCompatibleEndpoint(provider: ProviderId): string {
   return "https://api.openai.com/v1/chat/completions";
 }
 
+function isOpenAiReasoningModel(model: string): boolean {
+  const m = (model || "").toLowerCase();
+  return /(^|\/)(o[1-9]([\w.-]*)?|gpt-5([\w.-]*)?)/.test(m);
+}
+
 async function completeOpenAiCompatible(
   provider: ProviderId,
   req: AgentChatRequest
 ): Promise<AgentChatResponse> {
+  const maxOut = req.maxOutputTokens ?? 4096;
+  const reasoning =
+    provider === "openai" && isOpenAiReasoningModel(req.model);
   const body: Record<string, unknown> = {
     model: req.model,
     messages: req.messages.map((m) => {
@@ -43,9 +51,15 @@ async function completeOpenAiCompatible(
       if (m.tool_calls?.length) row.tool_calls = m.tool_calls;
       return row;
     }),
-    temperature: req.temperature ?? 0.2,
-    max_tokens: req.maxOutputTokens ?? 4096,
   };
+  if (provider === "openai") {
+    body.max_completion_tokens = maxOut;
+    if (!reasoning) body.temperature = req.temperature ?? 0.2;
+  } else {
+    // Grok / other OpenAI-compatible: classic max_tokens
+    body.temperature = req.temperature ?? 0.2;
+    body.max_tokens = maxOut;
+  }
   if (req.tools?.length) {
     body.tools = req.tools;
     body.tool_choice = req.toolChoice || "auto";
@@ -224,9 +238,18 @@ async function completeAnthropic(
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg =
+    const raw =
       data?.error?.message || data?.error || `Anthropic error ${res.status}`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    let msg = typeof raw === "string" ? raw : JSON.stringify(raw);
+    if (/^model:\s*/i.test(msg) || (res.status === 404 && /model/i.test(msg))) {
+      const id = msg.replace(/^model:\s*/i, "").trim() || req.model;
+      msg =
+        `Anthropic model not found: ${id}. That snapshot may be retired. ` +
+        `Pick a current id (e.g. claude-sonnet-4-5, claude-opus-4-6) from the Model list.`;
+    } else if (data?.error?.type) {
+      msg = `${data.error.type}: ${msg}`;
+    }
+    throw new Error(msg);
   }
 
   const blocks = Array.isArray(data?.content) ? data.content : [];

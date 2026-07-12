@@ -1,8 +1,4 @@
 import { prisma } from "./db";
-import {
-  buildOriginalText,
-  textsForStorage,
-} from "./prompt-storage";
 
 type RecordOpts = {
   userId: string;
@@ -19,18 +15,20 @@ type RecordOpts = {
   context?: string | null;
   optimizedPrompt: string;
   errorMessage?: string | null;
+  /** Desktop chat title (safe metadata, not prompt body). */
+  sessionTitle?: string | null;
+  clientSessionId?: string | null;
 };
 
-/** Persist a prompt request row with plan-capped before/after text. */
+/**
+ * Persist usage stats only.
+ * Never stores prompt or context bodies (product privacy default).
+ * Session title / client session id are metadata only.
+ */
 export async function recordPromptRequest(opts: RecordOpts) {
-  const originalRaw = buildOriginalText(opts.prompt, opts.context);
-  const stored = textsForStorage({
-    plan: opts.plan,
-    retentionPolicy: opts.retentionPolicy,
-    storePrompts: opts.storePrompts,
-    originalText: originalRaw,
-    optimizedText: opts.optimizedPrompt,
-  });
+  const sessionTitle = (opts.sessionTitle || "").trim().slice(0, 120) || null;
+  const clientSessionId =
+    (opts.clientSessionId || "").trim().slice(0, 80) || null;
 
   return prisma.promptRequest.create({
     data: {
@@ -41,11 +39,14 @@ export async function recordPromptRequest(opts: RecordOpts) {
       originalTokens: opts.originalTokens,
       optimizedTokens: opts.optimizedTokens,
       status: opts.status,
-      promptPreview: stored.promptPreview,
-      originalText: stored.originalText,
-      optimizedText: stored.optimizedText,
-      originalTruncated: stored.originalTruncated,
-      optimizedTruncated: stored.optimizedTruncated,
+      // Stats-only: never persist prompt/context text
+      promptPreview: null,
+      originalText: null,
+      optimizedText: null,
+      originalTruncated: false,
+      optimizedTruncated: false,
+      sessionTitle,
+      clientSessionId,
       errorMessage: opts.errorMessage ? opts.errorMessage.slice(0, 500) : null,
     },
   });

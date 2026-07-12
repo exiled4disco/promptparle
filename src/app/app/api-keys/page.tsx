@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { PageHeader } from "@/components/PageHeader";
 import { getSessionUser } from "@/lib/auth";
 import { listApiKeys } from "@/lib/api-keys";
 import { ApiKeysClient } from "./ApiKeysClient";
@@ -13,16 +14,19 @@ export default async function ApiKeysPage() {
 
   return (
     <div className="grid gap-6">
-      <div>
-        <h1 className="page-title">Desktop API keys</h1>
-        <p className="page-sub">
-          Generate <span className="mono">pp_live_…</span> keys for PowerShell
-          and VS Code. The full key is shown once — only a hash is stored.
-        </p>
-      </div>
+      <PageHeader
+        title="Desktop license keys"
+        description={
+          <>
+            Generate <span className="mono">pp_live_…</span> license keys for the
+            desktop client. This is not an OpenAI/Claude key, set model keys on
+            your PC (⋯ → Providers). Full value shown once; only a hash is stored.
+          </>
+        }
+      />
       <ApiKeysClient
         keys={keys.map((k) => ({
-          ...k,
+...k,
           createdAt: k.createdAt.toISOString(),
           lastUsedAt: k.lastUsedAt?.toISOString() ?? null,
           revokedAt: k.revokedAt?.toISOString() ?? null,

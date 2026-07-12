@@ -43,11 +43,11 @@ export function ApiKeysClient({ keys: initial }: { keys: ApiKeyRow[] }) {
       setFullKey(data.fullKey);
       setKeys((prev) => [
         {
-          ...data.key,
+...data.key,
           lastUsedAt: null,
           revokedAt: null,
         },
-        ...prev,
+...prev,
       ]);
       router.refresh();
     } catch {
@@ -66,7 +66,7 @@ export function ApiKeysClient({ keys: initial }: { keys: ApiKeyRow[] }) {
       setKeys((prev) =>
         prev.map((k) =>
           k.id === id
-            ? { ...k, status: "revoked", revokedAt: new Date().toISOString() }
+            ? {...k, status: "revoked", revokedAt: new Date().toISOString() }
             : k
         )
       );
@@ -160,7 +160,7 @@ export function ApiKeysClient({ keys: initial }: { keys: ApiKeyRow[] }) {
                       {formatDate(k.createdAt)}
                     </td>
                     <td className="whitespace-nowrap text-[var(--text-muted)]">
-                      {k.lastUsedAt ? formatDate(k.lastUsedAt) : "—"}
+                      {k.lastUsedAt ? formatDate(k.lastUsedAt) : "-"}
                     </td>
                     <td className="text-right">
                       {k.status === "active" && (

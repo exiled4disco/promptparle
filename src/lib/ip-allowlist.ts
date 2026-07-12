@@ -1,7 +1,7 @@
 /**
  * API IP/CIDR allowlist helpers.
  *
- * Empty list = unrestricted. Used for desktop API keys (v1/*) only —
+ * Empty list = unrestricted. Used for desktop API keys (v1/*) only
  * browser session/Settings stay open so users can fix a bad list.
  */
 
@@ -104,7 +104,7 @@ export function isIpAllowed(
   if (entries.length === 0) return true;
   if (!clientIp) return false;
 
-  // First hop of X-Forwarded-For may include port rarely — strip
+  // First hop of X-Forwarded-For may include port rarely: strip
   const ip = clientIp.split("%")[0]!.trim();
   // IPv4-mapped IPv6
   const v4 = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
@@ -121,20 +121,52 @@ export function isIpAllowed(
 
 /**
  * Client IP from reverse-proxy headers (nginx → Next).
- * Prefer left-most X-Forwarded-For hop (original client).
+ *
+ * Trust model (production behind one proxy):
+ * - Prefer X-Real-IP / CF-Connecting-IP set by the edge (not client-spoofable
+ *   if the app is not directly exposed).
+ * - Else use X-Forwarded-For from the right: drop TRUSTED_PROXY_HOPS trailing
+ *   entries (default 1 = our nginx), take the next as client.
+ * - Never trust a bare left-most XFF when the request might hit Node directly.
  */
 export function getClientIpFromHeaders(headers: Headers): string | null {
-  const xff =
-    headers.get("x-forwarded-for") || headers.get("X-Forwarded-For") || "";
-  if (xff) {
-    const first = xff.split(",")[0]?.trim();
-    if (first) return first;
-  }
   const real =
     headers.get("x-real-ip") ||
     headers.get("X-Real-IP") ||
     headers.get("cf-connecting-ip") ||
+    headers.get("CF-Connecting-IP") ||
     null;
-  if (real && real.trim()) return real.trim();
+  if (real && real.trim()) {
+    return normalizeIp(real.trim());
+  }
+
+  const xff =
+    headers.get("x-forwarded-for") || headers.get("X-Forwarded-For") || "";
+  if (xff) {
+    const hops = xff
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (hops.length) {
+      const trusted = Math.max(
+        0,
+        Number(process.env.TRUSTED_PROXY_HOPS || "1") || 1
+      );
+      // Client is the last untrusted hop
+      const idx = Math.max(0, hops.length - 1 - trusted);
+      const candidate = hops[idx] || hops[0];
+      if (candidate) return normalizeIp(candidate);
+    }
+  }
   return null;
+}
+
+function normalizeIp(ip: string): string {
+  let v = ip.split("%")[0]!.trim();
+  // strip :port on IPv4
+  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(v)) {
+    v = v.split(":")[0]!;
+  }
+  if (v.startsWith("::ffff:")) v = v.slice(7);
+  return v;
 }

@@ -2,6 +2,12 @@ import type { AdapterRequest, AdapterResponse, ProviderAdapter } from "./types";
 import { normalizeAdapterImages } from "./types";
 import { combineSystemMessage } from "../system-framing";
 
+/** o1/o3/o4/gpt-5 reject max_tokens; use max_completion_tokens (and omit temperature). */
+function isOpenAiReasoningModel(model: string): boolean {
+  const m = (model || "").toLowerCase();
+  return /(^|\/)(o[1-9]([\w.-]*)?|gpt-5([\w.-]*)?)/.test(m);
+}
+
 export const openaiAdapter: ProviderAdapter = {
   id: "openai",
   async complete(req: AdapterRequest): Promise<AdapterResponse> {
@@ -35,18 +41,25 @@ export const openaiAdapter: ProviderAdapter = {
     }
     messages.push({ role: "user", content });
 
+    const maxOut = req.maxOutputTokens ?? 4096;
+    const reasoning = isOpenAiReasoningModel(req.model);
+    const body: Record<string, unknown> = {
+      model: req.model,
+      messages,
+      // OpenAI: max_tokens rejected on o-series / gpt-5 — use max_completion_tokens
+      max_completion_tokens: maxOut,
+    };
+    if (!reasoning) {
+      body.temperature = req.temperature ?? 0.2;
+    }
+
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${req.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: req.model,
-        messages,
-        temperature: req.temperature ?? 0.2,
-        max_tokens: req.maxOutputTokens ?? 4096,
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await res.json().catch(() => ({}));

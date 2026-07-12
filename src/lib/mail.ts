@@ -6,6 +6,8 @@ export type SendMailInput = {
   subject: string;
   text: string;
   html: string;
+  /** Optional Reply-To (e.g. invitation requester). */
+  replyTo?: string;
 };
 
 function appUrl(): string {
@@ -53,6 +55,7 @@ async function sendViaSes(input: SendMailInput): Promise<void> {
         ? `${from.name} <${from.address}>`
         : from.address,
       Destination: { ToAddresses: [input.to] },
+      ReplyToAddresses: input.replyTo ? [input.replyTo] : undefined,
       Content: {
         Simple: {
           Subject: { Data: input.subject, Charset: "UTF-8" },
@@ -82,6 +85,7 @@ async function sendViaResend(input: SendMailInput): Promise<void> {
       subject: input.subject,
       html: input.html,
       text: input.text,
+      ...(input.replyTo ? { reply_to: input.replyTo } : {}),
     }),
   });
 
@@ -117,6 +121,7 @@ async function sendViaSmtp(input: SendMailInput): Promise<void> {
   await transporter.sendMail({
     from: mailFrom(),
     to: input.to,
+    replyTo: input.replyTo,
     subject: input.subject,
     text: input.text,
     html: input.html,
@@ -133,6 +138,7 @@ async function sendViaSendmail(input: SendMailInput): Promise<void> {
   await transporter.sendMail({
     from: mailFrom(),
     to: input.to,
+    replyTo: input.replyTo,
     subject: input.subject,
     text: input.text,
     html: input.html,
@@ -205,7 +211,7 @@ ${verifyUrl}
 
 This link expires in 24 hours. If you did not create an account, you can ignore this email.
 
-— PromptParle
+PromptParle
 Trim the prompt. Keep the signal.
 `;
 
@@ -240,4 +246,370 @@ Trim the prompt. Keep the signal.
     text,
     html,
   });
+}
+
+export async function sendInvitationEmail(opts: {
+  to: string;
+  inviteUrl: string;
+  expiresAt: Date;
+  codePreview: string;
+}): Promise<void> {
+  const { to, inviteUrl, expiresAt, codePreview } = opts;
+  const exp = expiresAt.toUTCString();
+
+  const registerUrl = `${appUrl()}/register`;
+
+  const text = `You're invited to PromptParle
+
+You've been invited to join PromptParle, the AI context optimization gateway.
+
+YOUR INVITATION CODE (required to create an account)
+${codePreview}
+
+Option A (one click):
+${inviteUrl}
+
+Option B (on the website):
+1) Go to ${registerUrl}
+2) Enter invitation code: ${codePreview}
+3) Set your name and password
+
+This invitation expires ${exp}.
+After you create your account, we'll email desktop install steps (same code).
+
+PromptParle
+Trim the prompt. Keep the signal.
+`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
+  <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
+    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
+    <p style="color:#8b9bb8;margin:0 0 20px;">You're invited</p>
+    <p style="margin:0 0 12px;color:#c7d7f5;">You've been invited to create a PromptParle account.</p>
+    <p style="margin:0 0 10px;color:#8b9bb8;font-size:14px;">Your invitation code (required for account creation):</p>
+    <div style="background:#0d111a;border:1px solid #2a3a55;border-radius:10px;padding:14px 16px;margin:0 0 22px;text-align:center;">
+      <code style="font-size:20px;letter-spacing:0.12em;font-weight:700;color:#93b4ff;">${codePreview}</code>
+    </div>
+    <p style="margin:0 0 28px;">
+      <a href="${inviteUrl}"
+         style="display:inline-block;background:linear-gradient(135deg,#5b8cff,#3d6ef5);color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px;">
+        Accept invitation
+      </a>
+    </p>
+    <p style="font-size:13px;color:#8b9bb8;margin:0 0 8px;">Or go to <a href="${registerUrl}" style="color:#93b4ff;">${registerUrl}</a> and enter the code above, then set your password.</p>
+    <p style="font-size:12px;color:#5c6b86;margin:0;">Expires ${exp}. After signup you get install steps by email (same code for the desktop installer).</p>
+  </div>
+</body>
+</html>`;
+
+  if (process.env.MAIL_DEBUG === "true") {
+    console.info(`[mail-debug] invitation for ${to}: ${inviteUrl}`);
+  }
+
+  await sendMail({
+    to,
+    subject: "You're invited to PromptParle",
+    text,
+    html,
+  });
+}
+
+export async function sendInvitationWelcomeEmail(opts: {
+  to: string;
+  name?: string | null;
+  code: string;
+}): Promise<void> {
+  const greeting = opts.name ? `Hi ${opts.name},` : "Hi,";
+  const portal = appUrl();
+  const installCmdWin = `irm ${portal}/install.ps1 | iex`;
+  const installCmdLinux = `curl -fsSL ${portal}/install.sh | bash`;
+
+  const text = `${greeting}
+
+Your PromptParle account is ready. Here is your one-time invitation code and install guide.
+
+════════════════════════════════════
+  INVITATION CODE (enter during install)
+  ${opts.code}
+════════════════════════════════════
+
+INSTALL (Windows PowerShell)
+
+1) Open PowerShell
+2) Run:
+   ${installCmdWin}
+3) When asked, enter invitation code: ${opts.code}
+4) Finish portal setup (below), then paste your desktop API key.
+
+INSTALL (Linux / macOS)
+
+1) Install PowerShell 7+ (pwsh) if needed
+2) Run:
+   ${installCmdLinux}
+3) When asked, enter invitation code: ${opts.code}
+4) Finish portal setup (below), then paste your desktop API key.
+
+PORTAL SETUP (required once)
+
+1) Sign in: ${portal}/login
+   Email: ${opts.to}
+2) Providers → add your AI provider key (OpenAI / Claude / Gemini / Grok)
+   Keys stay encrypted; spend is on YOUR provider account (BYOK).
+3) API Keys → Create desktop key → copy the full pp_live_… value (shown once)
+4) Return to the installer and paste that key.
+
+SECURITY NOTES
+• Invitation codes are single-use for onboarding
+• Desktop UI runs only on your PC (127.0.0.1)
+• SSH/git credentials never leave your machine
+
+Need help? Reply to this email or visit ${portal}
+
+PromptParle
+Trim the prompt. Keep the signal.
+`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
+  <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
+    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
+    <p style="color:#8b9bb8;margin:0 0 16px;">Account ready: install next</p>
+    <p style="margin:0 0 16px;">${greeting}</p>
+    <p style="margin:0 0 12px;color:#c7d7f5;">Your one-time invitation code (enter this in the desktop installer):</p>
+    <div style="background:#0d111a;border:1px solid #2a3a55;border-radius:10px;padding:16px 18px;margin:0 0 24px;text-align:center;">
+      <code style="font-size:22px;letter-spacing:0.12em;font-weight:700;color:#93b4ff;">${opts.code}</code>
+    </div>
+
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">1 · Install (Windows)</h3>
+    <ol style="margin:0 0 16px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
+      <li>Open PowerShell</li>
+      <li>Run: <code style="color:#93b4ff;background:#0d111a;padding:2px 6px;border-radius:4px;">${installCmdWin}</code></li>
+      <li>Enter invitation code <strong style="color:#e8eef8;">${opts.code}</strong> when prompted</li>
+    </ol>
+
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">1b · Install (Linux / macOS)</h3>
+    <ol style="margin:0 0 20px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
+      <li>Install PowerShell 7+ (<code style="color:#93b4ff;">pwsh</code>) if needed</li>
+      <li>Run: <code style="color:#93b4ff;background:#0d111a;padding:2px 6px;border-radius:4px;">${installCmdLinux}</code></li>
+      <li>Enter invitation code <strong style="color:#e8eef8;">${opts.code}</strong> when prompted</li>
+    </ol>
+
+    <h3 style="margin:0 0 10px;font-size:14px;color:#e8eef8;">2 · Portal setup</h3>
+    <ol style="margin:0 0 20px;padding-left:20px;color:#8b9bb8;font-size:14px;line-height:1.55;">
+      <li>Sign in at <a href="${portal}/login" style="color:#93b4ff;">${portal}/login</a> (${opts.to})</li>
+      <li><strong style="color:#e8eef8;">Providers</strong> → add your AI API key (BYOK: your provider bill)</li>
+      <li><strong style="color:#e8eef8;">API Keys</strong> → create desktop key → copy <code style="color:#93b4ff;">pp_live_…</code> (shown once)</li>
+      <li>Return to the installer and paste the desktop key</li>
+    </ol>
+
+    <p style="font-size:12px;color:#5c6b86;margin:0;">Code is single-use for onboarding. Local UI stays on your PC. SSH/git credentials never leave your machine.</p>
+  </div>
+</body>
+</html>`;
+
+  await sendMail({
+    to: opts.to,
+    subject: `PromptParle install guide (code ${opts.code})`,
+    text,
+    html,
+  });
+}
+
+export async function sendPasswordResetEmail(
+  to: string,
+  rawToken: string,
+  name?: string | null
+): Promise<void> {
+  const resetUrl = `${appUrl()}/reset-password?token=${encodeURIComponent(rawToken)}`;
+  const greeting = name ? `Hi ${name},` : "Hi,";
+
+  const text = `${greeting}
+
+We received a request to reset your PromptParle password.
+
+Open this link to choose a new password (expires in 1 hour):
+
+${resetUrl}
+
+If you did not request this, you can ignore this email. Your password will stay the same.
+
+PromptParle
+`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
+  <div style="max-width:520px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
+    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
+    <p style="color:#8b9bb8;margin:0 0 20px;">Password reset</p>
+    <p style="margin:0 0 12px;">${greeting}</p>
+    <p style="margin:0 0 20px;color:#c7d7f5;">Choose a new password for your account.</p>
+    <p style="margin:0 0 28px;">
+      <a href="${resetUrl}"
+         style="display:inline-block;background:linear-gradient(135deg,#5b8cff,#3d6ef5);color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:999px;">
+        Reset password
+      </a>
+    </p>
+    <p style="font-size:13px;color:#5c6b86;margin:0 0 8px;">Or paste this link into your browser:</p>
+    <p style="font-size:12px;word-break:break-all;color:#8b9bb8;margin:0 0 20px;">${resetUrl}</p>
+    <p style="font-size:12px;color:#5c6b86;margin:0;">This link expires in 1 hour. If you did not request a reset, ignore this message.</p>
+  </div>
+</body>
+</html>`;
+
+  if (process.env.MAIL_DEBUG === "true") {
+    console.info(`[mail-debug] password reset link for ${to}: ${resetUrl}`);
+  }
+
+  await sendMail({
+    to,
+    subject: "Reset your PromptParle password",
+    text,
+    html,
+  });
+}
+
+/** Notify admins that someone requested an invitation. */
+export async function sendInviteRequestEmail(opts: {
+  to: string | string[];
+  name: string;
+  email: string;
+  company?: string | null;
+  note?: string | null;
+  ip?: string | null;
+}): Promise<void> {
+  const recipients = Array.isArray(opts.to) ? opts.to : [opts.to];
+  const adminUrl = `${appUrl()}/app/invitations`;
+  const company = (opts.company || "").trim() || "(not provided)";
+  const note = (opts.note || "").trim() || "(none)";
+  const ip = opts.ip || "unknown";
+
+  const text = `New PromptParle invitation request
+
+Name: ${opts.name}
+Email: ${opts.email}
+Company: ${company}
+Note: ${note}
+IP: ${ip}
+
+Open the invitation manager to send a code:
+${adminUrl}
+
+PromptParle
+`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
+  <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
+    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
+    <p style="color:#8b9bb8;margin:0 0 16px;">New invitation request</p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;color:#c7d7f5;margin:0 0 22px;">
+      <tr><td style="padding:6px 0;color:#8b9bb8;width:110px;">Name</td><td style="padding:6px 0;">${escapeHtml(opts.name)}</td></tr>
+      <tr><td style="padding:6px 0;color:#8b9bb8;">Email</td><td style="padding:6px 0;"><a href="mailto:${escapeHtml(opts.email)}" style="color:#93b4ff;">${escapeHtml(opts.email)}</a></td></tr>
+      <tr><td style="padding:6px 0;color:#8b9bb8;">Company</td><td style="padding:6px 0;">${escapeHtml(company)}</td></tr>
+      <tr><td style="padding:6px 0;color:#8b9bb8;vertical-align:top;">Note</td><td style="padding:6px 0;white-space:pre-wrap;">${escapeHtml(note)}</td></tr>
+      <tr><td style="padding:6px 0;color:#8b9bb8;">IP</td><td style="padding:6px 0;">${escapeHtml(ip)}</td></tr>
+    </table>
+    <p style="margin:0;">
+      <a href="${adminUrl}"
+         style="display:inline-block;background:linear-gradient(135deg,#5b8cff,#3d6ef5);color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:999px;">
+        Open invitation manager
+      </a>
+    </p>
+  </div>
+</body>
+</html>`;
+
+  for (const to of recipients) {
+    await sendMail({
+      to,
+      // Reply goes to the person who requested access
+      replyTo: opts.email,
+      subject: `Invite request: ${opts.email}`,
+      text,
+      html,
+    });
+  }
+}
+
+/** Notify admins of a bug report or product suggestion. */
+export async function sendFeedbackNotifyEmail(opts: {
+  to: string | string[];
+  kind: string;
+  title: string;
+  body: string;
+  source: string;
+  email?: string | null;
+  name?: string | null;
+  userId?: string | null;
+  ip?: string | null;
+  country?: string | null;
+}): Promise<void> {
+  const recipients = Array.isArray(opts.to) ? opts.to : [opts.to];
+  const adminUrl = `${appUrl()}/app/feedback`;
+  const kindLabel = opts.kind === "bug" ? "Bug report" : "Suggestion";
+  const who =
+    [opts.name, opts.email].filter(Boolean).join(" · ") ||
+    opts.userId ||
+    "anonymous";
+  const loc = [opts.ip, opts.country].filter(Boolean).join(" · ") || "unknown";
+
+  const text = `New PromptParle ${kindLabel}
+
+From: ${who}
+Source: ${opts.source}
+Title: ${opts.title}
+
+${opts.body}
+
+Location: ${loc}
+
+Open feedback inbox:
+${adminUrl}
+`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
+  <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
+    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
+    <p style="color:#8b9bb8;margin:0 0 12px;">${escapeHtml(kindLabel)}</p>
+    <p style="margin:0 0 8px;font-size:16px;font-weight:600;">${escapeHtml(opts.title)}</p>
+    <p style="margin:0 0 16px;color:#c7d7f5;white-space:pre-wrap;font-size:14px;">${escapeHtml(opts.body)}</p>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;color:#8b9bb8;margin:0 0 22px;">
+      <tr><td style="padding:4px 0;width:90px;">From</td><td style="padding:4px 0;color:#c7d7f5;">${escapeHtml(who)}</td></tr>
+      <tr><td style="padding:4px 0;">Source</td><td style="padding:4px 0;color:#c7d7f5;">${escapeHtml(opts.source)}</td></tr>
+      <tr><td style="padding:4px 0;">Location</td><td style="padding:4px 0;color:#c7d7f5;">${escapeHtml(loc)}</td></tr>
+    </table>
+    <p style="margin:0;">
+      <a href="${adminUrl}"
+         style="display:inline-block;background:linear-gradient(135deg,#5b8cff,#3d6ef5);color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:999px;">
+        Open feedback inbox
+      </a>
+    </p>
+  </div>
+</body>
+</html>`;
+
+  for (const to of recipients) {
+    await sendMail({
+      to,
+      replyTo: opts.email || undefined,
+      subject: `${kindLabel}: ${opts.title}`.slice(0, 180),
+      text,
+      html,
+    });
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

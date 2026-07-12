@@ -5,6 +5,8 @@ import { PROVIDERS } from "@/lib/constants";
 import { curatedModelsFor } from "@/lib/models";
 import type { ProviderId } from "@/lib/constants";
 import { SettingsForm } from "./SettingsForm";
+import { ChangePasswordForm } from "@/components/ChangePasswordForm";
+import { PageHeader } from "@/components/PageHeader";
 
 export const metadata = { title: "Settings" };
 
@@ -27,15 +29,11 @@ export default async function SettingsPage() {
 
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h1 className="page-title !mb-0.5">Settings</h1>
-          <p className="page-sub !mt-0 text-sm">
-            Profile, chat models, dial, desktop features, and client seats —
-            syncs with the desktop client.
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        title="Settings"
+        description="Profile, chat models, dial, desktop features, and client seats. Settings sync with the desktop client."
+      />
+      <ChangePasswordForm hasPassword={user.hasPassword} />
       <SettingsForm
         user={user}
         modelCatalog={modelCatalog}

@@ -1,5 +1,5 @@
 /**
- * SIGNAL BRIEF — document intelligence for well-formed prose.
+ * SIGNAL BRIEF: document intelligence for well-formed prose.
  *
  * Not "delete duplicate lines." We rebuild the document into a model-ready
  * briefing packet:
@@ -40,7 +40,7 @@ const CONFIDENTIAL =
   /^(confidential|internal use only|do not distribute|proprietary and confidential|all rights reserved|copyright\s+©?\s*\d{4}).*$/i;
 const TOC_HEADER = /^(table of contents|contents|index)$/i;
 
-/** Imperative / obligation language — gold for policy & contracts */
+/** Imperative / obligation language: gold for policy & contracts */
 const OBLIGATION =
   /\b(shall|must|must not|shall not|required to|are required|is required|prohibited|may not|cannot|will ensure|is responsible for|are responsible for|obligated to|mandatory)\b/i;
 
@@ -503,7 +503,7 @@ type Section = {
  *
  * Hybrid mode aims for *task-equivalent* answers to the full doc:
  * coverage leads for every chapter + deep-keep of top sections +
- * obligations/numbers — without shipping the whole essay.
+ * obligations/numbers: without shipping the whole essay.
  */
 export function compressDocument(
   context: string,
@@ -608,8 +608,8 @@ export function compressDocument(
     query = expandQueryFromHeadings(query, sections);
     notes.push(
       vague
-        ? "Vague ask — expanded focus from document headings (coverage mode)"
-        : "Thin ask — seeded keywords from section titles"
+        ? "Vague ask: expanded focus from document headings (coverage mode)"
+        : "Thin ask: seeded keywords from section titles"
     );
   }
 
@@ -726,7 +726,7 @@ export function compressDocument(
     );
   }
 
-  // Coverage leads — every headed section gets ≥1 sentence (hybrid)
+  // Coverage leads: every headed section gets ≥1 sentence (hybrid)
   if (aggro.leadAllSections) {
     const leadLines: string[] = ["## Section coverage (lead from every chapter)"];
     let leads = 0;
@@ -834,14 +834,14 @@ export function compressDocument(
   }
 
   if (brief.length >= context.length) {
-    // Hybrid brief grew (dense tables/checklists) — fall back to structure-preserving lean
+    // Hybrid brief grew (dense tables/checklists): fall back to structure-preserving lean
     const lean = leanMarkdownDocument(context, {
       dial,
       targetRatio: Math.min(0.55, targetRatio),
     });
     if (lean.text.length < context.length) {
       notes.push(
-        "Signal brief grew — used structure-preserving lean instead",
+        "Signal brief grew: used structure-preserving lean instead",
         ...lean.notes
       );
       const savedPct = Math.round((1 - lean.text.length / context.length) * 100);
@@ -902,7 +902,7 @@ export function compressDocument(
 
 
 /**
- * Structure-preserving markdown lean — always tries for real savings without
+ * Structure-preserving markdown lean: always tries for real savings without
  * inventing a larger SIGNAL BRIEF envelope. Used when hybrid brief expands.
  */
 export function leanMarkdownDocument(
@@ -984,7 +984,7 @@ export function leanMarkdownDocument(
       continue;
     }
 
-    // Bullet / checklist — keep within section budget
+    // Bullet / checklist: keep within section budget
     if (/^[-*+]\s+|^\d+\.\s+|^\[[ xX]\]\s+/.test(t)) {
       if (sectionLines < maxLinesPerSection) {
         // Soft densify long bullets
@@ -1000,7 +1000,7 @@ export function leanMarkdownDocument(
       continue;
     }
 
-    // Empty line — keep single
+    // Empty line: keep single
     if (!t) {
       if (out.length && out[out.length - 1] !== "") out.push("");
       i++;

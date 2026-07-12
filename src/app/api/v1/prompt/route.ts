@@ -40,7 +40,7 @@ const schema = z.object({
   model: z.string().optional(),
   prompt: z.string().min(1).max(500_000),
   context: z.string().max(2_000_000).optional(),
-  /** Native system brief (0.14.12+) — not optimized, not stored in Before/After */
+  /** Native system brief (0.14.12+). not optimized, not stored in Before/After */
   system: z.string().max(50_000).optional(),
   system_prompt: z.string().max(50_000).optional(),
   systemPrompt: z.string().max(50_000).optional(),
@@ -50,18 +50,23 @@ const schema = z.object({
   runtimeNote: z.string().max(20_000).optional(),
   optimization_profile: z.string().optional(),
   optimizationProfile: z.string().optional(),
-  /** 1 max fidelity … 5 max savings — coerced from string by coercePromptBody */
+  /** 1 max fidelity … 5 max savings. coerced from string by coercePromptBody */
   compression_level: z.number().int().min(1).max(5).optional(),
   compressionLevel: z.number().int().min(1).max(5).optional(),
   return_metadata: z.boolean().optional(),
   returnMetadata: z.boolean().optional(),
   max_tokens: z.number().int().positive().optional(),
   maxTokens: z.number().int().positive().optional(),
-  /** optimize only — do not call the AI provider */
+  /** optimize only. do not call the AI provider */
   optimize_only: z.boolean().optional(),
   optimizeOnly: z.boolean().optional(),
   /** Vision attachments (max 6 after normalize) */
   images: z.array(imageSchema).max(8).optional(),
+  /** Desktop chat title (metadata only) */
+  session_title: z.string().max(120).optional(),
+  sessionTitle: z.string().max(120).optional(),
+  client_session_id: z.string().max(80).optional(),
+  clientSessionId: z.string().max(80).optional(),
 });
 
 function parseImages(
@@ -91,17 +96,37 @@ export async function POST(req: NextRequest) {
   let optimizedTokens = 0;
   let plan = "free";
   let retentionPolicy = "7d";
-  let storePrompts = true;
+  const storePrompts = false; // stats-only product policy
   let promptText = "";
   let contextText: string | undefined;
   let optimizedPromptText = "";
+  let sessionTitle: string | undefined;
+  let clientSessionId: string | undefined;
 
   try {
     const auth = await requireApiKey(req);
     userId = auth.user.id;
     plan = auth.user.plan;
     retentionPolicy = auth.user.retentionPolicy;
-    storePrompts = auth.user.storePrompts;
+
+    const { checkRateLimit, RL, rateLimitResponse } = await import(
+      "@/lib/rate-limit"
+    );
+    const rl = checkRateLimit(
+      `v1:prompt:${auth.apiKeyId}`,
+      RL.v1PromptKey.max,
+      RL.v1PromptKey.windowMs
+    );
+    if (!rl.ok) {
+      const r = rateLimitResponse(
+        rl.retryAfterSec,
+        "Desktop API rate limit exceeded for optimize/route. Retry shortly."
+      );
+      return NextResponse.json(r.body, {
+        status: r.status,
+        headers: r.headers,
+      });
+    }
 
     const body = coercePromptBody(await req.json());
     const parsed = schema.safeParse(body);
@@ -130,6 +155,10 @@ export async function POST(req: NextRequest) {
     const maxTokens = data.max_tokens ?? data.maxTokens;
     promptText = data.prompt;
     contextText = data.context;
+    sessionTitle =
+      data.session_title || data.sessionTitle || undefined;
+    clientSessionId =
+      data.client_session_id || data.clientSessionId || undefined;
 
     if (!isValidProvider(provider)) {
       return NextResponse.json({ error: "Unknown provider" }, { status: 400 });
@@ -174,12 +203,12 @@ export async function POST(req: NextRequest) {
     const notes = [...optimized.notes];
     if (framed.system || framed.runtime) {
       notes.push(
-        "system role (native) — product brief not in user payload / usage Before"
+        "system role (native): product brief not in user payload / usage Before"
       );
     }
     if (images.length > 0) {
       notes.push(
-        `${images.length} image(s) attached — passed to the model on full AI calls (not text-optimized)`
+        `${images.length} image(s) attached; passed to the model on full AI calls (not text-optimized)`
       );
     }
 
@@ -198,6 +227,8 @@ export async function POST(req: NextRequest) {
         prompt: framed.storagePrompt,
         context: data.context,
         optimizedPrompt: optimized.optimizedPrompt,
+        sessionTitle,
+        clientSessionId,
       });
 
       return NextResponse.json({
@@ -281,6 +312,8 @@ export async function POST(req: NextRequest) {
         context: data.context,
         optimizedPrompt: optimized.optimizedPrompt,
         errorMessage: message,
+        sessionTitle,
+        clientSessionId,
       });
       return NextResponse.json(
         {
@@ -317,6 +350,8 @@ export async function POST(req: NextRequest) {
       prompt: framed.storagePrompt,
       context: data.context,
       optimizedPrompt: optimized.optimizedPrompt,
+      sessionTitle,
+      clientSessionId,
     });
 
     return NextResponse.json({
@@ -369,6 +404,8 @@ export async function POST(req: NextRequest) {
         context: contextText,
         optimizedPrompt: optimizedPromptText || "",
         errorMessage: "Internal error",
+        sessionTitle,
+        clientSessionId,
       }).catch(() => {});
     }
     return NextResponse.json({ error: "Request failed" }, { status: 500 });

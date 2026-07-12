@@ -34,6 +34,22 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+.env.production
+.env.development
+
+# Secrets & local credentials
+*.pem
+*.key
+*credentials*.json
+service-account*.json
+
+# Internal session notes — never publish
+HANDOFF.md
+HANDOFF.txt
+**/HANDOFF.md
+**/HANDOFF.txt
+*.pp-bak*
+*.pp-bak-*
 
 # local tooling / OS
 *.swp
@@ -49,3 +65,11 @@ Thumbs.db
 next-env.d.ts
 
 /src/generated/prisma
+
+# Local desktop secrets (if ever created in repo tree)
+.promptparle/
+**/local-ui.token
+
+# stray root copies of desktop artifacts (canonical copies live in public/)
+/PromptParle-PowerShell.tgz
+/PromptParle.psd1

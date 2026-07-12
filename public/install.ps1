@@ -4,6 +4,7 @@
 #   $PromptParleClonePath = 'D:\src\promptparle'
 #   $PromptParleStart = $true
 #   $PromptParleSkipKeyPrompt = $true
+#   $PromptParleInvitationCode = 'PP-XXXX-XXXX'   # from welcome email
 
 $ErrorActionPreference = 'Stop'
 
@@ -12,6 +13,7 @@ $Branch = 'main'
 $ClonePath = $null
 $DoStart = $false
 $SkipKeyPrompt = $false
+$InvitationCode = ''
 
 if (Get-Variable -Name PromptParleClonePath -ErrorAction SilentlyContinue) {
     if ($PromptParleClonePath) { $ClonePath = [string]$PromptParleClonePath }
@@ -21,6 +23,9 @@ if (Get-Variable -Name PromptParleStart -ErrorAction SilentlyContinue) {
 }
 if (Get-Variable -Name PromptParleSkipKeyPrompt -ErrorAction SilentlyContinue) {
     if ($PromptParleSkipKeyPrompt) { $SkipKeyPrompt = $true }
+}
+if (Get-Variable -Name PromptParleInvitationCode -ErrorAction SilentlyContinue) {
+    if ($PromptParleInvitationCode) { $InvitationCode = [string]$PromptParleInvitationCode }
 }
 
 if (-not $ClonePath) {
@@ -34,7 +39,12 @@ if (-not $ClonePath) {
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    throw 'git is required. Install Git for Windows: https://git-scm.com/download/win'
+    $gitHint = if ($env:OS -match 'Windows' -or $PSVersionTable.PSEdition -eq 'Desktop') {
+        'Install Git for Windows: https://git-scm.com/download/win'
+    } else {
+        'Install git (e.g. sudo apt install git) or use the Linux installer: curl -fsSL https://promptparle.com/install.sh | bash'
+    }
+    throw "git is required. $gitHint"
 }
 
 Write-Host 'PromptParle install from GitHub' -ForegroundColor Cyan
@@ -72,10 +82,12 @@ if (-not (Test-Path -LiteralPath $installScript)) {
     throw "Install script not found under $ClonePath\powershell"
 }
 
-Write-Host 'Running installer (module + API key setup)...' -ForegroundColor Yellow
+Write-Host 'Running installer (invitation code → module → API key)...' -ForegroundColor Yellow
+Write-Host 'You need the invitation code from your PromptParle welcome email.' -ForegroundColor DarkGray
 $installerArgs = @{}
 if ($DoStart) { $installerArgs['Start'] = $true }
 if ($SkipKeyPrompt) { $installerArgs['SkipKeyPrompt'] = $true }
+if ($InvitationCode) { $installerArgs['InvitationCode'] = $InvitationCode }
 & $installScript @installerArgs
 
 Write-Host ''
