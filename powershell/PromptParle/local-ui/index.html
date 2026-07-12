@@ -2634,12 +2634,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           parts.push('<span><span class="lbl">dial</span> <span class="val">' + s.dial + '/5</span></span>'); }
         if (nmeta.image_count) {
           parts.push('<span><span class="lbl">images</span> <span class="val">' + nmeta.image_count + '</span></span>'); }
-        m.innerHTML = parts.join('<span class="sep">·</span>'); div.appendChild(m); // Small green bar only when real savings (keeps 0% agent turns quiet)
-        if (!s.expanded && s.pct >= 20) {
-          const wow = document.createElement('div'); wow.className = 'wow show-wow'; wow.innerHTML =
-            '<div class="big">−' + s.pct + '% · est. ' + formatUsdEstimate(s.usdSaved) + '</div>' +
-            '<div class="bar"><i style="width:0%"></i></div>'; div.appendChild(wow); requestAnimationFrame(function () {
-            const bar = wow.querySelector('.bar > i'); if (bar) bar.style.width = Math.min(100, s.pct) + '%'; }); }
+        // One savings row only — the detail line (m) already leads with the % and $.
+        // (Removed the redundant second "wow" bar; the sidebar stat-cell still pulses
+        // and the cha-ching still fires via the savings-alert path.)
+        m.innerHTML = parts.join('<span class="sep">·</span>'); div.appendChild(m);
 
         updateSavingsStrip(nmeta);
         if (!skipHistorySave) scheduleSideStatsRefresh();
