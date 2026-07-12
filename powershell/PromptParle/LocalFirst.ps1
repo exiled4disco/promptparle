@@ -549,6 +549,63 @@ function Invoke-PromptParleLocalOptimizeCore {
     }
 }
 
+function Invoke-PromptParleSseStream {
+    <#
+    .SYNOPSIS
+      POST JSON and read a Server-Sent-Events response INCREMENTALLY (not buffered),
+      invoking -OnEvent for each `data:` line as it arrives. UTF-8 safe on PS 5.1/7.
+      Uses HttpWebRequest so we get the raw stream (Invoke-WebRequest buffers fully).
+      Returns the accumulated raw text (for fallback parsing / error surfacing).
+    .PARAMETER OnEvent
+      Scriptblock invoked as & $OnEvent $dataString for each SSE 'data:' payload.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][string]$Json,
+        [hashtable]$Headers = @{},
+        [Parameter(Mandatory)][scriptblock]$OnEvent,
+        [int]$TimeoutSec = 300
+    )
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+    $req = [System.Net.HttpWebRequest]::Create($Uri)
+    $req.Method = 'POST'
+    $req.ContentType = 'application/json; charset=utf-8'
+    $req.Accept = 'text/event-stream'
+    $req.Timeout = $TimeoutSec * 1000
+    $req.ReadWriteTimeout = $TimeoutSec * 1000
+    $req.AllowReadStreamBuffering = $false   # critical: don't buffer, stream as it comes
+    foreach ($k in $Headers.Keys) {
+        $kv = [string]$k
+        if ($kv -ieq 'Authorization') { $req.Headers['Authorization'] = [string]$Headers[$k] }
+        elseif ($kv -ieq 'User-Agent') { $req.UserAgent = [string]$Headers[$k] }
+        elseif ($kv -ieq 'Accept') { }  # forced to event-stream above
+        else { try { $req.Headers[$kv] = [string]$Headers[$k] } catch { } }
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    $req.ContentLength = $bytes.Length
+    $rs = $req.GetRequestStream(); $rs.Write($bytes, 0, $bytes.Length); $rs.Close()
+
+    $all = New-Object System.Text.StringBuilder
+    $resp = $req.GetResponse()
+    $stream = $resp.GetResponseStream()
+    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+    try {
+        while (-not $reader.EndOfStream) {
+            $line = $reader.ReadLine()
+            if ($null -eq $line) { break }
+            [void]$all.AppendLine($line)
+            if ($line.StartsWith('data:')) {
+                $data = $line.Substring(5).Trim()
+                if ($data) { & $OnEvent $data }
+            }
+        }
+    } finally {
+        $reader.Dispose(); $stream.Dispose(); $resp.Dispose()
+    }
+    return $all.ToString()
+}
+
 function Invoke-PromptParleJsonPost {
     <#
     .SYNOPSIS
@@ -646,6 +703,74 @@ function Invoke-PromptParleProviderDirect {
             return Invoke-PromptParleGeminiDirect -ApiKey $ApiKey -Model $Model -Prompt $Prompt -System $sysCombined -MaxTokens $MaxTokens
         }
     }
+}
+
+function Invoke-PromptParleProviderStream {
+    <#
+    .SYNOPSIS
+      Streaming variant: calls the provider with stream=true and invokes -OnDelta
+      with each text chunk as it arrives. Returns the FULL accumulated text (so the
+      caller can run the quality-gate + savings on the complete answer, unchanged).
+      OpenAI + Grok stream natively here (same SSE shape). Anthropic/Gemini fall
+      back to a single non-streaming call (delta = whole answer) until their SSE
+      shapes are wired — the caller behaves identically either way.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('openai', 'anthropic', 'gemini', 'grok')][string]$Provider,
+        [Parameter(Mandatory)][string]$ApiKey,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$System = '',
+        [string]$Runtime = '',
+        [int]$MaxTokens = 4096,
+        [object]$Images = $null,
+        [Parameter(Mandatory)][scriptblock]$OnDelta
+    )
+    $sysCombined = $System
+    if ($Runtime) { $sysCombined = if ($sysCombined) { $sysCombined + "`n`n[RT] " + $Runtime } else { "[RT] " + $Runtime } }
+
+    if ($Provider -eq 'openai' -or $Provider -eq 'grok') {
+        $base = if ($Provider -eq 'grok') { 'https://api.x.ai/v1' } else { 'https://api.openai.com/v1' }
+        $messages = New-Object System.Collections.ArrayList
+        if ($sysCombined) { [void]$messages.Add(@{ role = 'system'; content = $sysCombined }) }
+        [void]$messages.Add(@{ role = 'user'; content = $Prompt })
+        $body = [ordered]@{ model = [string]$Model; messages = @($messages.ToArray()); stream = $true }
+        if ($Provider -eq 'openai') {
+            $body['max_completion_tokens'] = [int]$MaxTokens
+            if (-not (Test-PromptParleOpenAiReasoningModel -Model $Model)) { $body['temperature'] = 0.2 }
+        } else {
+            $body['temperature'] = 0.2; $body['max_tokens'] = [int]$MaxTokens
+        }
+        $json = ConvertTo-PromptParleJson -InputObject $body -Depth 12
+        $headers = @{ Authorization = "Bearer $ApiKey"; 'User-Agent' = 'PromptParle-LocalFirst-stream' }
+        $acc = New-Object System.Text.StringBuilder
+        $onEvt = {
+            param($data)
+            if ($data -eq '[DONE]') { return }
+            try {
+                $obj = $data | ConvertFrom-Json
+                $delta = $obj.choices[0].delta.content
+                if ($delta) { [void]$acc.Append([string]$delta); & $OnDelta ([string]$delta) }
+            } catch { }
+        }
+        try {
+            Invoke-PromptParleSseStream -Uri ($base + '/chat/completions') -Json $json -Headers $headers -OnEvent $onEvt -TimeoutSec 300 | Out-Null
+            $full = $acc.ToString()
+            if ($full) { return $full }
+        } catch {
+            Write-PromptParleDebugLog ("stream openai/grok failed, falling back: " + $_.Exception.Message)
+        }
+        # fall through to non-streaming fallback below on empty/err
+    }
+
+    # Fallback (Anthropic, Gemini, or a stream error): single call, emit once.
+    $r = Invoke-PromptParleProviderDirect -Provider $Provider -ApiKey $ApiKey -Model $Model -Prompt $Prompt -System $System -Runtime $Runtime -MaxTokens $MaxTokens -Images $Images
+    $text = ''
+    if ($r -is [string]) { $text = [string]$r }
+    elseif ($null -ne $r) { $text = [string](Get-PromptParleProp $r 'Response' (Get-PromptParleProp $r 'response' '')) }
+    if ($text) { & $OnDelta $text }
+    return $text
 }
 
 function Test-PromptParleOpenAiReasoningModel {
