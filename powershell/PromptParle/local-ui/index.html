@@ -309,6 +309,17 @@
     }
     .side-stats .stats-sound:hover { background: var(--accent-soft); }
     .side-stats .stats-sound.is-muted { opacity: 0.6; }
+    /* Fireworks overlay — pinned over the Running Stats block, never intercepts clicks. */
+    .side-stats { overflow: hidden; }
+    .pp-fireworks {
+      position: absolute; inset: 0; z-index: 5; pointer-events: none;
+    }
+    @media (prefers-reduced-motion: reduce) { .pp-fireworks { display: none; } }
+    /* Slot-machine roll-up: subtle glow + tabular digits so the count-up does not jitter. */
+    .side-stats .pp-racking {
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+      text-shadow: 0 0 8px var(--success); transition: text-shadow .2s;
+    }
     @keyframes ppSavingsPop {
       0% { transform: scale(1); text-shadow: none; }
       35% { transform: scale(1.28); text-shadow: 0 0 10px var(--success); }
@@ -1281,6 +1292,7 @@
               <div class="side-sec-actions">
                 <button type="button" class="stats-usage" id="sideStatsUsage" data-info="usage" title="Open Usage for per-model detail" aria-label="Open usage details"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1 14h14v1H1v-1zm2-1V8h2v5H3zm4 0V4h2v9H7zm4 0V6h2v7h-2z"/></svg></button>
                 <button type="button" class="stats-sound" id="sideStatsSound" title="Savings sound on/off (mute)" aria-label="Toggle savings sound">🔊</button>
+                <button type="button" class="stats-sound stats-spark" id="sideStatsSpark" title="Savings fireworks on/off" aria-label="Toggle savings fireworks">🎆</button>
                 <button type="button" class="stats-reset" id="sideStatsReset" title="Zero the on-this-PC running totals (does not delete chats)">Reset</button>
               </div>
             </div>
@@ -1408,7 +1420,7 @@
             <button type="submit" class="io-send" id="send" title="Send (Enter)" aria-label="Send">↑</button>
           </div>
         </div>
-        <div class="composer-est empty" id="composerEst" title="Rough pre-send estimate only (not a bill). Tokens ≈ chars÷4 (+images). Cost uses public blended list prices for the selected model. Local prep + dial may shrink before the model sees it.">
+        <div class="composer-est empty" id="composerEst" title="Rough pre-send estimate only (not a bill). Tokens ≈ chars÷4 (+images). Cost uses the selected model's published input list price. Local prep + dial may shrink before the model sees it.">
           <span class="est-dim">Sending with</span>
           <span class="est-model" id="composerEstModel">-</span>
           <span class="est-sep">·</span>
@@ -1894,7 +1906,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         is_agent_turn: Boolean(metaGet(raw, 'is_agent_turn') ?? metaGet(raw, 'isAgentTurn') ?? (Number(metaGet(raw, 'agent_rounds') ?? metaGet(raw, 'agentRounds') ?? 0) > 0)),
         agent_rounds: Number(metaGet(raw, 'agent_rounds') ?? metaGet(raw, 'agentRounds') ?? 0),
         agent_cost_tokens: Number(metaGet(raw, 'agent_cost_tokens') ?? metaGet(raw, 'agentCostTokens') ?? 0),
-        tool_breakdown: (function () { var tb = metaGet(raw, 'tool_breakdown') ?? metaGet(raw, 'toolBreakdown') ?? []; return Array.isArray(tb) ? tb : []; })()
+        tool_breakdown: (function () { var tb = metaGet(raw, 'tool_breakdown') ?? metaGet(raw, 'toolBreakdown') ?? []; return Array.isArray(tb) ? tb : []; })(),
+        docs_kept_fidelity: Boolean(metaGet(raw, 'docs_kept_fidelity') ?? metaGet(raw, 'docsKeptFidelity') ?? false),
+        docs_kept_tokens: Number(metaGet(raw, 'docs_kept_tokens') ?? metaGet(raw, 'docsKeptTokens') ?? 0)
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -1902,19 +1916,41 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       n = Number(n) || 0; if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M'; if (n >= 10000) return Math.round(n / 1000) + 'k'; if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'; return String(n); }
 
     /**
-     * Rough blended USD per 1M tokens (input-heavy chat estimate).
-     * Used only for “est. $ saved” display; not billing.
+     * Published list prices, USD per 1M tokens, SPLIT input vs output.
+     * PromptParle's savings are all on the INPUT side (we trim what you send
+     * before the model reads it), so the "$ saved" figure must be priced at the
+     * INPUT rate — a blended input+output rate over-states the dollars.
+     * Rates are public list prices (not a bill); update as vendors change them.
      */
-    function estimateUsdPerMillion(provider, model) {
-      var p = String(provider || '').toLowerCase(); var m = String(model || '').toLowerCase(); if (p === 'openai' || /gpt-|o[1-9]|chatgpt/.test(m)) {
-        if (/o3|o1-pro|o1\b/.test(m)) return 15; if (/gpt-5|o4/.test(m)) return 8; if (/4\.1|4o|gpt-4/.test(m)) return 5; if (/mini|nano|haiku/.test(m)) return 1.5; return 5; }
+    function modelPrice(provider, model) {
+      var p = String(provider || '').toLowerCase(); var m = String(model || '').toLowerCase();
+      if (p === 'openai' || /gpt-|o[1-9]|chatgpt/.test(m)) {
+        if (/o3|o1-pro|o1\b/.test(m)) return { input: 15, output: 60 };
+        if (/gpt-5.*mini|gpt-5.*nano/.test(m)) return { input: 0.25, output: 2 };
+        if (/gpt-5|o4/.test(m)) return { input: 1.25, output: 10 };
+        if (/4\.1|4o|gpt-4/.test(m)) return { input: 2.5, output: 10 };
+        if (/mini|nano/.test(m)) return { input: 0.15, output: 0.6 };
+        return { input: 2.5, output: 10 }; }
       if (p === 'anthropic' || /claude/.test(m)) {
-        if (/opus/.test(m)) return 18; if (/haiku/.test(m)) return 1.2; if (/sonnet/.test(m)) return 6; return 6; }
+        if (/opus/.test(m)) return { input: 15, output: 75 };
+        if (/haiku/.test(m)) return { input: 0.8, output: 4 };
+        if (/sonnet/.test(m)) return { input: 3, output: 15 };
+        return { input: 3, output: 15 }; }
       if (p === 'gemini' || /gemini/.test(m)) {
-        if (/pro/.test(m)) return 2.5; if (/flash|lite|8b/.test(m)) return 0.4; return 1; }
+        if (/pro/.test(m)) return { input: 1.25, output: 10 };
+        if (/flash.*lite|lite/.test(m)) return { input: 0.1, output: 0.4 };
+        if (/flash|8b/.test(m)) return { input: 0.3, output: 2.5 };
+        return { input: 0.3, output: 2.5 }; }
       if (p === 'grok' || /grok/.test(m)) {
-        if (/grok-4/.test(m)) return 6; if (/mini/.test(m)) return 0.8; if (/grok-3|grok-2/.test(m)) return 3; return 3; }
-      return 4; }
+        if (/grok-4/.test(m)) return { input: 3, output: 15 };
+        if (/mini/.test(m)) return { input: 0.3, output: 0.5 };
+        if (/grok-3|grok-2/.test(m)) return { input: 3, output: 15 };
+        return { input: 3, output: 15 }; }
+      return { input: 2, output: 8 }; }
+
+    /** Input-side USD per 1M tokens — the correct rate for "$ saved" (savings are input). */
+    function estimateUsdPerMillion(provider, model) {
+      return modelPrice(provider, model).input; }
 
     function formatUsdEstimate(usd) {
       if (!isFinite(usd) || usd <= 0) return '$0'; if (usd < 0.001) return '<$0.001'; if (usd < 0.01) return '$' + usd.toFixed(3); if (usd < 1) return '$' + usd.toFixed(3); if (usd < 10) return '$' + usd.toFixed(2); return '$' + usd.toFixed(2); }
@@ -1998,7 +2034,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }; }
 
     /** Friendly labels for the per-tool breakdown line. */
-    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page', quality_gate: 'Quality gate (local)' };
+    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page', quality_gate: 'Quality gate (local)', doc_dedup: 'Duplicate docs' };
 
     /** "By tool: Context fleet −6.7k, Git (local) −1.9k" — honest counterfactual, ~tokens (chars/4). */
     function buildToolBreakdownLine(meta) {
@@ -2318,10 +2354,19 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (isSavingsVisualOn()) {
           var valEl = document.getElementById('sideStatUsdVal');
           if (valEl) {
+            // Slot-machine sequence: rack the dollar value up from the OLD total to the
+            // new one, THEN burst fireworks on the payoff. (The HTML above already painted
+            // the final value; rewind to `prev` so the count-up is visible.)
+            valEl.textContent = formatUsdEstimate(prev);
             valEl.classList.remove('pp-savings-pop');
-            void valEl.offsetWidth; // reflow so the animation re-triggers
+            void valEl.offsetWidth; // reflow so the pop re-triggers
             valEl.classList.add('pp-savings-pop');
             setTimeout(function () { valEl.classList.remove('pp-savings-pop'); }, 600);
+            countUpUsd(valEl, prev, cur, function () {
+              try { launchSavingsFireworks(document.getElementById('sideStats')); } catch (e) { /* ignore */ }
+            });
+          } else {
+            try { launchSavingsFireworks(document.getElementById('sideStats')); } catch (e) { /* ignore */ }
           }
         }
         if (isSoundEnabled() && isSavingsSoundOn()) { playChaChing(); }
@@ -2404,6 +2449,146 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           osc.start(t); osc.stop(t + 0.24);
         });
       } catch (e) { /* autoplay / no-audio safe */ }
+    }
+    /**
+     * Celebratory fireworks over the Running Stats block when savings land.
+     * Rockets launch from the bottom-right, arc to the center, then burst into
+     * sparks (iMessage-style flourish). Draws attention to the win; details matter.
+     * Honors the "savings visual" pref AND prefers-reduced-motion. Zero deps, self-cleaning.
+     */
+    function launchSavingsFireworks(host) {
+      try {
+        if (!host) return;
+        // Respect reduced-motion: skip the animation entirely (accessibility).
+        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        var rect = host.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        var dpr = Math.min(2, window.devicePixelRatio || 1);
+        var cv = document.createElement('canvas');
+        cv.className = 'pp-fireworks';
+        cv.width = Math.round(rect.width * dpr);
+        cv.height = Math.round(rect.height * dpr);
+        cv.style.width = rect.width + 'px';
+        cv.style.height = rect.height + 'px';
+        // Overlay pinned to the stats block; never intercepts clicks.
+        if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+        host.appendChild(cv);
+        var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+        var W = rect.width, H = rect.height;
+        var COLORS = ['#34d399', '#5b8cff', '#fbbf24', '#f472b6', '#22d3ee', '#a78bfa'];
+        // Launch point: bottom-right. Target: center of the block.
+        var start = { x: W * 0.9, y: H * 0.98 };
+        var target = { x: W * 0.5, y: H * 0.48 };
+        var rockets = [];
+        var sparks = [];
+        var nRockets = 3;
+        for (var r = 0; r < nRockets; r++) {
+          // vary each rocket's target a little so they do not overlap
+          var jx = (r - 1) * (W * 0.14);
+          var jy = (r % 2 === 0 ? -1 : 1) * (H * 0.08);
+          rockets.push({
+            x: start.x, y: start.y,
+            tx: target.x + jx, ty: target.y + jy,
+            t: 0, dur: 26 + r * 4, delay: r * 6,
+            color: COLORS[(r * 2) % COLORS.length], burst: false
+          });
+        }
+        var frame = 0, maxFrames = 90;
+        function easeOut(p) { return 1 - Math.pow(1 - p, 3); }
+        function burst(x, y, color) {
+          var n = 28; // sparks per rocket
+          for (var i = 0; i < n; i++) {
+            var ang = (Math.PI * 2 * i) / n;
+            var spd = 1.4 + (i % 4) * 0.5;
+            sparks.push({
+              x: x, y: y,
+              vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+              life: 1, color: (i % 3 === 0) ? '#ffffff' : color
+            });
+          }
+        }
+        function tick() {
+          frame++;
+          ctx.clearRect(0, 0, W, H);
+          // rockets
+          for (var i = 0; i < rockets.length; i++) {
+            var rk = rockets[i];
+            if (frame < rk.delay) continue;
+            if (!rk.burst) {
+              rk.t++;
+              var p = easeOut(Math.min(1, rk.t / rk.dur));
+              rk.x = start.x + (rk.tx - start.x) * p;
+              rk.y = start.y + (rk.ty - start.y) * p;
+              // trailing streak
+              ctx.strokeStyle = rk.color; ctx.lineWidth = 2; ctx.globalAlpha = 0.9;
+              ctx.beginPath();
+              ctx.moveTo(rk.x, rk.y);
+              ctx.lineTo(rk.x + (start.x - rk.tx) * 0.05, rk.y + (start.y - rk.ty) * 0.05 + 6);
+              ctx.stroke();
+              if (p >= 1) { rk.burst = true; burst(rk.x, rk.y, rk.color); }
+            }
+          }
+          // sparks
+          ctx.globalAlpha = 1;
+          for (var s = 0; s < sparks.length; s++) {
+            var sp = sparks[s];
+            if (sp.life <= 0) continue;
+            sp.x += sp.vx; sp.y += sp.vy;
+            sp.vy += 0.06;            // gravity
+            sp.vx *= 0.98; sp.vy *= 0.98;
+            sp.life -= 0.022;
+            ctx.globalAlpha = Math.max(0, sp.life);
+            ctx.fillStyle = sp.color;
+            ctx.beginPath();
+            ctx.arc(sp.x, sp.y, 2.1, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          if (frame < maxFrames) {
+            requestAnimationFrame(tick);
+          } else {
+            try { host.removeChild(cv); } catch (e) { /* ignore */ }
+          }
+        }
+        requestAnimationFrame(tick);
+      } catch (e) { /* visual flourish must never break stats */ }
+    }
+    /**
+     * Slot-machine roll-up: count the Est. value saved from `from`→`to` one step at a
+     * time, then run `onDone` (fireworks). Honors prefers-reduced-motion (snaps + done).
+     */
+    function countUpUsd(el, from, to, onDone) {
+      try {
+        if (!el) { if (onDone) onDone(); return; }
+        var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var delta = to - from;
+        if (reduce || delta <= 0) {
+          el.textContent = formatUsdEstimate(to);
+          if (onDone) onDone();
+          return;
+        }
+        el.classList.add('pp-racking');
+        var DURATION = 900;                 // ms — long enough to feel the "racking up"
+        var startTs = null;
+        function easeOutCubic(p) { return 1 - Math.pow(1 - p, 3); }
+        function step(ts) {
+          if (startTs == null) startTs = ts;
+          var p = Math.min(1, (ts - startTs) / DURATION);
+          var val = from + delta * easeOutCubic(p);
+          el.textContent = formatUsdEstimate(val);
+          if (p < 1) {
+            requestAnimationFrame(step);
+          } else {
+            el.textContent = formatUsdEstimate(to);
+            el.classList.remove('pp-racking');
+            if (onDone) onDone();
+          }
+        }
+        requestAnimationFrame(step);
+      } catch (e) {
+        try { el.textContent = formatUsdEstimate(to); } catch (e2) { /* ignore */ }
+        if (onDone) onDone();
+      }
     }
     function scheduleSideStatsRefresh() {
       try {
@@ -2634,12 +2819,24 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           'Token optimization summary.\n' +
           'Before = raw prompt + history + attach before local prep densify (MEM/budget/tools).\n' +
           'After = size actually sent to the model after prep + dial optimize.\n' +
-          'Est. $ uses rough public list prices (blended); not a bill.\n' +
+          'Est. $ prices input tokens saved at the model\'s published input rate; not a bill.\n' +
           'Model = the model that answered this turn.'; const parts = [];
         var isAgent = !!nmeta.is_agent_turn;
         // Canonical before→after (single-shot: prompt; agent: would-ingest → sent).
         var beforeTok = s.billedBefore;
         var afterTok = s.billedAfter;
+        // Attached-doc summarize/read: we KEPT the docs at full fidelity on purpose,
+        // so the value here is "answer preserved," not a big %. Telling the honest
+        // story (guardian: no misleading savings) instead of a confusing number.
+        if (nmeta.docs_kept_fidelity) {
+          var keptTok = Number(nmeta.docs_kept_tokens) || 0;
+          parts.push('<span class="ok">✓ docs kept intact</span>');
+          if (keptTok > 0) {
+            parts.push('<span><span class="lbl">' + compactTok(keptTok) +
+              ' tok of source sent in full</span></span>');
+          }
+          parts.push('<span class="lbl" title="On a read/summarize ask we send the attached documents uncompressed so the answer is faithful. Savings would mean a worse answer, so we do not compress here.">answer fidelity preserved</span>');
+        } else {
         // Verdict
         if (!isAgent && s.expanded && s.opt > s.orig) {
           parts.push('<span class="warn">↑ expanded</span>');
@@ -2657,9 +2854,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (s.saved > 0) {
           parts.push('<span class="ok">−' + compactTok(s.saved) + ' Tokens</span>');
         }
+        }
         parts.push(
-          '<span class="cost-tag" title="Rough estimate from public list prices (~$' +
-            s.rate + '/M tok blended). Not a bill.">est. ' +
+          '<span class="cost-tag" title="Input tokens saved priced at this model&#39;s published input rate ($' +
+            s.rate + '/M input tok). Savings are input-side; not a bill.">est. ' +
             formatUsdEstimate(s.usdSaved) + ' saved</span>'
         );
         if (s.model) {
@@ -3370,6 +3568,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         updateSoundToggleIcon();
         var chk = document.getElementById('ppSavingsSoundChk');
         if (chk) chk.checked = next;
+      });
+    }
+    function updateSparkToggleIcon() {
+      var btn = document.getElementById('sideStatsSpark'); if (!btn) return;
+      var on = isSavingsVisualOn();
+      btn.classList.toggle('is-muted', !on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.title = on ? 'Savings fireworks on (click to disable)' : 'Savings fireworks off (click to enable)';
+    }
+    var sideStatsSpark = document.getElementById('sideStatsSpark');
+    if (sideStatsSpark) {
+      updateSparkToggleIcon();
+      sideStatsSpark.addEventListener('click', function () {
+        var next = !isSavingsVisualOn();
+        lsSet('pp_savings_visual', next);
+        updateSparkToggleIcon();
+        var chk = document.getElementById('ppSavingsVisualChk');
+        if (chk) chk.checked = next;
+        // Give immediate feedback when turning it ON: a quick demo burst.
+        if (next) { try { launchSavingsFireworks(document.getElementById('sideStats')); } catch (e) { /* ignore */ } }
       });
     }
     // Initial paint (empty until history has token meta)
@@ -4748,7 +4966,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         updateSoundToggleIcon();
       });
       var v = document.getElementById('ppSavingsVisualChk');
-      if (v) v.addEventListener('change', function () { lsSet('pp_savings_visual', v.checked); });
+      if (v) v.addEventListener('change', function () { lsSet('pp_savings_visual', v.checked); try { updateSparkToggleIcon(); } catch (e) { /* ignore */ } });
     }
 
     function renderApiKeys(data) {

@@ -9,6 +9,41 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.22] - 2026-07-12
+
+### Changed
+- **Honest cost estimates (the "$ saved" was inflated).** The est. $ figure used a
+  single *blended* rate per model (e.g. gpt-5 at $8/M) applied to input-side
+  savings. Savings are almost entirely input tokens, so blending in the (much
+  higher) output rate overstated the dollars — gpt-5 read ~6.4× too high. Now
+  each model carries published **input/output** list prices and saved tokens are
+  priced at the **input** rate. Composer estimate, per-message, and the running
+  stats all inherit the corrected rate. (guardian Rule 0 + Rule 6)
+- **Attached-doc summarize turns tell the honest story.** On a read/summarize ask
+  we deliberately keep the documents uncompressed (the answer needs them intact),
+  so a big "% saved" was misleading. The meter now shows "✓ docs kept intact ·
+  N tok of source sent in full · answer fidelity preserved" instead of a
+  confusing number. New `docs_kept_fidelity` signal flows prep → meta → UI.
+
+### Added
+- **Duplicate-document collapse (server-side, lossless).** If the same document
+  body appears more than once in a single turn's context (the file attached
+  twice, or a double-add), the copies are collapsed to one full body plus a
+  pointer — byte-identical dedup, credited honestly through the tool ledger as
+  `doc_dedup`. Cross-turn re-attaches are intentionally NOT faked: history is a
+  lossy brief, so re-sending a doc for a fresh summary is real cost for real
+  fidelity, not waste.
+- **Savings celebration on Running Stats.** When savings increase, the "Est. value
+  saved" figure racks up slot-machine style from the old total to the new one,
+  then fireworks burst from the bottom-right to the center of the stats block. A
+  new 🎆 toggle (next to the sound icon) enables/disables it; honors the existing
+  "savings visual" setting and `prefers-reduced-motion`.
+- **Guardian RULE 0: optimize token spend, always.** Codifies token optimization
+  as the permanent top mandate — cost AND fidelity, never one at the expense of
+  the other. Rising model prices push users toward weaker models; PP's promise is
+  that they keep a top model and a lower bill. A "saving" that degrades the answer
+  is a regression, not a win.
+
 ## [0.32.21] - 2026-07-12
 
 ### Fixed

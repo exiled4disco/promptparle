@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.21'
+    $ver = '0.32.22'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -9133,6 +9133,40 @@ function Invoke-PromptParleAgentLocalPrep {
             else { $headKeep = $Matches[1] }
             $restCtx = $Matches[2]
         }
+        # Duplicate-doc collapse (0.32.22 — guardian Rule 0): if the SAME document body
+        # appears more than once in this turn's context (user attached the same file twice,
+        # or the composer double-added it), the model gains nothing from the copies — it is
+        # pure re-billed ingestion. Keep the FIRST full copy; replace later identical copies
+        # with a one-line pointer. Lossless (byte-identical bodies) so fidelity is untouched;
+        # the saved chars are credited honestly through the tool ledger. This only collapses
+        # WITHIN a turn — history is already a lossy brief, so cross-turn "dedup" would dangle
+        # (the model no longer has the full prior copy); we do not fake that saving.
+        if ($restCtx -match '(?m)^===== FILE:') {
+            $dupBefore = $restCtx.Length
+            $seenDocs = @{}
+            $restCtx = [regex]::Replace(
+                $restCtx,
+                '(?ms)^===== FILE:\s*(.+?)\s*=====\r?\n(.*?)(?=\r?\n===== FILE:|\z)',
+                {
+                    param($m)
+                    $fname = $m.Groups[1].Value
+                    $fbody = $m.Groups[2].Value
+                    $key = ($fbody -replace '\s+', ' ').Trim()
+                    # Only dedup bodies big enough that the pointer is clearly a net saving
+                    # (the pointer line itself is ~90 chars; below ~400 chars it is not worth it).
+                    if ($key.Length -lt 400) { return $m.Value }
+                    if ($seenDocs.ContainsKey($key)) {
+                        return "===== FILE: $fname (identical to a copy already included above this turn — not repeated; refer to that copy) ====="
+                    }
+                    $seenDocs[$key] = $true
+                    return $m.Value
+                }
+            )
+            if ($restCtx.Length -lt $dupBefore) {
+                & $recordToolSaving -Tool 'doc_dedup' -Without $dupBefore -With $restCtx.Length -Kind 'measured'
+                [void]$notes.Add('collapsed duplicate attachment(s) this turn')
+            }
+        }
         if ($restCtx.Length -gt 200) {
             $room = [Math]::Max(800, $budget - $headKeep.Length - 80)
             # A composer-attached document that the user asked us to READ/SUMMARIZE is the
@@ -16195,7 +16229,21 @@ function Invoke-PromptParleChatTurnCore {
                 image_count             = 0
                 local_tools             = @($localNotes)
                 tool_breakdown          = @($toolBreakdownOut)
+                docs_kept_fidelity      = $false
+                docs_kept_tokens        = 0
             }
+            # Attached-doc summarize/read: we DELIBERATELY keep the docs at full
+            # fidelity (the answer needs them intact), so a big "% saved" would tell
+            # the wrong story. Flag it so the UI shows "docs kept intact" instead.
+            try {
+                if ($script:PromptParleKeepDocFidelity) {
+                    $metaOut.docs_kept_fidelity = $true
+                    $ctxForDocs = if ($context) { [string]$context } else { '' }
+                    if ($ctxForDocs) {
+                        $metaOut.docs_kept_tokens = [int][Math]::Ceiling($ctxForDocs.Length / 4.0)
+                    }
+                }
+            } catch { }
             # Roll up this turn's per-tool savings for the portal bridge
             # (aggregate numbers only; flushed on heartbeat). Best-effort.
             try {
