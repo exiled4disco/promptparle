@@ -9,11 +9,11 @@ import { getSessionUser } from "@/lib/auth";
 const NAV = [
   { href: "/app", label: "Dashboard", exact: true },
   { href: "/app/usage", label: "Stats" },
-  { href: "/app/api-keys", label: "License keys" },
-  { href: "/app/bugs", label: "Bug tracker" },
+  { href: "/app/api-keys", label: "Licenses" },
+  { href: "/app/bugs", label: "Bugs" },
   { href: "/app/changelog", label: "Change control" },
-  { href: "/guide", label: "User guide" },
-  { href: "/app/invite", label: "Invite a friend" },
+  { href: "/guide", label: "Guide" },
+  { href: "/app/invite", label: "Invites" },
   { href: "/app/settings", label: "Settings" },
 ];
 
