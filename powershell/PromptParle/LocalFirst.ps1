@@ -549,6 +549,54 @@ function Invoke-PromptParleLocalOptimizeCore {
     }
 }
 
+function Invoke-PromptParleJsonPost {
+    <#
+    .SYNOPSIS
+      UTF-8-safe JSON POST that behaves the same on Windows PowerShell 5.1 and
+      PowerShell 7. Sends the body as UTF-8 BYTES and decodes the response from
+      raw UTF-8 bytes before parsing.
+    .DESCRIPTION
+      Invoke-RestMethod on PS 5.1 encodes a string -Body per the caller's default
+      codepage and decodes the response per the server's (often absent) charset,
+      which turns multi-byte UTF-8 (—, “ ”, emoji) into mojibake like "â€"" / "â□□".
+      This helper avoids that on every version.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][string]$Json,
+        [hashtable]$Headers = @{},
+        [int]$TimeoutSec = 180
+    )
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    $resp = Invoke-WebRequest -Method POST -Uri $Uri -Headers $Headers `
+        -Body $bytes -ContentType 'application/json; charset=utf-8' `
+        -UseBasicParsing -TimeoutSec $TimeoutSec
+    # Decode the response body explicitly as UTF-8 (do not trust IWR's charset guess).
+    $text = $null
+    try {
+        if ($resp.RawContentStream) {
+            $resp.RawContentStream.Position = 0
+            $ms = New-Object System.IO.MemoryStream
+            $resp.RawContentStream.CopyTo($ms)
+            $text = [System.Text.Encoding]::UTF8.GetString($ms.ToArray())
+        }
+    } catch { $text = $null }
+    if (-not $text) {
+        # Fallback: re-encode IWR's Content back to bytes then UTF-8-decode.
+        $c = $resp.Content
+        if ($c -is [byte[]]) {
+            $text = [System.Text.Encoding]::UTF8.GetString($c)
+        } else {
+            try {
+                $raw = [System.Text.Encoding]::GetEncoding(28591).GetBytes([string]$c) # latin1 → bytes
+                $text = [System.Text.Encoding]::UTF8.GetString($raw)
+            } catch { $text = [string]$c }
+        }
+    }
+    return ($text | ConvertFrom-Json)
+}
+
 function Invoke-PromptParleProviderDirect {
     <#
     .SYNOPSIS
@@ -688,7 +736,7 @@ function Invoke-PromptParleOpenAiCompatible {
         $json = ($body | ConvertTo-Json -Depth 12 -Compress)
     }
     try {
-        $resp = Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $json -ContentType 'application/json; charset=utf-8' -TimeoutSec 180
+        $resp = Invoke-PromptParleJsonPost -Uri $uri -Headers $headers -Json $json -TimeoutSec 180
     } catch {
         $msg = "$_"
         # One automatic retry if a host still wants the other token-limit field name.
@@ -698,7 +746,7 @@ function Invoke-PromptParleOpenAiCompatible {
                 $body['max_completion_tokens'] = [int]$MaxTokens
                 if ($isReasoning -and $body.Contains('temperature')) { $body.Remove('temperature') }
                 try { $json = ConvertTo-PromptParleJson -InputObject $body -Depth 12 } catch { $json = ($body | ConvertTo-Json -Depth 12 -Compress) }
-                $resp = Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $json -ContentType 'application/json; charset=utf-8' -TimeoutSec 180
+                $resp = Invoke-PromptParleJsonPost -Uri $uri -Headers $headers -Json $json -TimeoutSec 180
             } catch {
                 throw "Provider $uri failed: $_"
             }
@@ -707,7 +755,7 @@ function Invoke-PromptParleOpenAiCompatible {
                 $body.Remove('max_completion_tokens')
                 $body['max_tokens'] = [int]$MaxTokens
                 try { $json = ConvertTo-PromptParleJson -InputObject $body -Depth 12 } catch { $json = ($body | ConvertTo-Json -Depth 12 -Compress) }
-                $resp = Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $json -ContentType 'application/json; charset=utf-8' -TimeoutSec 180
+                $resp = Invoke-PromptParleJsonPost -Uri $uri -Headers $headers -Json $json -TimeoutSec 180
             } catch {
                 throw "Provider $uri failed: $_"
             }
@@ -820,7 +868,7 @@ function Invoke-PromptParleAnthropicDirect {
         $json = ($body | ConvertTo-Json -Depth 12 -Compress)
     }
     try {
-        $resp = Invoke-RestMethod -Method POST -Uri 'https://api.anthropic.com/v1/messages' -Headers $headers -Body $json -ContentType 'application/json; charset=utf-8' -TimeoutSec 180
+        $resp = Invoke-PromptParleJsonPost -Uri 'https://api.anthropic.com/v1/messages' -Headers $headers -Json $json -TimeoutSec 180
     } catch {
         throw "Anthropic failed: $_"
     }
@@ -875,7 +923,7 @@ function Invoke-PromptParleGeminiDirect {
     $uri = "https://generativelanguage.googleapis.com/v1beta/models/$([Uri]::EscapeDataString($Model)):generateContent?key=$([Uri]::EscapeDataString($ApiKey))"
     $json = $body | ConvertTo-Json -Depth 10 -Compress
     try {
-        $resp = Invoke-RestMethod -Method POST -Uri $uri -Body $json -ContentType 'application/json; charset=utf-8' -TimeoutSec 180
+        $resp = Invoke-PromptParleJsonPost -Uri $uri -Json $json -TimeoutSec 180
     } catch {
         throw "Gemini failed: $_"
     }

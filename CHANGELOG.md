@@ -9,6 +9,17 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.15] - 2026-07-12
+
+### Fixed
+- Garbled characters in AI replies on Windows PowerShell 5.1 (em-dashes and
+  curly quotes showing as "â□□" / "â€""). Provider calls used
+  `Invoke-RestMethod`, which on PS 5.1 mis-decodes UTF-8 response bodies. All
+  provider calls (OpenAI, Anthropic, Gemini, Grok) now go through a UTF-8-safe
+  helper that sends the request as UTF-8 bytes and decodes the response as
+  UTF-8 — identical behavior on PS 5.1 and PS 7. This was the same root cause
+  behind "older PowerShell" symptoms.
+
 ## [0.32.14] - 2026-07-12
 
 ### Changed
