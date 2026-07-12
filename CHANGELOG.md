@@ -9,6 +9,17 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.14] - 2026-07-12
+
+### Changed
+- Desktop client renames: "API keys" → **Desktop Licenses**, "Providers" →
+  **AI Provider API** (menu + Help panel), clearer about what each is.
+
+### Fixed
+- Invite accept page (`/invite/[token]`) no longer tells new users to "check
+  your email for your invitation code" — signup is code-free. It now creates
+  the account and drops them straight into the setup walkthrough.
+
 ## [0.32.13] - 2026-07-12
 
 ### Changed

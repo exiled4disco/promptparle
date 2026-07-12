@@ -42,9 +42,8 @@ export function InviteAcceptForm({
         setError(data.error || "Could not create account");
         return;
       }
-      router.push(
-        `/app?welcome=1&code=${encodeURIComponent(data.code || "")}`
-      );
+      // Account created + signed in → straight into the setup walkthrough.
+      router.push("/welcome");
       router.refresh();
     } catch {
       setError("Network error. Try again.");
@@ -116,8 +115,8 @@ export function InviteAcceptForm({
         {loading ? "Creating account…" : "Create account"}
       </button>
       <p className="text-xs leading-relaxed text-[var(--text-dim)]">
-        After this, check your email for your invitation code and desktop install
-        instructions. Then open Providers and API Keys in the portal.
+        Next we&apos;ll walk you through setup — create a desktop license key
+        and install the client. It&apos;s free; no code needed.
       </p>
     </form>
   );
