@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUser } from "@/lib/auth";
-import { createFeedback } from "@/lib/feedback";
+import { createFeedback, listUserFeedback } from "@/lib/feedback";
 import { getClientIpFromHeaders } from "@/lib/ip-allowlist";
 import { checkRateLimit, RL, rateLimitResponse } from "@/lib/rate-limit";
 import { writeAudit } from "@/lib/audit";
@@ -13,6 +13,32 @@ const schema = z.object({
   /** Honeypot */
   website: z.string().max(200).optional().nullable(),
 });
+
+/**
+ * Portal (session required): list ONLY the signed-in user's own submissions.
+ * Privacy contract — a user must never see another user's feedback.
+ */
+export async function GET() {
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+  }
+  try {
+    const rows = await listUserFeedback(user.id);
+    return NextResponse.json({
+      feedback: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    console.error("feedback GET", err);
+    return NextResponse.json(
+      { error: "Could not load your feedback." },
+      { status: 500 }
+    );
+  }
+}
 
 /**
  * Portal (session optional): submit bug or suggestion.

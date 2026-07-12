@@ -259,11 +259,11 @@ export async function sendInvitationEmail(opts: {
 
   const registerUrl = `${appUrl()}/register`;
 
-  const text = `You're invited to PromptParle
+  const text = `You're invited to PromptParle (it's free)
 
-You've been invited to join PromptParle, the AI context optimization gateway.
+A friend invited you to PromptParle, the AI context optimization gateway. PromptParle is free for everyone, this invite just gives you a warm one-click start.
 
-YOUR INVITATION CODE (required to create an account)
+YOUR INVITE CODE (optional, pre-fills your signup)
 ${codePreview}
 
 Option A (one click):
@@ -271,11 +271,11 @@ ${inviteUrl}
 
 Option B (on the website):
 1) Go to ${registerUrl}
-2) Enter invitation code: ${codePreview}
+2) The invite code above pre-fills, or just sign up directly (it's open)
 3) Set your name and password
 
-This invitation expires ${exp}.
-After you create your account, we'll email desktop install steps (same code).
+This invite link expires ${exp}.
+After you create your account, we'll email desktop install steps.
 
 PromptParle
 Trim the prompt. Keep the signal.
@@ -286,9 +286,9 @@ Trim the prompt. Keep the signal.
 <body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
   <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
     <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
-    <p style="color:#8b9bb8;margin:0 0 20px;">You're invited</p>
-    <p style="margin:0 0 12px;color:#c7d7f5;">You've been invited to create a PromptParle account.</p>
-    <p style="margin:0 0 10px;color:#8b9bb8;font-size:14px;">Your invitation code (required for account creation):</p>
+    <p style="color:#8b9bb8;margin:0 0 20px;">You're invited (it's free)</p>
+    <p style="margin:0 0 12px;color:#c7d7f5;">A friend invited you to PromptParle. It's free for everyone, this is just a warm one-click start.</p>
+    <p style="margin:0 0 10px;color:#8b9bb8;font-size:14px;">Your invite code (optional, pre-fills your signup):</p>
     <div style="background:#0d111a;border:1px solid #2a3a55;border-radius:10px;padding:14px 16px;margin:0 0 22px;text-align:center;">
       <code style="font-size:20px;letter-spacing:0.12em;font-weight:700;color:#93b4ff;">${codePreview}</code>
     </div>
@@ -298,8 +298,8 @@ Trim the prompt. Keep the signal.
         Accept invitation
       </a>
     </p>
-    <p style="font-size:13px;color:#8b9bb8;margin:0 0 8px;">Or go to <a href="${registerUrl}" style="color:#93b4ff;">${registerUrl}</a> and enter the code above, then set your password.</p>
-    <p style="font-size:12px;color:#5c6b86;margin:0;">Expires ${exp}. After signup you get install steps by email (same code for the desktop installer).</p>
+    <p style="font-size:13px;color:#8b9bb8;margin:0 0 8px;">Or go to <a href="${registerUrl}" style="color:#93b4ff;">${registerUrl}</a> and sign up directly, the code above pre-fills if you use the link.</p>
+    <p style="font-size:12px;color:#5c6b86;margin:0;">Invite link expires ${exp}. After signup you get desktop install steps by email.</p>
   </div>
 </body>
 </html>`;

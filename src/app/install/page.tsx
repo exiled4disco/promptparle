@@ -27,7 +27,7 @@ const INSTALL_SH_ENV = `PROMPTPARLE_INVITATION_CODE='PP-XXXX-XXXX' curl -fsSL ${
 
 const PAGE_TITLE = "Install PromptParle desktop client";
 const PAGE_DESCRIPTION =
-  "How to install PromptParle: get an invitation, create a desktop license key (pp_live_), run one command, then set OpenAI/Claude/Gemini/Grok keys on your PC. Local-first chat.";
+  "How to install PromptParle: create a free account, make a desktop license key (pp_live_), run one command, then set OpenAI/Claude/Gemini/Grok keys on your PC. Local-first chat.";
 
 export const metadata: Metadata = {
   title: {
@@ -67,17 +67,17 @@ export const metadata: Metadata = {
 const STEPS = [
   {
     n: "1",
-    title: "Get a code",
-    body: "Request an invitation (or use the one we emailed you).",
-    href: "/request-invite",
-    cta: "Request invite",
+    title: "Create your free account",
+    body: "Sign up with email + password (or Google / GitHub). It's free — no invite needed.",
+    href: "/register",
+    cta: "Create free account",
   },
   {
     n: "2",
-    title: "Create your account + desktop license key",
-    body: "Enter the code, set a password, then API Keys → create pp_live_… (shown once). Provider model keys come later on the PC, not in the portal.",
+    title: "Make a desktop license key",
+    body: "In the portal: API Keys → create a pp_live_… key (shown once) for each desktop. Provider model keys come later on the PC, not in the portal.",
     href: "/register",
-    cta: "I have a code",
+    cta: "Sign up",
   },
   {
     n: "3",
@@ -107,7 +107,7 @@ export default function InstallPage() {
           <h1 className="page-title mt-2 !mb-2">Install in one command</h1>
           <p className="aeo-direct-answer page-sub !mx-0 max-w-xl !text-left">
             <strong className="text-[var(--text)]">How to install PromptParle:</strong>{" "}
-            get an invitation, create a desktop license key (pp_live_…), run one
+            create a free account, make a desktop license key (pp_live_…), run one
             terminal command, then set OpenAI/Claude/Gemini/Grok keys in the
             local UI. The bootstrap is served from this site, then clones
             PromptParle from{" "}
@@ -252,7 +252,7 @@ export default function InstallPage() {
                 </code>{" "}
                 (or updates an existing clone)
               </li>
-              <li>Asks for your invitation code, then desktop API key</li>
+              <li>Asks for your desktop license key (pp_live_…)</li>
               <li>
                 Start chat with{" "}
                 <code className="mono text-xs text-[#93b4ff]">

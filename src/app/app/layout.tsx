@@ -8,9 +8,12 @@ import { getSessionUser } from "@/lib/auth";
 
 const NAV = [
   { href: "/app", label: "Dashboard", exact: true },
-  { href: "/app/providers", label: "Providers guide" },
+  { href: "/app/usage", label: "Stats" },
   { href: "/app/api-keys", label: "License keys" },
-  { href: "/app/usage", label: "Usage" },
+  { href: "/app/bugs", label: "Bug tracker" },
+  { href: "/app/changelog", label: "Change control" },
+  { href: "/guide", label: "User guide" },
+  { href: "/app/invite", label: "Invite a friend" },
   { href: "/app/settings", label: "Settings" },
 ];
 
@@ -28,7 +31,7 @@ export default async function AppLayout({
   const nav = user.isAdmin
     ? [
         ...NAV,
-        { href: "/app/feedback", label: "Feedback" },
+        { href: "/app/feedback", label: "Feedback inbox" },
         { href: "/app/accounts", label: "Accounts" },
         { href: "/app/invitations", label: "Invitations" },
       ]
@@ -51,7 +54,7 @@ export default async function AppLayout({
               </div>
               <div className="text-xs capitalize text-[var(--text-dim)]">
                 {user.isAdmin ? "admin · " : ""}
-                {user.plan} plan
+                Free
               </div>
             </div>
             <LogoutButton />

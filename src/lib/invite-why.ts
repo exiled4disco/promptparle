@@ -1,25 +1,26 @@
 /**
- * Invitation-only narrative, friendly, about craft and pace, not fear.
+ * "Invite a friend" narrative. PromptParle is free and open to sign up;
+ * invitations are now an optional nicety for sharing, not a gate.
  */
 
 export const INVITE_WHY = {
-  title: "Why invitation-only?",
+  title: "Invite a friend",
   lead:
-    "We are not hiding. We are pacing the room so the product stays sharp while it grows.",
+    "PromptParle is free and open. Invitations are just a friendly way to bring someone along.",
   body: [
     {
-      title: "We scale the experience, not the chaos",
-      text: "Every new account is a real desktop client, real providers, and real support. Invitations let us grow capacity and onboarding in step, so the first hour still feels intentional, not like a stampede through a half-built lobby.",
+      title: "Anyone can create a free account",
+      text: "No code, no waitlist, no gatekeeping. Sign up with email and password (or Google / GitHub), and you're in. Each desktop still gets its own pp_live_ license key.",
     },
     {
-      title: "App flow is still being tuned with real users",
-      text: "PromptParle is a path: invite → keys → install → local chat → savings you can see. We open seats as that path gets smoother. Early guests help us sand the edges before we throw the doors wide.",
+      title: "Invitations are a nicety, not a requirement",
+      text: "Want to bring a teammate or a friend? Send them an invite from your account. It's a warm hand-off, not the only door in, they can also just sign up directly.",
     },
     {
-      title: "Quality over a giant waiting room",
-      text: "A smaller cohort means we can answer Bug / Suggest notes, watch install friction, and keep the gateway boringly reliable. When the rails feel solid, we invite more, gladly.",
+      title: "Support the project if it helps you",
+      text: "PromptParle is free. If it saves you real money on tokens, an optional pay-what-you-can donation keeps the gateway boringly reliable and the roadmap moving.",
     },
   ],
   closer:
-    "Think of it as a soft opening: the kitchen is open, the menu is real, and we are seating tables as fast as we can serve them well. Request an invitation, we review and send a one-time code when we can take great care of you.",
+    "The doors are open: create a free account, make a desktop license key, install, and see your savings. Invite a friend when you're ready, no code required.",
 } as const;

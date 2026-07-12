@@ -12,7 +12,7 @@ export const revalidate = 3600;
 
 const PAGE_TITLE =
   "PromptParle FAQ: Desktop Client, Invitations, BYOK & Privacy";
-const PAGE_DESCRIPTION = `${ENTITY.definition} Invitation-only while we scale; desktop chat with provider keys on your PC.`;
+const PAGE_DESCRIPTION = `${ENTITY.definition} Free for everyone; desktop chat with provider keys on your PC.`;
 
 export const metadata: Metadata = {
   title: {
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     "BYOK",
     "desktop AI client",
     "PowerShell AI",
-    "invitation only AI gateway",
+    "free AI gateway",
     "OpenAI Claude Gemini Grok",
     "secret masking",
     "pp_live API key",
@@ -88,7 +88,7 @@ function buildJsonLd() {
       applicationCategory: "DeveloperApplication",
       operatingSystem: "Windows, Linux, macOS",
       description:
-        "AI context optimization gateway with a local desktop client and invitation-only portal for keys and usage.",
+        "Free AI context optimization gateway with a local desktop client and a portal for license keys, usage stats, and support.",
       offers: {
         "@type": "Offer",
         price: "0",
@@ -212,10 +212,9 @@ export default function FaqPage() {
               PromptParle frequently asked questions
             </h1>
             <p className="faq-summary-lead page-sub !mx-0 !mt-0 max-w-2xl !text-left text-sm">
-              Direct answers about what PromptParle is, how invitation-only
-              access works (temporary while we scale), the free desktop client,
-              where to put BYOK provider keys (on your PC), privacy, and
-              savings expectations.
+              Direct answers about what PromptParle is, how open signup works
+              (it's free), the desktop client, where to put BYOK provider keys
+              (on your PC), privacy, and savings expectations.
             </p>
           </header>
 
@@ -235,7 +234,7 @@ export default function FaqPage() {
             <ul className="mt-4 grid gap-2 text-sm text-[var(--text-muted)] sm:grid-cols-2">
               <li>
                 <strong className="text-[var(--text)]">Access:</strong>{" "}
-                invitation-only (no open signup)
+                free, open signup
               </li>
               <li>
                 <strong className="text-[var(--text)]">Chat:</strong> desktop
@@ -295,10 +294,10 @@ export default function FaqPage() {
               </li>
               <li>
                 <Link
-                  href="/request-invite"
+                  href="/register"
                   className="text-[var(--accent-strong)] hover:underline"
                 >
-                  Request an invitation
+                  Create a free account
                 </Link>
               </li>
               <li>

@@ -71,7 +71,7 @@ export default function TrustPage() {
               <li className="flex gap-3">
                 <span className="font-bold text-[var(--accent-strong)]">3</span>
                 <span>
-                  <strong className="text-[var(--text)]">PromptParle portal</strong>{" "}, invitations, plan, desktop license key (<code>pp_live_</code>
+                  <strong className="text-[var(--text)]">PromptParle portal</strong>{" "}, account, plan, desktop license key (<code>pp_live_</code>
                   ), client install package.{" "}
                   <strong className="text-[var(--text)]">
                     No prompt bodies. No provider keys.
@@ -206,8 +206,8 @@ export default function TrustPage() {
             <p className="mt-4 text-sm text-[var(--text-muted)]">
               {INVITE_WHY.closer}
             </p>
-            <Link href="/request-invite" className="btn btn-primary mt-4">
-              Request invitation
+            <Link href="/register" className="btn btn-primary mt-4">
+              Create free account
             </Link>
           </div>
 

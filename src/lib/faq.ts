@@ -74,18 +74,18 @@ export const FAQ_ITEMS: FaqItem[] = [
   // --- Access ---
   {
     category: "Access & accounts",
-    q: "Why is PromptParle invitation-only?",
-    a: "Soft opening, not secrecy. We pace seats so onboarding, install, and support stay intentional while we scale capacity and polish the app flow. Request an invitation, we send a one-time code when we can take great care of you. Details: https://promptparle.com/trust#invite",
+    q: "How do I sign up?",
+    a: "Registration is open and free. Create an account at https://promptparle.com/register with email (a quick verification link) or Google/GitHub. Then create a desktop license key (pp_live_) for each machine you install on.",
   },
   {
     category: "Access & accounts",
-    q: "Is invitation-only permanent?",
-    a: "No. Invitation-only is temporary while we scale. As install, dial savings, and desktop reliability feel solid, we open more seats and move toward broader access. The product is real; we are seating tables as fast as we can serve them well.",
+    q: "Is there an invitation or waitlist?",
+    a: "No. Signup is open to everyone, no invitation required. You can still invite a friend from the portal as a nicety, but it is optional.",
   },
   {
     category: "Access & accounts",
-    q: "How do I get an invitation?",
-    a: "Use Request invitation on the site. We review requests and, if approved, email a one-time invitation code (and optionally a link). That code is required to create an account and to finish desktop install.",
+    q: "How much does it cost?",
+    a: "PromptParle is free. There is no paid tier and no paywall — the optimize + provider calls run on your own PC with your own keys, so there is nothing to bill. If it helps you, there is an optional pay-what-you-can way to support the project.",
   },
   {
     category: "Access & accounts",
@@ -132,12 +132,12 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     category: "Keys & billing",
     q: "Who pays for AI tokens?",
-    a: "You do, via your provider account (BYOK on the PC). PromptParle’s value is reducing how much noisy context you send. Product plans are separate from provider token invoices.",
+    a: "You do, via your provider account (BYOK on the PC). PromptParle’s value is reducing how much noisy context you send. PromptParle itself is free; provider token invoices are entirely separate.",
   },
   {
     category: "Keys & billing",
     q: "Does PromptParle mark up provider prices?",
-    a: "No. Provider usage is billed by the provider to your key. Any PromptParle plan fees are for the product itself, not a hidden surcharge on every token from the model vendor.",
+    a: "No. Provider usage is billed by the provider to your key. PromptParle is free and never sits on the token meter — there is no PromptParle fee and no hidden surcharge on any token from the model vendor.",
   },
   {
     category: "Keys & billing",
@@ -265,12 +265,12 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     category: "Keys & billing",
     q: "How much does PromptParle cost?",
-    a: "Flat product pricing: Free $0, Pro $29.99/month, Team of 5 $99.99/month. Yearly billing is 20% off. AI provider tokens are always separate (BYOK). Not priced by the request. https://promptparle.com/pricing",
+    a: "$0. PromptParle is free for everyone — no paid tier, no paywall, no feature locks. Optimization and provider calls run on your own PC with your own keys (BYOK), so there is no server on the prompt path and nothing to charge for. AI provider tokens are always separate (BYOK). https://promptparle.com/pricing",
   },
   {
     category: "Keys & billing",
-    q: "Is pricing based on daily requests?",
-    a: "No. Subscriptions are fixed monthly or yearly. Soft fair-use protection may exist so free accounts do not overwhelm the fleet, that is not the Pro/Team price model.",
+    q: "Is there a paid plan or a way to support the project?",
+    a: "There is no paid plan; every feature is free. If PromptParle saves you tokens and you would like to help keep it maintained, there is an optional pay-what-you-can donation — chip in whatever it is worth to you, or nothing. No features are locked behind it. https://promptparle.com/pricing",
   },
   {
     category: "Privacy & security",

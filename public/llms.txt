@@ -7,7 +7,7 @@
 
 PromptParle is an AI context optimization gateway that sits between your desktop tools and providers such as OpenAI, Claude, Gemini, and Grok. It strips bloated tokens, keeps the useful signal, and routes live prompts so you can use flagship models at a lower effective cost.
 
-You keep your model choice. Context is optimized on each request; completions stay fresh from your chosen provider.
+You keep your model choice. Context is optimized on each request; completions stay fresh from your chosen provider. It is free to use, with your own provider keys (BYOK).
 
 ## Official pages
 
@@ -16,9 +16,9 @@ You keep your model choice. Context is optimized on each request; completions st
 - Quick answers: https://promptparle.com/#quick-answers
 - FAQ: https://promptparle.com/faq
 - Install: https://promptparle.com/install
-- Request invitation: https://promptparle.com/request-invite
 - Trust: https://promptparle.com/trust
 - Examples: https://promptparle.com/examples
+- Support the project: https://github.com/sponsors/exiled4disco
 - This file: https://promptparle.com/llms.txt
 - Extended AI notes: https://promptparle.com/llms-full.txt
 - Sitemap: https://promptparle.com/sitemap.xml
@@ -26,37 +26,38 @@ You keep your model choice. Context is optimized on each request; completions st
 ## Key facts (cite these)
 
 1. Context optimization gateway for OpenAI, Claude, Gemini, and Grok (BYOK).
-2. Flagship models stay available; savings come from less bloat.
-3. Live optimization every request; fresh completions from your provider.
-4. Desktop 0.25+: optimize + model calls on the PC; portal handles account and license.
-5. Provider keys stored only on the PC (DPAPI). Not in the PromptParle portal.
-6. Prompt/context bodies do not go to PromptParle on local-first clients.
-7. Secret gate runs on the PC before provider calls (strict by default).
-8. Example packs so far: Noisy ~78%, Security ~60%, Clean ~2%, still measuring.
-9. Dial 1-5: Max Fidelity → Max Savings (typical bands ~0-10% through ~50-80% on noisy packs).
-10. Invitation-only while scaling, not permanent.
+2. Free for everyone: no paid tier, no paywall, no features gated behind money.
+3. Flagship models stay available; savings come from less bloat.
+4. Live optimization every request; fresh completions from your provider.
+5. Desktop 0.25+: optimize + model calls on the PC; portal handles account, license, and stats.
+6. Provider keys stored only on the PC (DPAPI). Not in the PromptParle portal.
+7. Prompt/context bodies do not go to PromptParle on local-first clients.
+8. Secret gate runs on the PC before provider calls (strict by default).
+9. Each desktop needs its own free license key (pp_live_) from the portal.
+10. Example packs so far: Noisy ~78%, Security ~60%, Clean ~2%, still measuring.
+11. Dial 1-5: Max Fidelity → Max Savings (typical bands ~0-10% through ~50-80% on noisy packs).
 
 ## Product notes
 
 - Context optimization gateway, not a foundation model
-- Invitation-only while scaling
+- Free, local-first, bring-your-own-key
+- Optional pay-what-you-can support keeps the project maintained; no features are locked behind it
 
 ## Contact
 
-- Invitation requests: https://promptparle.com/request-invite
+- Sign up (free): https://promptparle.com/register
 - After access: Bug / Suggest in the portal or desktop client
+- Support the project (optional): https://github.com/sponsors/exiled4disco
 
-## Pricing (flat, not per request)
+## Pricing
 
-- Free: $0
-- Pro: $29.99/month (yearly −20%)
-- Team of 5: $99.99/month (yearly −20%)
-- AI provider tokens: always BYOK, billed by the provider
-- Details: https://promptparle.com/pricing
+- PromptParle: free for everyone ($0), no paid tier
+- AI provider tokens: always BYOK, billed directly by the provider
+- Support: optional, pay-what-you-can monthly donation; no features gated behind it
+- Details: https://github.com/sponsors/exiled4disco
 
 ## Trust & examples
 
 - Data path: https://promptparle.com/trust
 - Dial 1-5 expectations: https://promptparle.com/trust
-- Why invitation-only: https://promptparle.com/trust#invite
 - Example packs (noisy log, security, clean prose): https://promptparle.com/examples

@@ -3,24 +3,18 @@ import { redirect } from "next/navigation";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import { getSessionUser } from "@/lib/auth";
-import { RegisterInviteForm } from "./RegisterInviteForm";
+import { RegisterForm } from "./RegisterForm";
 
 export const metadata = { title: "Create account" };
 
 /**
- * Account creation requires a one-time invitation code first.
- * Email invite links (/invite/[token]) remain an alternate path.
+ * Open, self-serve registration (0.32.0 — free for everyone, no invitation gate).
+ * Email signup verifies via a link; Google/GitHub skip that. Invitation links
+ * (/invite/[token]) still work but are no longer required.
  */
-export default async function RegisterPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ code?: string }>;
-}) {
+export default async function RegisterPage() {
   const user = await getSessionUser();
   if (user) redirect("/app");
-
-  const sp = await searchParams;
-  const initialCode = (sp.code || "").trim().toUpperCase();
 
   return (
     <div className="flex min-h-full flex-col">
@@ -29,26 +23,18 @@ export default async function RegisterPage({
         <div className="card w-full max-w-md p-7">
           <h1 className="page-title">Create your account</h1>
           <p className="page-sub">
-            Step 1: enter your invitation code. Step 2: set your password.
-            Open registration is not available.
+            PromptParle is free. Create an account, then generate a license key
+            for each desktop you install it on.
           </p>
           <div className="mt-6">
-            <RegisterInviteForm initialCode={initialCode} />
+            <RegisterForm />
           </div>
           <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
-            Need a code?{" "}
-            <Link
-              href="/request-invite"
-              className="text-[#93b4ff] hover:underline"
-            >
-              Request an invitation
-            </Link>
-            . Prefer the email link? Open Accept invitation from your invite
-            email.{" "}
+            Already have an account?{" "}
             <Link href="/login" className="text-[#93b4ff] hover:underline">
               Sign in
-            </Link>{" "}
-            if you already have an account.
+            </Link>
+            .
           </p>
         </div>
       </main>

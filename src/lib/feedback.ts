@@ -74,6 +74,30 @@ export async function createFeedback(opts: {
   return row;
 }
 
+/**
+ * User-scoped list: ONLY the signed-in user's own submissions.
+ * Never returns rows belonging to other users (privacy contract).
+ */
+export async function listUserFeedback(
+  userId: string,
+  opts?: { take?: number }
+) {
+  return prisma.feedbackSubmission.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    take: Math.min(opts?.take ?? 100, 200),
+    select: {
+      id: true,
+      kind: true,
+      title: true,
+      body: true,
+      status: true,
+      adminNote: true,
+      createdAt: true,
+    },
+  });
+}
+
 export async function listFeedback(opts?: {
   status?: string | null;
   take?: number;

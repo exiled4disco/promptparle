@@ -4,13 +4,15 @@
 
 Local desktop client for [PromptParle](https://promptparle.com): optimize context, mask secrets, and route to **your** OpenAI, Claude, Gemini, or Grok keys.
 
+**Free for everyone** — the whole client, no paid tier and no feature paywall. You bring your own provider keys (BYOK); everything runs on `127.0.0.1:7788` on your PC. Each desktop just needs its own free `pp_live_` license key from the portal. An optional [pay-what-you-can donation](#support-the-project) helps keep the project maintained, but nothing is locked behind it.
+
 | What | Where it runs |
 |------|----------------|
 | Chat UI | **Your PC** (`http://127.0.0.1:7788`) |
 | Optimize + model calls | **Your PC** (local-first 0.25+) |
 | AI provider keys (OpenAI / Claude / Gemini / Grok) | **Your PC only** (DPAPI when available) |
-| Desktop license key `pp_live_…` | On your PC; hash on portal (licensing) |
-| Portal | Invitations, plan, desktop license key — **not** a model-key vault |
+| Desktop license key `pp_live_…` | On your PC; hash on portal (one per machine) |
+| Portal | Free account, per-desktop license key, usage stats, support — **not** a model-key vault, **not** a paywall |
 | SSH / git credentials | **Never leave your PC** |
 
 ---
@@ -19,12 +21,14 @@ Local desktop client for [PromptParle](https://promptparle.com): optimize contex
 
 Do these **in order**. Skipping a step is the #1 support issue.
 
-### 1. Account + desktop license key (portal)
+### 1. Free account + desktop license key (portal)
 
-1. Create an account: https://promptparle.com/register  
+1. Create a free account: https://promptparle.com/register  
 2. **Verify your email** (required before sign-in works fully).  
 3. Sign in → **API Keys** → create a desktop license key → copy `pp_live_...` (shown **once**).  
 4. **Do not** put OpenAI/Claude/Gemini/Grok keys in the portal for desktop chat — those go on the PC in step 3.
+
+Each desktop needs its own `pp_live_` license key. Accounts are free; there is no paid tier.
 
 ### 2. Install the module
 
@@ -48,7 +52,6 @@ Optional session flags before install:
 $PromptParleStart = $true          # auto-start local chat after install
 $PromptParleSkipKeyPrompt = $true  # skip key prompt (automation)
 $PromptParleClonePath = 'D:\src\promptparle'  # custom clone path
-$PromptParleInvitationCode = 'PP-XXXX-XXXX'
 irm https://promptparle.com/install.ps1 | iex
 ```
 
@@ -66,13 +69,12 @@ Same path as Windows: clones GitHub → runs `powershell/Install-PromptParle.ps1
 Optional env overrides:
 
 ```bash
-PROMPTPARLE_INVITATION_CODE='PP-XXXX-XXXX' \
 PROMPTPARLE_START=1 \
 PROMPTPARLE_CLONE_PATH="$HOME/src/promptparle" \
   curl -fsSL https://promptparle.com/install.sh | bash
 
 # automation
-PROMPTPARLE_SKIP_KEY=1 PROMPTPARLE_SKIP_INVITE=1 \
+PROMPTPARLE_SKIP_KEY=1 \
   curl -fsSL https://promptparle.com/install.sh | bash
 ```
 
@@ -83,10 +85,9 @@ Config: `~/.promptparle/config.json`
 #### What the installer does
 
 1. Clones or updates the GitHub repo  
-2. Validates your one-time invitation code  
-3. Copies the module into your user Modules folder  
-4. Asks for your `pp_live_...` desktop API key (or opens the portal)  
-5. Verifies the key and offers to start local chat (`pp`)
+2. Copies the module into your user Modules folder  
+3. Asks for your `pp_live_...` desktop license key (or opens the portal to create one)  
+4. Verifies the key and offers to start local chat (`pp`)
 
 ### 3. Start local chat
 
@@ -258,11 +259,23 @@ Or use the **sidebar buttons** (Browse / Connect / Detach) instead of slash comm
 
 ## Costs
 
+PromptParle is **free** — no paid tier, no feature paywall. The only thing you pay for is your own provider tokens, billed directly by the provider.
+
 | Cost | Who pays |
 |------|----------|
-| OpenAI / Claude / Gemini / Grok tokens | **You** (keys on this PC: ⋯ → Providers) |
-| Local chat UI | Free: runs on your PC |
-| PromptParle optimize + route + usage | PromptParle API (small) |
+| OpenAI / Claude / Gemini / Grok tokens | **You** (BYOK: keys on this PC, ⋯ → Providers) |
+| Local chat UI + optimize + route | **Free** — runs on your PC, no PromptParle server fee |
+| PromptParle account + license key + usage stats | **Free** |
+
+Optimization runs locally (desktop 0.25+), so PromptParle never proxies your prompts and has no per-request cost to bill.
+
+## Support the project
+
+PromptParle is free and always will be. If it saves you tokens and you'd like to help keep it maintained, you can chip in a **pay-what-you-can** monthly donation:
+
+**→ [Support the project](https://github.com/sponsors/exiled4disco)**
+
+It is optional, you set the amount, and **no features are locked behind it** — supporters and non-supporters run the identical client.
 
 ---
 
@@ -460,7 +473,6 @@ Also see `powershell/examples/quickstart.ps1` and `demo-savings.ps1` in the repo
 
 - PowerShell 5.1+ or PowerShell 7+  
 - Network access to `https://promptparle.com`  
-- Verified PromptParle account + desktop API key (`pp_live_...`)  
-- At least one provider key on this PC (`Set-PromptParleProviderKey` or ⋯ → Providers)  
-
+- A free, verified PromptParle account + a per-desktop license key (`pp_live_...`)  
+- At least one provider key on this PC (`Set-PromptParleProviderKey` or ⋯ → Providers) — BYOK  
 - Git (for the recommended installer and git features)  

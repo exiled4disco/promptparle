@@ -11,21 +11,31 @@
 
 ## Canonical definition
 
-PromptParle is an AI context optimization gateway that sits between your desktop tools and providers such as OpenAI, Claude, Gemini, and Grok. It strips bloated tokens, keeps the useful signal, and routes live prompts so you can use flagship models at a lower effective cost.
+PromptParle is an AI context optimization gateway that sits between your desktop tools and providers such as OpenAI, Claude, Gemini, and Grok. It strips bloated tokens, keeps the useful signal, and routes live prompts so you can use flagship models at a lower effective cost. It is free to use with your own provider keys (BYOK).
 
 ## Product facts
 
 1. Model choice stays with the user (BYOK on the PC).
 2. Optimizes live context; provider returns a fresh completion.
 3. Savings come from thinner context, not a new agent stack.
-4. AI vendors bill on tokens; optimizing the buyer’s spend is not their incentive.
-5. Desktop 0.25+: optimize + model calls on the PC; portal handles account and license.
+4. AI vendors bill on tokens; optimizing the buyer's spend is not their incentive.
+5. Desktop 0.25+: optimize + model calls on the PC; portal handles account, license, and stats.
+6. Free for everyone: no paid tier, no paywall, no features gated behind money.
+
+## Business model
+
+- PromptParle is **free**. There is no paid tier and no paywall.
+- Optimization and provider calls run on the user's own PC with their own keys (BYOK), so the portal never proxies prompts and carries no per-request server cost to charge for.
+- The portal is licensing + usage/savings stats + change control + public user guide + bug tracker + settings.
+- Support is an **optional, pay-what-you-can** monthly donation to help keep the project maintained: https://github.com/sponsors/exiled4disco
+- **No features are gated behind support** — supporters and non-supporters run the identical client.
+- Each desktop still needs its own free license key (`pp_live_`) from the portal.
 
 ## Product surfaces
 
 | Surface | Role |
 |---------|------|
-| Portal https://promptparle.com | Invitations, plan, desktop license key (`pp_live_`), optional stats |
+| Portal https://promptparle.com | Free account, per-desktop license key (`pp_live_`), usage/savings stats, user guide, bug tracker, settings |
 | Desktop client | Local chat on 127.0.0.1; provider keys on PC; install from https://promptparle.com/install |
 | Where to set OpenAI/Claude/Gemini/Grok keys | Desktop: ⋯ → Providers → Save on this PC, or `Set-PromptParleProviderKey` |
 
@@ -53,26 +63,27 @@ Clean unique prose often near zero at any dial. Published examples: Noisy ~78%, 
 ## Accuracy notes
 
 - PromptParle is not a foundation model.
-- Signup is invitation-only while scaling.
+- PromptParle is free for everyone; there is no paid tier and no paywall.
+- Support is optional and pay-what-you-can; no features are locked behind it.
 - Savings percentages are examples, not guarantees.
 - Desktop chat stores OpenAI/Claude keys on the PC, not in the portal.
 - Optimize runs on the PC (desktop 0.25+); not through PromptParle servers.
 
-## Flat pricing
+## Pricing
 
-| Plan | Monthly | Yearly (−20%) | Seats |
-|------|---------|---------------|-------|
-| Free | $0 | $0 | 1 |
-| Pro | $29.99 | ~$287.90/yr | 1-2 |
-| Team | $99.99 | ~$959.90/yr | 5 |
+| Item | Cost |
+|------|------|
+| PromptParle | Free ($0) — no paid tier, no paywall |
+| AI provider tokens | BYOK, billed directly by the provider |
+| Optional support | Pay-what-you-can monthly donation; no gated features |
 
-Not priced by daily requests. Tokens always BYOK (on the user’s PC for desktop chat).
+Not priced by daily requests. Tokens always BYOK (on the user's PC for desktop chat).
 
 ## Architecture honesty (desktop 0.25+)
 
 - **Your PC:** secret gate, dial/profile optimize, drop journal, tools (workspace / Git / SSH), local provider key store (DPAPI on Windows).
 - **Your provider:** HTTPS direct from the desktop with the local BYOK key; they bill tokens.
-- **PromptParle portal:** invitations, plan, desktop license key (`pp_live_`). No prompt bodies. No provider keys for desktop chat.
+- **PromptParle portal:** free account, per-desktop license key (`pp_live_`), usage/savings stats, bug tracker, settings. No prompt bodies. No provider keys for desktop chat.
 - How to enter model keys: local UI **⋯ → Providers** or `Set-PromptParleProviderKey`.
 - Details: https://promptparle.com/trust
 

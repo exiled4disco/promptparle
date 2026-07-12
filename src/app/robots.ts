@@ -11,7 +11,6 @@ export default function robots(): MetadataRoute.Robots {
           "/",
           "/faq",
           "/install",
-          "/request-invite",
           "/pricing",
           "/trust",
           "/examples",
@@ -27,6 +26,8 @@ export default function robots(): MetadataRoute.Robots {
           "/forgot-password",
           "/login",
           "/register",
+          // Legacy route: now redirects to /register (open signup)
+          "/request-invite",
         ],
       },
     ],

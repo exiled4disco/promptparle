@@ -33,32 +33,37 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
   free: {
     id: "free",
     label: "Free",
-    originalChars: 2_000,
-    optimizedChars: 2_000,
-    historyLimit: 25,
-    dailyRequests: 40,
-    maxProviders: 1,
-    maxDesktopClients: 1,
-  },
-  pro: {
-    id: "pro",
-    label: "Pro",
-    originalChars: 50_000,
-    optimizedChars: 50_000,
-    historyLimit: 100,
-    dailyRequests: 2_000,
-    maxProviders: 4,
-    maxDesktopClients: 2,
-  },
-  team: {
-    id: "team",
-    label: "Team",
     originalChars: 200_000,
     optimizedChars: 200_000,
     historyLimit: 200,
-    dailyRequests: 10_000,
+    dailyRequests: 100_000,
     maxProviders: 4,
-    maxDesktopClients: 5,
+    maxDesktopClients: 25,
+  },
+  // 0.32.0: PromptParle is free for everyone. There is no paid tier and no paywall —
+  // the work runs on the user's PC (BYOK), so the portal has no per-request server cost
+  // to throttle for money. These "pro"/"team" keys are retained only so existing DB
+  // `plan` values and importers keep resolving; every tier now gets the SAME free limits.
+  // Each desktop still needs its own license key (maxDesktopClients + heartbeat seat logic).
+  pro: {
+    id: "pro",
+    label: "Free",
+    originalChars: 200_000,
+    optimizedChars: 200_000,
+    historyLimit: 200,
+    dailyRequests: 100_000,
+    maxProviders: 4,
+    maxDesktopClients: 25,
+  },
+  team: {
+    id: "team",
+    label: "Free",
+    originalChars: 200_000,
+    optimizedChars: 200_000,
+    historyLimit: 200,
+    dailyRequests: 100_000,
+    maxProviders: 4,
+    maxDesktopClients: 25,
   },
 };
 

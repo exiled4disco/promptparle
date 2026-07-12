@@ -52,8 +52,8 @@ export function SiteFooter({
             Install
           </Link>
           <span aria-hidden>·</span>
-          <Link href="/request-invite" className="hover:text-[var(--text)]">
-            Request invite
+          <Link href="/register" className="hover:text-[var(--text)]">
+            Create free account
           </Link>
           <span aria-hidden>·</span>
           <Link href="/llms.txt" className="hover:text-[var(--text)]">

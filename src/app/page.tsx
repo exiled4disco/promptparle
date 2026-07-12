@@ -16,11 +16,7 @@ import { PRODUCT_SCREENSHOTS } from "@/lib/product-screenshots";
 import { EXAMPLE_PACKS, packReduction } from "@/lib/example-packs";
 import { EXPECTATIONS_BLURB } from "@/lib/heuristics-public";
 import { INVITE_WHY } from "@/lib/invite-why";
-import {
-  PUBLIC_PLANS,
-  YEARLY_DISCOUNT_PERCENT,
-  formatUsd,
-} from "@/lib/pricing";
+import { PUBLIC_PLANS, SUPPORT } from "@/lib/pricing";
 import { formatNumber } from "@/lib/format";
 
 /** Static marketing page, crawlable, cacheable, no session cookie dependency. */
@@ -71,7 +67,7 @@ const WHY_POINTS = [
   },
   {
     title: "Hit “you’ve reached your max”? Strip the bloat first.",
-    body: "Users on free and mid-tier plans get cut off mid-work. Cutting filler tokens delays that wall, and for many workflows can stop it entirely, while you keep the models you want.",
+    body: "Your AI provider’s free and mid-tier plans cut you off mid-work. Cutting filler tokens delays that wall, and for many workflows can stop it entirely, while you keep the models you want.",
   },
   {
     title: "Flagship models. Lower effective cost.",
@@ -147,15 +143,15 @@ const LANDING_STATS = [
 const ONBOARD_STEPS = [
   {
     n: "1",
-    title: "Get an invitation",
-    body: "Request access. We review and send a one-time invitation code to your email.",
-    cta: { href: "/request-invite", label: "Request invitation" },
+    title: "Create your free account",
+    body: "Sign up with email (quick verification link) or Google/GitHub. It's free — no invitation needed.",
+    cta: { href: "/register", label: "Create free account" },
   },
   {
     n: "2",
-    title: "Create your account",
-    body: "Enter the invitation code, set your password, then sign in to the portal.",
-    cta: { href: "/register", label: "Create account" },
+    title: "Sign in to the portal",
+    body: "The portal is your account, license keys, stats, change control, user guide, and bug tracker.",
+    cta: { href: "/login", label: "Sign in" },
   },
   {
     n: "3",
@@ -180,11 +176,11 @@ const PRODUCT_POINTS = [
   },
   {
     title: "Portal for account & license",
-    body: "Invitations, plan, and desktop license keys (pp_live_). Model keys for chat stay on the PC.",
+    body: "Account, desktop license keys (pp_live_), usage stats, change control, user guide, and bug tracker. Model keys for chat stay on the PC.",
   },
   {
-    title: "Invitation-only while we scale",
-    body: "Request access, get a one-time code, then unlock the desktop license key and the installer. Not permanent, we open more seats as capacity grows.",
+    title: "Free for everyone",
+    body: "No paywall, no invitation. Create a free account and generate a license key per desktop. If it helps you, support the project — pay what you can.",
   },
 ];
 
@@ -572,38 +568,53 @@ export default function LandingPage() {
         >
           <div className="container">
             <header className="mx-auto max-w-2xl text-center">
-              <h2 className="page-title !text-center">Flat pricing</h2>
+              <h2 className="page-title !text-center">Free. Pay what you can.</h2>
               <p className="page-sub !mx-auto !text-center">
-                Fixed monthly or yearly, not priced by the request. Provider
-                tokens stay on your BYOK keys. Yearly saves{" "}
-                {YEARLY_DISCOUNT_PERCENT}%.
+                Everything is free — no paid tier, no paywall. Optimization and
+                provider calls run on your own PC with your own keys, so there is
+                nothing to charge you for. Provider tokens stay on your BYOK keys.
               </p>
             </header>
-            <div className="mx-auto mt-10 grid max-w-4xl gap-4 sm:grid-cols-3">
-              {PUBLIC_PLANS.map((plan) => (
-                <div key={plan.id} className="card p-5 text-center">
-                  <h3 className="font-semibold">{plan.name}</h3>
-                  <div className="mt-2 text-2xl font-extrabold">
-                    {formatUsd(plan.priceMonthly)}
-                    {plan.priceMonthly > 0 && (
-                      <span className="text-sm font-normal text-[var(--text-dim)]">
-                        /mo
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--text-dim)]">
-                    {plan.seats} seat{plan.seats === 1 ? "" : "s"}
-                    {plan.priceMonthly > 0
-                      ? ` · ${formatUsd(plan.priceYearly)}/yr`
-                      : " · invite required"}
-                  </p>
+            <div className="mx-auto mt-10 grid max-w-4xl gap-4 sm:grid-cols-2">
+              <div className="card p-6 text-left">
+                <h3 className="font-semibold">{PUBLIC_PLANS[0].name}</h3>
+                <div className="mt-2 text-3xl font-extrabold">
+                  $0
+                  <span className="text-sm font-normal text-[var(--text-dim)]">
+                    {" "}
+                    forever
+                  </span>
                 </div>
-              ))}
+                <p className="mt-2 text-sm text-[var(--text-muted)]">
+                  Full local-first optimize + chat, all four providers, no
+                  feature locks. Each desktop just needs its own free license key
+                  (pp_live_).
+                </p>
+              </div>
+              <div className="card p-6 text-left">
+                <h3 className="font-semibold">{SUPPORT.label}</h3>
+                <div className="mt-2 text-3xl font-extrabold">
+                  Optional
+                </div>
+                <p className="mt-2 text-sm text-[var(--text-muted)]">
+                  If it saves you tokens and you want to help keep it maintained,
+                  chip in whatever it is worth to you. No features are locked
+                  behind it.
+                </p>
+              </div>
             </div>
-            <div className="mt-8 flex justify-center">
+            <div className="mt-8 flex justify-center gap-3">
               <Link href="/pricing" className="btn btn-primary">
-                Full pricing
+                See the details
               </Link>
+              <a
+                href={SUPPORT.href}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-secondary"
+              >
+                {SUPPORT.label}
+              </a>
             </div>
           </div>
         </section>
@@ -634,15 +645,13 @@ export default function LandingPage() {
               <div className="card p-5 text-left">
                 <h2 className="text-lg font-semibold">{INVITE_WHY.title}</h2>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
-                  {INVITE_WHY.lead} Soft opening energy, scale the experience,
-                  tune the app flow, seat tables as fast as we can serve them
-                  well.
+                  {INVITE_WHY.lead}
                 </p>
                 <Link
                   href="/trust#invite"
                   className="mt-4 inline-flex text-sm font-medium text-[var(--accent-strong)] hover:underline"
                 >
-                  Why invitation-only →
+                  How invites work →
                 </Link>
               </div>
             </div>
@@ -657,8 +666,8 @@ export default function LandingPage() {
             <header className="mx-auto max-w-2xl text-center">
               <h2 className="page-title !text-center">How onboarding works</h2>
               <p className="page-sub !mx-auto !text-center">
-                Invitation-only accounts. Portal for keys. Desktop for local
-                chat, agents, workspace, Git, and SSH.
+                Free accounts. Portal for keys. Desktop for local chat, agents,
+                workspace, Git, and SSH.
               </p>
             </header>
 
@@ -709,8 +718,8 @@ export default function LandingPage() {
               {[
                 {
                   n: "1",
-                  t: "Get invited",
-                  d: "Request access or use your code.",
+                  t: "Create free account",
+                  d: "Sign up at /register — no invite needed.",
                 },
                 {
                   n: "2",
@@ -737,8 +746,8 @@ export default function LandingPage() {
             </div>
 
             <div className="mx-auto mt-8 flex max-w-md flex-col gap-2 sm:flex-row sm:justify-center">
-              <Link href="/request-invite" className="btn btn-secondary">
-                Request invitation
+              <Link href="/register" className="btn btn-secondary">
+                Create free account
               </Link>
               <Link href="/install" className="btn btn-primary">
                 Install desktop client

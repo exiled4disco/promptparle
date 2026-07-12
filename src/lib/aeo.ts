@@ -21,7 +21,7 @@ export const ENTITY = {
   why:
     "AI companies earn revenue from tokens, so they are not built to shrink your spend. PromptParle exists for the buyer side: same models, less noise, fewer plan-limit walls.",
   access:
-    "PromptParle is invitation-only while we scale. Chat runs in a free local desktop client on your PC; the portal handles invitations, plan, and desktop license keys (pp_live_). Provider API keys are set on the PC. Sign up at https://promptparle.com.",
+    "PromptParle is free and open to sign up. Chat runs in a free local desktop client on your PC; the portal handles your account, plan, and desktop license keys (pp_live_). Provider API keys are set on the PC. Create a free account at https://promptparle.com/register.",
   privacy:
     "Desktop 0.25+ keeps provider keys and prompt/context on your PC; optimize and model calls run locally. The portal handles account, plan, and desktop license keys. SSH/git tool credentials stay on the desktop.",
 } as const;
@@ -54,7 +54,7 @@ export const HOME_AEO_FAQS: Array<{ q: string; a: string }> = [
   },
   {
     q: "How do I get access?",
-    a: "PromptParle is invitation-only while we scale. Request an invitation; if approved, you receive a one-time code to create an account and install the desktop client. Invitation-only is temporary, not permanent.",
+    a: "PromptParle is free and open. Create an account at promptparle.com/register with email + password (or Google / GitHub), then make a desktop license key and install the client. No invitation required.",
   },
 ];
 
@@ -66,7 +66,7 @@ export const KEY_FACTS: string[] = [
   "Desktop 0.25+: optimize + model calls on your PC; portal handles license and account.",
   "Provider keys live on the PC only. Prompt/context do not go to PromptParle on local-first clients.",
   "Example packs so far: Noisy ~78%, Security ~60%, Clean ~2%, still measuring real workloads.",
-  "Access is invitation-only at promptparle.com while we scale (not permanent).",
+  "Free and open to sign up at promptparle.com/register; each desktop uses its own pp_live_ license key.",
 ];
 
 export function organizationJsonLd() {
@@ -207,7 +207,7 @@ export function howToInstallJsonLd() {
     "@id": `${base}/install#howto`,
     name: "How to install the PromptParle desktop client",
     description:
-      "Install PromptParle: invitation, desktop license key (pp_live_), one install command, then set provider keys on the PC.",
+      "Install PromptParle: create a free account, make a desktop license key (pp_live_), run one install command, then set provider keys on the PC.",
     totalTime: "PT10M",
     tool: [
       { "@type": "HowToTool", name: "PowerShell 5.1+ or PowerShell 7" },
@@ -217,15 +217,15 @@ export function howToInstallJsonLd() {
       {
         "@type": "HowToStep",
         position: 1,
-        name: "Get an invitation",
-        text: "Request access at promptparle.com/request-invite. If approved, you receive a one-time invitation code by email.",
-        url: absoluteUrl("/request-invite"),
+        name: "Create a free account",
+        text: "Sign up at promptparle.com/register with email + password (or Google / GitHub). It's free and open, no invitation required.",
+        url: absoluteUrl("/register"),
       },
       {
         "@type": "HowToStep",
         position: 2,
-        name: "Create your account and desktop license key",
-        text: "Enter the invitation code, set a password, then create a desktop license key (pp_live_…). OpenAI/Claude/Gemini/Grok keys are set later on the PC, not in the portal.",
+        name: "Create your desktop license key",
+        text: "In the portal, create a desktop license key (pp_live_…) for each machine. OpenAI/Claude/Gemini/Grok keys are set later on the PC, not in the portal.",
         url: absoluteUrl("/register"),
       },
       {

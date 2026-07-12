@@ -2,26 +2,22 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
-import {
-  PUBLIC_PLANS,
-  YEARLY_DISCOUNT_PERCENT,
-  formatUsd,
-} from "@/lib/pricing";
+import { PUBLIC_PLANS, SUPPORT } from "@/lib/pricing";
 
 export const revalidate = 3600;
 
 export const metadata: Metadata = {
   title: {
-    absolute: "Pricing · PromptParle (promptparle.com)",
+    absolute: "Free. Pay what you can · PromptParle (promptparle.com)",
   },
   description:
-    "Flat PromptParle pricing: Free $0, Pro $29.99/mo, Team of 5 $99.99/mo. 20% off yearly. AI provider tokens billed separately via BYOK.",
+    "PromptParle is free for everyone — no paid tier, no paywall. Optimization and provider calls run on your own PC with your own keys (BYOK). Support the project with an optional pay-what-you-can donation.",
   alternates: { canonical: "/pricing" },
   robots: { index: true, follow: true },
   openGraph: {
-    title: "PromptParle pricing",
+    title: "PromptParle is free",
     description:
-      "Simple flat plans. Free, Pro $29.99, Team of 5 $99.99. Yearly save 20%. Tokens stay on your provider keys.",
+      "Everything is free — no paid tier. Prompts and provider keys never leave your PC. Optional pay-what-you-can support keeps the project maintained.",
     url: "/pricing",
   },
 };
@@ -35,80 +31,81 @@ export default function PricingPage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-strong)]">
             Pricing
           </p>
-          <h1 className="page-title mt-2 !mb-2">Flat plans. Clear bill.</h1>
+          <h1 className="page-title mt-2 !mb-2">Free. Pay what you can.</h1>
           <p className="aeo-direct-answer page-sub !mx-0 max-w-2xl !text-left">
             PromptParle is{" "}
-            <strong className="text-[var(--text)]">fixed monthly or yearly</strong>, not priced by the request. Your AI provider still bills tokens on
-            your BYOK keys. We just help those tokens work harder.
+            <strong className="text-[var(--text)]">free for everyone</strong> — no
+            paid tier, no paywall, no feature locks. Optimization and provider
+            calls run on your own PC with your own keys (BYOK), so there is no
+            server on the prompt path and nothing to charge you for.
           </p>
           <p className="mt-3 text-sm text-[var(--text-dim)]">
-            Yearly billing saves <strong className="text-[var(--text-muted)]">{YEARLY_DISCOUNT_PERCENT}%</strong>.
-            Access is invitation-only while we scale the experience.
+            Your AI provider still bills its own tokens on your BYOK keys — we
+            just help those tokens work harder. Prompts and provider keys never
+            leave your PC.
           </p>
 
-          <div className="mt-10 grid gap-4 lg:grid-cols-3">
-            {PUBLIC_PLANS.map((plan) => (
-              <div
-                key={plan.id}
-                className={`card flex flex-col p-5 ${
-                  plan.highlighted
-                    ? "border-[var(--accent)]/50 ring-1 ring-[var(--accent)]/30"
-                    : ""
-                }`}
-              >
-                {plan.highlighted && (
+          {(() => {
+            const plan = PUBLIC_PLANS[0];
+            return (
+              <div className="mt-10 grid gap-4 lg:grid-cols-2">
+                <div className="card flex flex-col border-[var(--accent)]/50 p-6 ring-1 ring-[var(--accent)]/30">
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--accent-strong)]">
-                    Popular
+                    Everything, free
                   </div>
-                )}
-                <h2 className="text-xl font-bold">{plan.name}</h2>
-                <p className="mt-1 text-sm text-[var(--text-muted)]">
-                  {plan.tagline}
-                </p>
-                <div className="mt-4">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-extrabold tracking-tight">
-                      {formatUsd(plan.priceMonthly)}
+                  <h2 className="text-xl font-bold">{plan.name}</h2>
+                  <p className="mt-1 text-sm text-[var(--text-muted)]">
+                    {plan.tagline}
+                  </p>
+                  <div className="mt-4 flex items-baseline gap-1">
+                    <span className="text-4xl font-extrabold tracking-tight">
+                      $0
                     </span>
-                    {plan.priceMonthly > 0 && (
-                      <span className="text-sm text-[var(--text-dim)]">/mo</span>
-                    )}
+                    <span className="text-sm text-[var(--text-dim)]">
+                      forever
+                    </span>
                   </div>
-                  {plan.priceMonthly > 0 ? (
-                    <p className="mt-1 text-xs text-[var(--text-dim)]">
-                      or {formatUsd(plan.priceYearly)}/yr (
-                      {formatUsd(plan.priceYearlyPerMonth)}/mo · save{" "}
-                      {YEARLY_DISCOUNT_PERCENT}%)
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-xs text-[var(--text-dim)]">
-                      Forever free tier · invite required
-                    </p>
-                  )}
+                  <ul className="mt-5 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
+                    {plan.features.map((f) => (
+                      <li key={f} className="flex gap-2">
+                        <span className="text-[var(--success)]" aria-hidden>
+                          ✓
+                        </span>
+                        <span>{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <Link
+                    href={plan.cta.href}
+                    className="btn btn-primary mt-6 w-full"
+                  >
+                    {plan.cta.label}
+                  </Link>
                 </div>
-                <ul className="mt-5 flex-1 space-y-2 text-sm text-[var(--text-muted)]">
-                  {plan.features.map((f) => (
-                    <li key={f} className="flex gap-2">
-                      <span className="text-[var(--success)]" aria-hidden>
-                        ✓
-                      </span>
-                      <span>{f}</span>
-                    </li>
-                  ))}
-                </ul>
-                <Link
-                  href={plan.cta.href}
-                  className={
-                    plan.highlighted
-                      ? "btn btn-primary mt-6 w-full"
-                      : "btn btn-secondary mt-6 w-full"
-                  }
-                >
-                  {plan.cta.label}
-                </Link>
+
+                <div className="card flex flex-col p-6">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-dim)]">
+                    Optional
+                  </div>
+                  <h2 className="text-xl font-bold">{SUPPORT.label}</h2>
+                  <p className="mt-1 text-sm text-[var(--text-muted)]">
+                    Pay what you can — $0 is a fine answer.
+                  </p>
+                  <p className="mt-4 flex-1 text-sm leading-relaxed text-[var(--text-muted)]">
+                    {SUPPORT.blurb}
+                  </p>
+                  <a
+                    href={SUPPORT.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn-secondary mt-6 w-full"
+                  >
+                    {SUPPORT.label}
+                  </a>
+                </div>
               </div>
-            ))}
-          </div>
+            );
+          })()}
 
           <div className="card mt-10 p-5 text-sm leading-relaxed text-[var(--text-muted)]">
             <h2 className="text-base font-semibold text-[var(--text)]">
@@ -117,12 +114,13 @@ export default function PricingPage() {
             <p className="mt-2">
               OpenAI, Claude, Gemini, and Grok usage is billed by those
               providers to <strong className="text-[var(--text)]">your</strong>{" "}
-              keys. PromptParle does not mark up their meter. Our subscription is
-              for the optimization gateway, desktop client, and portal.
+              keys. PromptParle does not mark up their meter and never touches
+              those keys — they stay on your PC.
             </p>
             <p className="mt-2">
-              Soft fair-use protection may still apply on free accounts so the
-              fleet stays healthy, that is not how we price Pro or Team.
+              Each desktop needs its own license key (pp_live_) to activate. The
+              key is free; it just ties a machine to your account for stats and
+              support.
             </p>
           </div>
 

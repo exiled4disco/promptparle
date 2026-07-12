@@ -2,13 +2,15 @@
 
 **Trim the prompt. Keep the signal.**
 
-AI context optimization gateway: thin bloated context, keep the signal, route cleaner prompts to OpenAI, Claude, Gemini, or Grok.
+AI context optimization gateway: thin bloated context, keep the signal, route cleaner prompts to OpenAI, Claude, Gemini, or Grok — all on your own PC, with your own provider keys.
+
+**Free for everyone.** No paid tier, no paywall, no features locked behind money. Optimization and provider calls run on your PC with your own keys (BYOK), so the portal never proxies your prompts and there is no per-request server cost to charge for. If PromptParle saves you tokens and you'd like to help keep it maintained, there's an optional [pay-what-you-can](#support-the-project) donation — nothing is gated behind it.
 
 | Surface | What it is |
 |---------|------------|
-| **Desktop (recommended)** | Free local PowerShell chat UI on your PC |
-| **Portal** | https://promptparle.com: account, plan, desktop license key (`pp_live_`) — licensing only |
-| **API** | License/entitlements; day-to-day chat is local-first on the desktop |
+| **Desktop (recommended)** | Free local PowerShell chat UI on your PC — optimize + model calls stay here |
+| **Portal** | https://promptparle.com: account, per-desktop license key (`pp_live_`), usage/savings stats, public user guide, bug tracker, settings — **not** a paywall and **not** a prompt or key vault |
+| **API** | Local desktop API for optimize + route; portal API is licensing + entitlements only |
 
 This repo contains both the **portal** (Next.js) and the **PowerShell module** (`powershell/`).
 
@@ -18,11 +20,13 @@ This repo contains both the **portal** (Next.js) and the **PowerShell module** (
 
 **You need:** [Git for Windows](https://git-scm.com/download/win), PowerShell 5.1+, and a free [promptparle.com](https://promptparle.com) account.
 
-### 1. Portal (2 minutes) — licensing only
+### 1. Portal (2 minutes) — free account + license key
 
-1. Sign in with **Google** or **GitHub** (or email)  
-2. **API Keys** → create desktop license key → copy `pp_live_...` (shown once)  
-3. **Do not** put OpenAI/Claude/Gemini/Grok keys in the portal for desktop chat  
+1. Create a free account and sign in with **Google**, **GitHub**, or email
+2. **API Keys** → create a desktop license key → copy `pp_live_...` (shown once)
+3. **Do not** put OpenAI/Claude/Gemini/Grok keys in the portal for desktop chat — those go on the PC (step 3)
+
+Each desktop needs its own `pp_live_` license key.
 
 ### 2. Install module
 
@@ -42,7 +46,7 @@ Browser opens **http://127.0.0.1:7788/** (local only). Leave the PowerShell wind
 
 Then set model keys (local-first):
 
-- Local UI: **⋯ → Providers** → paste key → **Save on this PC**  
+- Local UI: **⋯ → Providers** → paste key → **Save on this PC**
 - Or PowerShell: `Set-PromptParleProviderKey -Provider openai -ApiKey '…'`
 
 ### Update
@@ -62,16 +66,34 @@ Includes: alternate install paths, uninstall, workspace/SSH/Git, and a **Trouble
 
 ---
 
+## Support the project
+
+PromptParle is **free** and always will be — the whole gateway, no feature paywall. Running it costs *you* only your own provider tokens; it costs the project only maintenance time.
+
+If it saves you tokens and you'd like to help keep it maintained, you can chip in whatever it's worth to you:
+
+**→ [Support the project](https://github.com/sponsors/exiled4disco)** (pay what you can, monthly, cancel anytime)
+
+- It is **optional**.
+- It is **pay-what-you-can** — you set the amount.
+- **No features are locked behind it.** Supporters and non-supporters get the identical client.
+
+Not up for a donation? Contributing code, filing good bug reports, or telling a colleague helps just as much. See **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+---
+
 ## Quick links
 
 | Link | Purpose |
 |------|---------|
-| https://promptparle.com | Portal |
+| https://promptparle.com | Portal (account, license keys, stats, user guide, bug tracker) |
 | https://promptparle.com/install.ps1 | Installer script |
 | https://promptparle.com/PromptParle-PowerShell.tgz | Module tarball |
 | https://promptparle.com/PromptParle.psd1 | Published module version |
 | [powershell/PromptParle/README.md](powershell/PromptParle/README.md) | Desktop client docs |
 | [powershell/examples/](powershell/examples/) | Scripted examples |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, dev tooling, release process |
 
 ---
 
@@ -87,19 +109,17 @@ Your provider  →  OpenAI / Claude / Gemini / Grok
 Response + savings metadata (on PC)
 
 PromptParle portal (separate, rare):
-  license / invite / plan / pp_live_ desktop key only
+  license / plan / pp_live_ desktop key / usage stats only
   — no prompt bodies, no provider keys
 ```
 
-**Local-first:** optimize, provider keys, and model calls run on your PC. The portal is **licensing only**.
+**Local-first:** optimize, provider keys, and model calls run on your PC. The portal handles **licensing, stats, and support only**.
 
-- **Provider keys** → `Set-PromptParleProviderKey` (DPAPI on Windows); never uploaded.  
-- **Desktop key** `pp_live_…` → license/entitlements only; hash on server.  
-- **Local UI** binds to `127.0.0.1` with a **per-run local token**.  
-- **SSH / git tool credentials** stay on your PC.  
-- **Secret gate** masks credential-shaped patterns on the PC before the provider call.  
-
-
+- **Provider keys** → `Set-PromptParleProviderKey` (DPAPI on Windows); never uploaded.
+- **Desktop key** `pp_live_…` → license/entitlements only; hash on server; one per machine.
+- **Local UI** binds to `127.0.0.1` with a **per-run local token**.
+- **SSH / git tool credentials** stay on your PC.
+- **Secret gate** masks credential-shaped patterns on the PC before the provider call.
 
 Security policy & reporting: **[SECURITY.md](SECURITY.md)** · Threat model: **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**
 
@@ -133,20 +153,20 @@ curl -s https://promptparle.com/api/v1/prompt \
 
 ## Portal development (this repo)
 
-For contributing to the **website / API**, not required for desktop install.
+For contributing to the **website / API**, not required for desktop install. Full setup, dev token-tooling, edit-check hook, and release process are in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ### Stack
 
-- Next.js 16 (App Router) + TypeScript + Tailwind  
-- Postgres via Prisma  
-- HTTP-only sessions · bcrypt · desktop license key hashes · (legacy portal key vault AES-256-GCM if used)  
+- Next.js 16 (App Router) + TypeScript + Tailwind
+- Postgres via Prisma
+- HTTP-only sessions · bcrypt · desktop license key hashes · (legacy portal key vault AES-256-GCM if used)
 
 ### Quick start
 
 ```bash
-# Prerequisites: Node 20+, Docker (or Postgres 14+)
+# Prerequisites: Node v22.19.0, Docker (or Postgres 14+)
 docker compose up -d
-cp.env.example.env
+cp .env.example .env
 # Set ENCRYPTION_KEY + SESSION_SECRET (openssl rand -hex 32 each)
 # Set DATABASE_URL, NEXT_PUBLIC_APP_URL
 
@@ -173,7 +193,6 @@ Open [http://localhost:3000](http://localhost:3000).
 |------|-------------|
 | `/` | Marketing |
 | `/register` · `/login` | Auth |
-| `/app` | Dashboard |
 | `/app` | Portal dashboard (chat is desktop client only) |
 | `/app/providers` | Guidance: set model keys on the PC (legacy vault optional) |
 | `/app/api-keys` | Desktop license keys (`pp_live_`) |
@@ -193,11 +212,11 @@ npx prisma studio
 
 ## Security model
 
-1. **Provider keys**: AES-256-GCM; only last 4 chars shown in UI.  
-2. **Desktop API keys**: full key once; SHA-256 hash stored.  
-3. **Passwords**: bcrypt (cost 12).  
-4. **Sessions**: random token, hashed in DB, HTTP-only cookie.  
-5. **No plaintext secrets in logs** by design.  
+1. **Provider keys**: AES-256-GCM; only last 4 chars shown in UI.
+2. **Desktop API keys**: full key once; SHA-256 hash stored.
+3. **Passwords**: bcrypt (cost 12).
+4. **Sessions**: random token, hashed in DB, HTTP-only cookie.
+5. **No plaintext secrets in logs** by design.
 
 ---
 
@@ -218,7 +237,7 @@ Live: **https://promptparle.com**
 ```bash
 export PATH="/home/ubuntu/.nvm/versions/node/v22.19.0/bin:$PATH"
 rsync -a --delete \
-  --exclude node_modules --exclude.next --exclude.git --exclude.env \
+  --exclude node_modules --exclude .next --exclude .git --exclude .env \
   /home/ubuntu/projects/promptparle/ /var/www/promptparle/
 cd /var/www/promptparle
 npm ci
@@ -252,6 +271,6 @@ New accounts must verify email before full use.
 
 ## Roadmap
 
-**Done:** portal, email verification, `/api/v1`, multi-provider adapters, secret masking, profiles, PowerShell module + local UI (workspace / git / SSH / chat history).
+**Done:** portal, email verification, `/api/v1`, multi-provider adapters, secret masking, profiles, PowerShell module + local UI (workspace / git / SSH / chat history), honest savings metering + cumulative stats, free-for-everyone release.
 
 **Next:** VS Code extension, richer optimizer, PSGallery publish.

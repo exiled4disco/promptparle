@@ -1,97 +1,64 @@
 /**
- * Public flat pricing (product subscription).
- * AI provider token spend is always separate (BYOK).
- * Internal fair-use limits may still exist in plans.ts, they are not the price model.
+ * Product model (0.32.0): PromptParle is FREE for everyone.
+ *
+ * There is no paid tier and no paywall. Optimization + provider calls run on the
+ * user's own PC with their own keys (BYOK), so the portal never proxies prompts and
+ * carries no per-request server cost — nothing to meter or throttle for money. The
+ * portal is licensing + stats + support only (issue a `pp_live_` desktop key per
+ * machine, show usage/savings, bug tracker, settings).
+ *
+ * Support is a PAY-WHAT-YOU-WANT donation (optional, no features gated behind it) to
+ * help keep the project maintained. See `SUPPORT` below.
+ *
+ * `PublicPlanId`/`PublicPlan`/`PUBLIC_PLANS` are kept (single "free" entry) so existing
+ * imports keep compiling; the array is no longer a price ladder.
  */
 
-export type PublicPlanId = "free" | "pro" | "team";
+export type PublicPlanId = "free";
 
 export type PublicPlan = {
   id: PublicPlanId;
   name: string;
   tagline: string;
+  /** Always 0 — the product is free. */
   priceMonthly: number;
-  /** Yearly total charged (20% off vs 12× monthly). */
   priceYearly: number;
-  /** Effective monthly when billed yearly. */
   priceYearlyPerMonth: number;
+  /** Desktop seats per account. One license key per machine; heartbeat frees idle seats. */
   seats: number;
   features: string[];
   cta: { href: string; label: string };
   highlighted?: boolean;
 };
 
-const YEARLY_DISCOUNT = 0.2;
-
-function yearlyFromMonthly(monthly: number): {
-  yearly: number;
-  perMonth: number;
-} {
-  const yearly = Math.round(monthly * 12 * (1 - YEARLY_DISCOUNT) * 100) / 100;
-  const perMonth = Math.round((yearly / 12) * 100) / 100;
-  return { yearly, perMonth };
-}
-
-const proY = yearlyFromMonthly(29.99);
-const teamY = yearlyFromMonthly(99.99);
-
-export const YEARLY_DISCOUNT_PERCENT = 20;
+/** Optional supporter donation — no fixed price, no gated features. */
+export const SUPPORT = {
+  /** Where "Support the project" links point. Update to the live sponsor URL. */
+  href: "https://github.com/sponsors/exiled4disco",
+  label: "Support the project",
+  blurb:
+    "PromptParle is free. If it saves you tokens and you'd like to help keep it maintained, chip in whatever it's worth to you — pay what you want. No features are locked behind it.",
+} as const;
 
 export const PUBLIC_PLANS: PublicPlan[] = [
   {
     id: "free",
-    name: "Free",
-    tagline: "Try the gateway on real work.",
+    name: "Free — everything",
+    tagline: "The whole gateway, free. Optional donation if it helps you.",
     priceMonthly: 0,
     priceYearly: 0,
     priceYearlyPerMonth: 0,
     seats: 1,
     features: [
-      "1 desktop seat",
+      "Full local-first optimize + chat (no feature paywall)",
       "BYOK on your PC (OpenAI / Claude / Gemini / Grok)",
-      "Local-first optimize + chat",
-      "Context dial + profiles",
-      "On-PC secret gate",
-      "Invitation-only access",
+      "Context dial + profiles + on-PC secret gate",
+      "Desktop license key (pp_live_) per machine",
+      "Usage + savings stats, bug tracker, settings in the portal",
+      "Prompts + provider keys never leave your PC",
     ],
-    cta: { href: "/request-invite", label: "Request invitation" },
-  },
-  {
-    id: "pro",
-    name: "Pro",
-    tagline: "For builders who live in the models.",
-    priceMonthly: 29.99,
-    priceYearly: proY.yearly,
-    priceYearlyPerMonth: proY.perMonth,
-    seats: 1,
-    features: [
-      "Everything in Free",
-      "Priority product support",
-      "All four providers on the PC",
-      "More desktop flexibility",
-      "Longer optional usage history",
-      "Email support",
-    ],
-    cta: { href: "/request-invite", label: "Request Pro invite" },
+    cta: { href: "/register", label: "Create free account" },
     highlighted: true,
-  },
-  {
-    id: "team",
-    name: "Team",
-    tagline: "Five seats. One shared gateway.",
-    priceMonthly: 99.99,
-    priceYearly: teamY.yearly,
-    priceYearlyPerMonth: teamY.perMonth,
-    seats: 5,
-    features: [
-      "Everything in Pro",
-      "5 desktop seats included",
-      "Shared invite workflow",
-      "Team-friendly seat pool",
-      "Admin-friendly usage view",
-      "Priority onboarding",
-    ],
-    cta: { href: "/request-invite", label: "Request Team invite" },
   },
 ];
 

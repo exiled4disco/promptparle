@@ -136,6 +136,21 @@ export async function listInvitations() {
   });
 }
 
+/**
+ * Invitations a specific user has sent (their own only). Used by the user-facing
+ * "Invite a friend" area. Admins see everyone's via listInvitations().
+ */
+export async function listInvitationsByUser(userId: string) {
+  return prisma.invitation.findMany({
+    where: { invitedById: userId },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+    include: {
+      acceptedUser: { select: { id: true, email: true, name: true } },
+    },
+  });
+}
+
 export async function revokeInvitation(id: string) {
   const inv = await prisma.invitation.findUnique({ where: { id } });
   if (!inv) throw new Error("Invitation not found");

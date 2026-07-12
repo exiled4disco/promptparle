@@ -43,7 +43,7 @@ export default async function LoginPage({
           <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
             New here?{" "}
             <Link href="/register" className="text-[#93b4ff] hover:underline">
-              Create account with invitation code
+              Create a free account
             </Link>
           </p>
         </div>

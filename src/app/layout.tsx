@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     template: "%s · PromptParle",
   },
   description:
-    "PromptParle is an AI context optimization gateway. Strip bloated tokens, keep flagship models, lower effective cost. Invitation-only while we scale; chat on your desktop.",
+    "PromptParle is an AI context optimization gateway. Strip bloated tokens, keep flagship models, lower effective cost. Free for everyone; chat on your desktop.",
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://promptparle.com"),
   applicationName: "PromptParle",
   keywords: [

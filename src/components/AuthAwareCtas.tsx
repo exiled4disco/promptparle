@@ -45,11 +45,11 @@ export function AuthAwareCtas({
 
   return (
     <div className={className}>
-      <Link href="/request-invite" className="btn btn-primary">
-        Request invitation
+      <Link href="/register" className="btn btn-primary">
+        Create free account
       </Link>
-      <Link href="/register" className="btn btn-secondary">
-        I have a code
+      <Link href="/login" className="btn btn-secondary">
+        Sign in
       </Link>
       <Link href="/install" className="btn btn-ghost">
         Install desktop client
