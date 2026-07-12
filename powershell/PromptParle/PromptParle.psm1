@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.31.2'
+    $ver = '0.31.3'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -15968,8 +15968,31 @@ function Invoke-PromptParleChatTurnCore {
                     }
                 }
             } catch { }
-            # Turn meter: prep wire baseline → tokens actually sent this turn (one formula)
-            if ($prepTokensBefore -gt 0) {
+            # Turn meter. Two honest cases (guardian Rule 6):
+            #  - SINGLE-SHOT turn: one prompt in, one payload out. before→after = the prep
+            #    wire baseline → tokens actually sent. A real savings %.
+            #  - AGENT turn (>=1 round): the model consumes the SUM of all rounds, which is a
+            #    genuine multi-round COST, not a compression "expansion". There is no honest
+            #    single before/after, so we DON'T overwrite the pair with the 1-prompt prep
+            #    baseline. Instead: savings basis stays the per-round sums (sum_original →
+            #    sum_optimized, real compression the fleet did across rounds), and we publish a
+            #    cost readout (agent_cost_tokens) the UI shows instead of a saved-% verdict.
+            $isAgentTurn = ([int](Get-PromptParleProp $metaOut 'agent_rounds' 0) -gt 0)
+            if ($isAgentTurn) {
+                # Cost readout: what this multi-round build actually cost the model.
+                $agentCost = [int]$metaOut.optimized_tokens   # = tokens_sum_optimized
+                if ($agentCost -le 0) { $agentCost = [int]$metaOut.tokens_sum_optimized }
+                $metaOut.is_agent_turn   = $true
+                $metaOut.agent_cost_tokens = $agentCost
+                if ($prepTokensBefore -gt 0) {
+                    $metaOut.prep_tokens_before = [int]$prepTokensBefore
+                    $metaOut.prep_tokens_after  = [int]$prepTokensAfter
+                }
+                # original/optimized stay the per-round sums → tokens_saved below is the
+                # honest cross-round compression (>=0), never a 1-prompt-vs-total artifact.
+            }
+            elseif ($prepTokensBefore -gt 0) {
+                $metaOut.is_agent_turn = $false
                 $metaOut.prep_tokens_before = [int]$prepTokensBefore
                 $metaOut.prep_tokens_after = [int]$prepTokensAfter
                 $sendAfter = [int]$metaOut.optimized_tokens

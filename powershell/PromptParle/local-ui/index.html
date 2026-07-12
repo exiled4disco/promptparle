@@ -454,7 +454,37 @@
       border-color: var(--accent); box-shadow: 0 0 0 2px rgba(91,140,255,.25); }
     .row { display: flex; gap: .55rem; align-items: flex-end; }
     .composer-prompt {
-      display: none; flex: 0 0 auto; align-self: flex-end; padding-bottom: .55rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .95rem; font-weight: 700; color: var(--accent); user-select: none; }
+      display: none; flex: 0 0 auto; align-self: flex-start; padding-top: .12rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .95rem; font-weight: 700; color: var(--accent); user-select: none; }
+
+    /* Unified input box (0.31.3): one bordered container holding chips, the textarea,
+       and a bottom toolbar with the upload (+) button on the left and send (↑) on the
+       right — the textarea itself is borderless; the box provides the frame. */
+    .input-box {
+      display: flex; flex-direction: column; gap: .4rem;
+      background: #0a0e16; border: 1px solid var(--border); border-radius: 12px;
+      padding: .5rem .55rem .45rem; transition: border-color .15s, box-shadow .15s; }
+    .input-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(91,140,255,.18); }
+    .input-box .chips:empty { display: none; }
+    .input-box .chips { margin: .1rem .1rem 0; }
+    .input-row { display: flex; gap: .45rem; align-items: flex-start; }
+    .input-box textarea {
+      flex: 1; min-height: 8.5rem; max-height: 22rem; resize: vertical;
+      font-family: inherit; font-size: .92rem; line-height: 1.45;
+      background: transparent; color: var(--text); border: 0; outline: none;
+      padding: .35rem .3rem; }
+    .input-toolbar { display: flex; align-items: center; gap: .5rem; padding: 0 .1rem; }
+    .io-btn {
+      flex: 0 0 auto; width: 2rem; height: 2rem; display: inline-flex; align-items: center; justify-content: center;
+      font-size: 1.25rem; line-height: 1; font-weight: 500;
+      background: #10151f; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 8px; cursor: pointer; }
+    .io-btn:hover { color: var(--text); border-color: var(--accent); }
+    .io-hint { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .io-send {
+      flex: 0 0 auto; width: 2.2rem; height: 2.2rem; display: inline-flex; align-items: center; justify-content: center;
+      font-size: 1.2rem; font-weight: 700; border: 0; border-radius: 999px; cursor: pointer;
+      background: linear-gradient(135deg, #5b8cff, #3d6ef5); color: #fff; }
+    .io-send:disabled { opacity: .5; cursor: not-allowed; }
 
     /* --- Terminal AI chat experience --- */
     body.chat-style-term .chat {
@@ -484,10 +514,11 @@
     body.chat-style-term .composer {
       background: #05070c; border-color: #152033; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     body.chat-style-term .composer-prompt { display: block; }
+    body.chat-style-term .input-box {
+      background: #080b12; border-color: #1c2a40; }
     body.chat-style-term #input {
-      font-family: inherit; background: #080b12; min-height: 2.4rem; border-color: #1c2a40; }
-    body.chat-style-term .attach-bar .hint,
-    body.chat-style-term .attach-bar .secondary {
+      font-family: inherit; min-height: 2.4rem; }
+    body.chat-style-term .io-hint {
       font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
     body.chat-style-term .savings-strip {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; }
@@ -1328,17 +1359,21 @@
           </div>
           <div class="slash-menu-list" id="slashMenuList"></div>
         </div>
-        <div class="attach-bar">
-          <button type="button" class="secondary" id="attachBtn">Attach files</button>
-          <input type="file" id="fileInput" multiple
-            accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
-          <span class="hint">Docs · code · CSV · paste screenshot · type / for commands</span>
-        </div>
-        <div class="chips" id="chips"></div>
-        <div class="row">
-          <span class="composer-prompt" id="composerPrompt" aria-hidden="true">›</span>
-          <textarea id="input" rows="10" placeholder="Message or /command (type / for list · Enter to send)"></textarea>
-          <button type="submit" class="primary" id="send">Send</button>
+        <input type="file" id="fileInput" multiple
+          accept=".txt,.md,.csv,.tsv,.log,.json,.xml,.yml,.yaml,.ps1,.psm1,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.php,.rb,.sql,.html,.css,.sh,.toml,.env,image/png,image/jpeg,image/webp,image/gif,text/*" />
+        <!-- Unified input box: attachment chips on top, textarea, then a toolbar with
+             upload (left) + send (right) all inside the same bordered box. -->
+        <div class="input-box" id="inputBox">
+          <div class="chips" id="chips"></div>
+          <div class="input-row">
+            <span class="composer-prompt" id="composerPrompt" aria-hidden="true">›</span>
+            <textarea id="input" rows="10" placeholder="Message or /command (type / for list · Enter to send)"></textarea>
+          </div>
+          <div class="input-toolbar">
+            <button type="button" class="io-btn" id="attachBtn" title="Attach files — docs, code, CSV, or paste a screenshot" aria-label="Attach files">+</button>
+            <span class="hint io-hint">Docs · code · CSV · paste screenshot · type / for commands</span>
+            <button type="submit" class="io-send" id="send" title="Send (Enter)" aria-label="Send">↑</button>
+          </div>
         </div>
         <div class="composer-est empty" id="composerEst" title="Rough pre-send estimate only (not a bill). Tokens ≈ chars÷4 (+images). Cost uses public blended list prices for the selected model. Local prep + dial may shrink before the model sees it.">
           <span class="est-dim">Sending with</span>
@@ -1822,6 +1857,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         applied_count: appliedCount,
         exports: exportsList,
         export_count: exportCount,
+        is_agent_turn: Boolean(metaGet(raw, 'is_agent_turn') ?? metaGet(raw, 'isAgentTurn') ?? (Number(metaGet(raw, 'agent_rounds') ?? metaGet(raw, 'agentRounds') ?? 0) > 0)),
+        agent_rounds: Number(metaGet(raw, 'agent_rounds') ?? metaGet(raw, 'agentRounds') ?? 0),
+        agent_cost_tokens: Number(metaGet(raw, 'agent_cost_tokens') ?? metaGet(raw, 'agentCostTokens') ?? 0),
         tool_breakdown: (function () { var tb = metaGet(raw, 'tool_breakdown') ?? metaGet(raw, 'toolBreakdown') ?? []; return Array.isArray(tb) ? tb : []; })()
       }; }
 
@@ -1933,14 +1971,25 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // roll-up: messages, total tokens, saved, est $, framing. Computed from
     // currentMessages so it reflects the open chat.
     function computeSessionSummary() {
-      var sum = { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, framing: 0 };
+      // orig/opt/saved roll up SINGLE-SHOT turns only (a real before→after). Agent turns
+      // have no honest single before/after, so their multi-round cost is tallied separately
+      // (agentCost / agentRounds) and their real cross-round compression still credits saved.
+      var sum = { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, framing: 0, agentTurns: 0, agentRounds: 0, agentCost: 0 };
       var msgs = currentMessages || [];
       for (var i = 0; i < msgs.length; i++) {
         var m = msgs[i]; if (!m || !m.meta) continue;
         var n = normalizeMeta(m.meta);
         if (!n || !(n.original_tokens > 0 || n.optimized_tokens > 0)) continue;
         var s = buildSavingsExplain(n);
-        sum.msgs += 1; sum.orig += s.orig; sum.opt += s.opt; sum.saved += s.saved; sum.usd += s.usdSaved;
+        sum.msgs += 1;
+        if (n.is_agent_turn) {
+          sum.agentTurns += 1;
+          sum.agentRounds += (n.agent_rounds || 0);
+          sum.agentCost += (n.agent_cost_tokens || s.opt || 0);
+          sum.saved += s.saved; sum.usd += s.usdSaved;   // real cross-round compression only
+        } else {
+          sum.orig += s.orig; sum.opt += s.opt; sum.saved += s.saved; sum.usd += s.usdSaved;
+        }
         var tb = n.tool_breakdown || [];
         for (var j = 0; j < tb.length; j++) {
           var t = tb[j]; if (t && t.tool === 'framing' && String(t.kind) !== 'none') sum.framing += Math.ceil((Number(t.chars_saved) || 0) / 4);
@@ -1958,10 +2007,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var savedCls = sum.saved > 0 ? 'ok' : '';
       var html = '<span class="big-label">Session Stats</span>' +
         stat('Messages', sum.msgs) +
-        stat('Total Tokens', compactTok(sum.orig) + ' → ' + compactTok(sum.opt)) +
+        (sum.orig > 0 ? stat('Total Tokens', compactTok(sum.orig) + ' → ' + compactTok(sum.opt)) : '') +
         stat('Saved Tokens', compactTok(sum.saved), savedCls) +
         stat('Est $ Saved', formatUsdEstimate(sum.usd), savedCls) +
-        (sum.framing > 0 ? stat('Framing', compactTok(sum.framing)) : '');
+        (sum.framing > 0 ? stat('Framing', compactTok(sum.framing)) : '') +
+        (sum.agentTurns > 0 ? stat('Agent Builds', sum.agentTurns + ' · ' + sum.agentRounds + ' rounds · ' + compactTok(sum.agentCost) + ' tok') : '');
       savingsStrip.innerHTML = html;
       savingsStrip.classList.add('show'); }
 
@@ -2088,13 +2138,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       lsSet(RUN_STATS_SEEN_KEY, {});
     }
     // Record one completed turn into the cumulative store (idempotent by id).
-    function accrueTurnToCum(id, s) {
+    // Single-shot turns accrue their before→after; agent turns have no honest single
+    // before/after, so only their real cross-round compression credits saved (guardian Rule 6).
+    function accrueTurnToCum(id, s, isAgent) {
       if (!id) return;
       var seen = loadSeenTurns();
       if (seen[id]) return;               // already counted — re-render safe
       seen[id] = 1;
       var cum = loadCumStats();
-      cum.msgs += 1; cum.orig += (s.orig || 0); cum.opt += (s.opt || 0);
+      cum.msgs += 1;
+      if (!isAgent) { cum.orig += (s.orig || 0); cum.opt += (s.opt || 0); }
       cum.saved += (s.saved || 0); cum.usd += (s.usdSaved || 0);
       // Bound the seen-map so it can't grow forever.
       var keys = Object.keys(seen);
@@ -2114,7 +2167,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (!n.provider && providerEl && providerEl.value) n.provider = providerEl.value;
         var s = buildSavingsExplain(n);
         // Cumulative accrual (increment-only, id-keyed) — survives chat deletion.
-        accrueTurnToCum(id, s);
+        accrueTurnToCum(id, s, !!n.is_agent_turn);
         var model = String(s.model || 'unknown').trim() || 'unknown';
         var prov = String(s.provider || '').trim();
         var key = (prov ? prov + ' · ' : '') + model;
@@ -2122,14 +2175,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           byModel[key] = { key: key, model: model, provider: prov, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
         }
         var row = byModel[key];
+        var agentTurn = !!n.is_agent_turn;
         row.msgs += 1;
-        row.orig += s.orig;
-        row.opt += s.opt;
+        if (!agentTurn) { row.orig += s.orig; row.opt += s.opt; }
         row.saved += s.saved;
         row.usd += s.usdSaved;
         totals.msgs += 1;
-        totals.orig += s.orig;
-        totals.opt += s.opt;
+        if (!agentTurn) { totals.orig += s.orig; totals.opt += s.opt; }
         totals.saved += s.saved;
         totals.usd += s.usdSaved;
       }
@@ -2501,21 +2553,34 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           'Before = raw prompt + history + attach before local prep densify (MEM/budget/tools).\n' +
           'After = size actually sent to the model after prep + dial optimize.\n' +
           'Est. $ uses rough public list prices (blended); not a bill.\n' +
-          'Model = the model that answered this turn.'; const parts = []; if (s.expanded && s.opt > s.orig) {
-          parts.push('<span class="warn">↑ expanded</span>'); } else if (s.pct > 0 && s.saved > 0) {
-          parts.push('<span class="ok">−' + s.pct + '% tokens saved</span>'); } else {
-          parts.push('<span class="flat">0% tokens saved</span>'); }
-        parts.push(
-          '<span><span class="lbl">before</span> <span class="val">' + compactTok(s.orig) +
-          '</span> <span class="lbl">→ after</span> <span class="val">' + compactTok(s.opt) +
-          '</span> <span class="lbl">tok</span></span>'
-        ); if (s.saved > 0) {
-          parts.push('<span class="ok">−' + compactTok(s.saved) + ' tok</span>'); }
-        parts.push(
-          '<span class="cost-tag" title="Rough estimate from public list prices (~$' +
-            s.rate + '/M tok blended). Not a bill.">est. ' +
-            formatUsdEstimate(s.usdSaved) + ' saved</span>'
-        ); if (s.model) {
+          'Model = the model that answered this turn.'; const parts = [];
+        var isAgent = !!nmeta.is_agent_turn;
+        if (isAgent) {
+          // Multi-round agent build: no honest single before→after. Show a COST readout,
+          // not a savings verdict (guardian Rule 6). Credit real cross-round compression if any.
+          var rounds = nmeta.agent_rounds || 0; var cost = nmeta.agent_cost_tokens || s.opt || 0;
+          parts.push('<span class="flat">' + rounds + '-round agent build</span>');
+          parts.push('<span><span class="lbl">used</span> <span class="val">' + compactTok(cost) + '</span> <span class="lbl">tok</span></span>');
+          if (s.saved > 0) {
+            parts.push('<span class="ok">−' + compactTok(s.saved) + ' tok compressed across rounds</span>'); }
+        } else {
+          if (s.expanded && s.opt > s.orig) {
+            parts.push('<span class="warn">↑ expanded</span>'); } else if (s.pct > 0 && s.saved > 0) {
+            parts.push('<span class="ok">−' + s.pct + '% tokens saved</span>'); } else {
+            parts.push('<span class="flat">0% tokens saved</span>'); }
+          parts.push(
+            '<span><span class="lbl">before</span> <span class="val">' + compactTok(s.orig) +
+            '</span> <span class="lbl">→ after</span> <span class="val">' + compactTok(s.opt) +
+            '</span> <span class="lbl">tok</span></span>'
+          ); if (s.saved > 0) {
+            parts.push('<span class="ok">−' + compactTok(s.saved) + ' tok</span>'); }
+          parts.push(
+            '<span class="cost-tag" title="Rough estimate from public list prices (~$' +
+              s.rate + '/M tok blended). Not a bill.">est. ' +
+              formatUsdEstimate(s.usdSaved) + ' saved</span>'
+          );
+        }
+        if (s.model) {
           parts.push('<span><span class="lbl">model</span> <span class="model-tag">' +
             String(s.model).replace(/</g, '') + '</span></span>'); } else if (s.provider) {
           parts.push('<span><span class="lbl">provider</span> <span class="val">' +
@@ -5104,13 +5169,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
       // Slash commands; never sent to the model unless agent shortcut expands to a prompt
       if (prompt.startsWith('/')) {
-        inputEl.value = ''; addMsg('user', prompt); sendBtn.disabled = true; sendBtn.textContent = '…'; try {
+        inputEl.value = ''; addMsg('user', prompt); sendBtn.disabled = true; sendBtn.textContent = '⋯'; try {
           const data = await runSlash(prompt); if (data && data.send && data.prompt) {
             prompt = data.prompt; // fall through to AI send below
           } else {
-            sendBtn.disabled = false; sendBtn.textContent = 'Send'; inputEl.focus(); return; }
+            sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); return; }
         } catch (err) {
-          addMsg('sys', 'Command failed: ' + (err.message || err), null, true); sendBtn.disabled = false; sendBtn.textContent = 'Send'; inputEl.focus(); return; }
+          addMsg('sys', 'Command failed: ' + (err.message || err), null, true); sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); return; }
       }
 
       if (!prompt && !context && !images.length) {
@@ -5145,7 +5210,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }, false, thumbUrls); inputEl.value = ''; // Clear composer chips immediately; payload already captured in context/images
       // (epoch bump also cancels in-flight paste compress that would re-add chips)
       const clearedN = clearComposerAttachments('submit'); try { updateComposerEstimate(); } catch (e) { /* ignore */ }
-      sendBtn.disabled = true; sendBtn.textContent = 'Working…'; /**
+      sendBtn.disabled = true; sendBtn.textContent = '⋯'; /**
        * Local work-thinking bubble; staged client feedback, ZERO API tokens.
        * Stages advance by wall-clock while local prep + cloud optimize + model run.
        * (Providers don't stream prep status; this mirrors Grok/Claude "working" UX.)
@@ -5228,7 +5293,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             const wq = document.getElementById('waiting'); if (wq) wq.remove();
             if (timer) clearTimeout(timer); for (var cq = 0; cq < thinkTimers.length; cq++) clearTimeout(thinkTimers[cq]);
             if (attachments.length > 0) clearComposerAttachments('post-send');
-            sendBtn.disabled = false; sendBtn.textContent = 'Send'; inputEl.focus();
+            sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus();
             return; // background path owns the rest; poller injects the result
           }
           // Couldn't start a background job → fall through to inline as a fallback.
@@ -5260,7 +5325,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           addMsg('bot', 'Local server error: ' + (err.message || err), null, true); }
       } finally {
         if (timer) clearTimeout(timer); for (var ci = 0; ci < thinkTimers.length; ci++) clearTimeout(thinkTimers[ci]); const w = document.getElementById('waiting'); if (w) w.remove(); // Belt-and-suspenders: never leave chips after a send attempt
-        if (attachments.length > 0) clearComposerAttachments('post-send'); sendBtn.disabled = false; sendBtn.textContent = 'Send'; inputEl.focus(); scrollChatToBottom(); }
+        if (attachments.length > 0) clearComposerAttachments('post-send'); sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); scrollChatToBottom(); }
     }); 
     // ---- Bug / Suggest (portal /api/v1/feedback via local proxy) ----
     // Re-query DOM on each open (HTML may load after bind; never cache null once)
