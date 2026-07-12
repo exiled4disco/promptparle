@@ -31,7 +31,7 @@ export default async function AppLayout({
   const nav = user.isAdmin
     ? [
         ...NAV,
-        { href: "/app/feedback", label: "Feedback inbox" },
+        { href: "/app/feedback", label: "Messages" },
         { href: "/app/accounts", label: "Accounts" },
         { href: "/app/invitations", label: "Invitations" },
       ]

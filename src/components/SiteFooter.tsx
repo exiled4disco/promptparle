@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { GitHubSponsorButton } from "@/components/GitHubSponsors";
 import { Logo } from "@/components/Logo";
 import {
   COPYRIGHT_LINE,
   TAGLINE,
   TRADEMARK_LINE,
 } from "@/lib/constants";
+import { SUPPORT } from "@/lib/pricing";
 
 type SiteFooterProps = {
   /** Show logo + tagline row (landing). Auth/app can use compact legal-only. */
@@ -48,6 +50,10 @@ export function SiteFooter({
             FAQ
           </Link>
           <span aria-hidden>·</span>
+          <Link href="/contact" className="hover:text-[var(--text)]">
+            Contact
+          </Link>
+          <span aria-hidden>·</span>
           <Link href="/install" className="hover:text-[var(--text)]">
             Install
           </Link>
@@ -68,6 +74,27 @@ export function SiteFooter({
           >
             GitHub
           </a>
+          <span aria-hidden>·</span>
+          <a
+            href={SUPPORT.newsletterHref}
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-[var(--text)]"
+          >
+            Newsletter
+          </a>
+          <span aria-hidden>·</span>
+          <a
+            href={SUPPORT.href}
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-[var(--text)]"
+          >
+            Sponsor
+          </a>
+        </div>
+        <div className="pt-1">
+          <GitHubSponsorButton />
         </div>
         <div className="flex w-full flex-col items-center gap-1 text-xs leading-relaxed text-[var(--text-dim)]">
           <p>{COPYRIGHT_LINE}</p>

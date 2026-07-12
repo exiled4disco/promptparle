@@ -3,7 +3,7 @@
  *
  * There is no paid tier and no paywall. Optimization + provider calls run on the
  * user's own PC with their own keys (BYOK), so the portal never proxies prompts and
- * carries no per-request server cost — nothing to meter or throttle for money. The
+ * carries no per-request server cost - nothing to meter or throttle for money. The
  * portal is licensing + stats + support only (issue a `pp_live_` desktop key per
  * machine, show usage/savings, bug tracker, settings).
  *
@@ -20,7 +20,7 @@ export type PublicPlan = {
   id: PublicPlanId;
   name: string;
   tagline: string;
-  /** Always 0 — the product is free. */
+  /** Always 0 - the product is free. */
   priceMonthly: number;
   priceYearly: number;
   priceYearlyPerMonth: number;
@@ -31,19 +31,26 @@ export type PublicPlan = {
   highlighted?: boolean;
 };
 
-/** Optional supporter donation — no fixed price, no gated features. */
+/** Optional supporter donation - no fixed price, no gated features. */
 export const SUPPORT = {
   /** Where "Support the project" links point. Update to the live sponsor URL. */
   href: "https://github.com/sponsors/exiled4disco",
+  /** Official GitHub Sponsors button embed (114x32). */
+  buttonEmbedSrc: "https://github.com/sponsors/exiled4disco/button",
+  /** Official GitHub Sponsors card embed (600x225). */
+  cardEmbedSrc: "https://github.com/sponsors/exiled4disco/card",
+  /** Public project newsletter (GitHub Discussions / Announcements). */
+  newsletterHref:
+    "https://github.com/exiled4disco/promptparle/discussions/categories/announcements",
   label: "Support the project",
   blurb:
-    "PromptParle is free. If it saves you tokens and you'd like to help keep it maintained, chip in whatever it's worth to you — pay what you want. No features are locked behind it.",
+    "PromptParle is free. If it saves you tokens and you'd like to help keep it maintained, chip in whatever it's worth to you - pay what you want. No features are locked behind it.",
 } as const;
 
 export const PUBLIC_PLANS: PublicPlan[] = [
   {
     id: "free",
-    name: "Free — everything",
+    name: "Free - everything",
     tagline: "The whole gateway, free. Optional donation if it helps you.",
     priceMonthly: 0,
     priceYearly: 0,

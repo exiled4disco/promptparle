@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # PromptParle Linux/macOS install from GitHub
-# Same flow as install.ps1: clone repo → Install-PromptParle.ps1 (invite → module → API key)
+# Same flow as install.ps1: clone repo → Install-PromptParle.ps1 (module → license key)
+# Registration is open and free — create an account at promptparle.com/register,
+# make a pp_live_ license key, and paste it when prompted. No invitation code.
 #
 # Usage:
 #   curl -fsSL https://promptparle.com/install.sh | bash
@@ -9,9 +11,7 @@
 #   PROMPTPARLE_CLONE_PATH=$HOME/src/promptparle
 #   PROMPTPARLE_REPO_URL=https://github.com/exiled4disco/promptparle.git
 #   PROMPTPARLE_BRANCH=main
-#   PROMPTPARLE_INVITATION_CODE=PP-XXXX-XXXX
 #   PROMPTPARLE_SKIP_KEY=1
-#   PROMPTPARLE_SKIP_INVITE=1
 #   PROMPTPARLE_START=1
 #   PROMPTPARLE_BASE_URL=https://promptparle.com
 
@@ -33,9 +33,7 @@ fi
 REPO_URL="${PROMPTPARLE_REPO_URL:-https://github.com/exiled4disco/promptparle.git}"
 BRANCH="${PROMPTPARLE_BRANCH:-main}"
 CLONE_PATH="${PROMPTPARLE_CLONE_PATH:-$HOME/src/promptparle}"
-INVITE_CODE="${PROMPTPARLE_INVITATION_CODE:-}"
 SKIP_KEY="${PROMPTPARLE_SKIP_KEY:-0}"
-SKIP_INVITE="${PROMPTPARLE_SKIP_INVITE:-0}"
 DO_START="${PROMPTPARLE_START:-0}"
 BASE_URL="${PROMPTPARLE_BASE_URL:-https://promptparle.com}"
 
@@ -140,8 +138,8 @@ if [ ! -f "$INSTALL_SCRIPT" ]; then
   exit 1
 fi
 
-info "Running installer (invitation code → module → API key)..."
-dim "You need the invitation code from your PromptParle welcome email."
+info "Running installer (module → license key)..."
+dim "Create a free account at promptparle.com/register and make a pp_live_ license key."
 echo ""
 
 # Build pwsh argument list (mirrors install.ps1 → Install-PromptParle.ps1)
@@ -151,12 +149,6 @@ if [ "$DO_START" = "1" ]; then
 fi
 if [ "$SKIP_KEY" = "1" ]; then
   ARGS+=(-SkipKeyPrompt)
-fi
-if [ "$SKIP_INVITE" = "1" ]; then
-  ARGS+=(-SkipInvitePrompt)
-fi
-if [ -n "$INVITE_CODE" ]; then
-  ARGS+=(-InvitationCode "$INVITE_CODE")
 fi
 
 "$PWSH" "${ARGS[@]}"

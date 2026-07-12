@@ -66,19 +66,76 @@ Includes: alternate install paths, uninstall, workspace/SSH/Git, and a **Trouble
 
 ---
 
+## Install desktop client (Linux / macOS)
+
+The desktop client is a PowerShell module, so Linux and macOS run it on
+**PowerShell 7+** (`pwsh`). Verified running on **PowerShell 7.4.6** on Ubuntu:
+the module imports and the local UI server serves on `127.0.0.1`.
+
+**You need:** [PowerShell 7+](https://learn.microsoft.com/powershell/scripting/install/install-linux) (`pwsh`), `git`, a free [promptparle.com](https://promptparle.com) account, and a `pp_live_` license key.
+
+### 1. Portal (2 minutes) — free account + license key
+
+1. Create a free account and sign in with **Google**, **GitHub**, or email
+2. **API Keys** → create a desktop license key → copy `pp_live_...` (shown once)
+
+Each desktop needs its own `pp_live_` license key.
+
+### 2. Install
+
+```bash
+curl -fsSL https://promptparle.com/install.sh | bash
+```
+
+This clones the repo, installs the module, and prompts for your `pp_live_...`
+license key. If `pwsh` or `git` is missing, the installer tells you how to
+install it and stops.
+
+### 3. Chat + provider keys on this PC
+
+```bash
+pp
+```
+
+The local UI serves on **http://127.0.0.1:7788/** (local only). Then set model
+keys the same way as on Windows — local UI **⋯ → Providers**, or
+`Set-PromptParleProviderKey -Provider openai -ApiKey '…'`. Provider keys and
+prompt bodies stay on your PC.
+
+---
+
 ## Support the project
 
-PromptParle is **free** and always will be — the whole gateway, no feature paywall. Running it costs *you* only your own provider tokens; it costs the project only maintenance time.
+PromptParle is **free** and always will be - the whole gateway, no feature paywall. Running it costs *you* only your own provider tokens; it costs the project only maintenance time.
 
 If it saves you tokens and you'd like to help keep it maintained, you can chip in whatever it's worth to you:
 
 **→ [Support the project](https://github.com/sponsors/exiled4disco)** (pay what you can, monthly, cancel anytime)
 
 - It is **optional**.
-- It is **pay-what-you-can** — you set the amount.
+- It is **pay-what-you-can** - you set the amount.
 - **No features are locked behind it.** Supporters and non-supporters get the identical client.
 
+**Newsletter:** project updates in GitHub Discussions  
+→ [Announcements / Newsletter](https://github.com/exiled4disco/promptparle/discussions/categories/announcements)  
+→ [Issue #1](https://github.com/exiled4disco/promptparle/discussions/1)
+
 Not up for a donation? Contributing code, filing good bug reports, or telling a colleague helps just as much. See **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+---
+
+## Help / support
+
+Support is **free** and optional. If PromptParle earns its keep and you'd like
+to help, chip in what you can - see [Support the project](#support-the-project)
+(sponsor: https://github.com/sponsors/exiled4disco).
+
+- **Bugs / questions:** file an issue, or use the bug tracker on the portal.
+- **Newsletter:** [GitHub Discussions (Announcements)](https://github.com/exiled4disco/promptparle/discussions/categories/announcements)
+- **Contact form:** a contact form is being added at
+  [promptparle.com/contact](https://promptparle.com/contact).
+
+There is no paid support tier - supporters and non-supporters get the same help.
 
 ---
 

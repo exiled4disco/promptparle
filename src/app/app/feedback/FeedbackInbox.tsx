@@ -24,6 +24,8 @@ export function FeedbackInbox() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState<Record<string, string>>({});
+  const [replying, setReplying] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,7 +66,7 @@ export function FeedbackInbox() {
   }
 
   async function onDelete(id: string) {
-    if (!confirm("Delete this feedback item?")) return;
+    if (!confirm("Delete this message?")) return;
     const res = await fetch(`/api/admin/feedback/${id}`, { method: "DELETE" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -72,6 +74,29 @@ export function FeedbackInbox() {
       return;
     }
     await load();
+  }
+
+  async function sendReply(id: string) {
+    const text = (replyText[id] || "").trim();
+    if (!text) return;
+    setReplying(id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/feedback/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reply: text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Reply failed");
+        return;
+      }
+      setReplyText((m) => ({ ...m, [id]: "" }));
+      await load();
+    } finally {
+      setReplying(null);
+    }
   }
 
   return (
@@ -233,6 +258,60 @@ export function FeedbackInbox() {
                         >
                           Delete
                         </button>
+                      </div>
+
+                      {/* Prior replies (append-only log stored in adminNote) */}
+                      {r.adminNote && (
+                        <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2.5 text-xs">
+                          <div className="mb-1 font-semibold text-[var(--text-muted)]">
+                            Reply log
+                          </div>
+                          <p className="whitespace-pre-wrap text-[var(--text-dim)]">
+                            {r.adminNote}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Reply — emails the submitter (only when we have their email) */}
+                      <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                        {r.email ? (
+                          <>
+                            <textarea
+                              className="input w-full text-sm"
+                              rows={3}
+                              placeholder={`Reply to ${r.email}…`}
+                              value={replyText[r.id] || ""}
+                              onChange={(e) =>
+                                setReplyText((m) => ({
+                                  ...m,
+                                  [r.id]: e.target.value,
+                                }))
+                              }
+                            />
+                            <div className="mt-2 flex items-center gap-3">
+                              <button
+                                type="button"
+                                className="btn btn-primary !py-1 !text-xs"
+                                disabled={
+                                  replying === r.id ||
+                                  !(replyText[r.id] || "").trim()
+                                }
+                                onClick={() => void sendReply(r.id)}
+                              >
+                                {replying === r.id
+                                  ? "Sending…"
+                                  : "Send reply"}
+                              </button>
+                              <span className="text-xs text-[var(--text-dim)]">
+                                Emails {r.email} and closes the message.
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-xs text-[var(--text-dim)]">
+                            No email on this message — can&apos;t reply directly.
+                          </p>
+                        )}
                       </div>
                     </td>
                   </tr>

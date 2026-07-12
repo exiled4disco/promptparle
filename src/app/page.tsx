@@ -16,6 +16,7 @@ import { PRODUCT_SCREENSHOTS } from "@/lib/product-screenshots";
 import { EXAMPLE_PACKS, packReduction } from "@/lib/example-packs";
 import { EXPECTATIONS_BLURB } from "@/lib/heuristics-public";
 import { INVITE_WHY } from "@/lib/invite-why";
+import { GitHubSponsorButton } from "@/components/GitHubSponsors";
 import { PUBLIC_PLANS, SUPPORT } from "@/lib/pricing";
 import { formatNumber } from "@/lib/format";
 
@@ -603,7 +604,7 @@ export default function LandingPage() {
                 </p>
               </div>
             </div>
-            <div className="mt-8 flex justify-center gap-3">
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link href="/pricing" className="btn btn-primary">
                 See the details
               </Link>
@@ -615,6 +616,7 @@ export default function LandingPage() {
               >
                 {SUPPORT.label}
               </a>
+              <GitHubSponsorButton />
             </div>
           </div>
         </section>

@@ -1,18 +1,18 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Install PromptParle with invitation-code onboarding, then API key finish.
+  Install PromptParle, then finish with a desktop license key.
 
 .DESCRIPTION
-  1) Invitation code (one-time from welcome email)
-  2) Copies the module into your user Modules path
-  3) Portal setup guidance (Providers + desktop API key)
-  4) Prompts for pp_live_ desktop key and verifies it
-  5) Marks invitation redeemed; optionally starts local chat
+  PromptParle is free with open self-serve registration. Create a free account
+  at promptparle.com/register, create a pp_live_ license key, then run this.
+  1) Copies the module into your user Modules path
+  2) Portal setup guidance (Providers + desktop API key)
+  3) Prompts for the pp_live_ desktop key and verifies it
+  4) Optionally starts local chat
 
 .EXAMPLE
   .\Install-PromptParle.ps1
-  .\Install-PromptParle.ps1 -InvitationCode 'PP-AB12-CD34'
   .\Install-PromptParle.ps1 -SkipKeyPrompt
   .\Install-PromptParle.ps1 -Start
 #>
@@ -20,11 +20,14 @@
 param(
     [switch]$Force,
     [switch]$NoForce,
+    # Backward-compat only: registration is open now; no invitation code is
+    # required. Accepted (and ignored) so older callers do not break.
     [string]$InvitationCode = '',
     [string]$BaseUrl = 'https://promptparle.com',
     # Do not ask for API key (automation)
     [switch]$SkipKeyPrompt,
-    # Skip invitation code prompt (not recommended for new customers)
+    # Backward-compat no-op: the invitation prompt was removed. Accepted so
+    # older callers do not break.
     [switch]$SkipInvitePrompt,
     # Start local chat after a successful key check
     [switch]$Start
@@ -59,80 +62,6 @@ function Test-PromptParleKeyWorks {
     }
 }
 
-function Invoke-PromptParleInviteValidate {
-    param([Parameter(Mandatory)][string]$Code)
-    $url = "$BaseUrl/api/v1/invite/validate?code=$([uri]::EscapeDataString($Code))"
-    try {
-        if ($PSVersionTable.PSVersion.Major -le 5) {
-            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30
-            return ($resp.Content | ConvertFrom-Json)
-        }
-        return Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 30
-    } catch {
-        $msg = "$_"
-        try {
-            if ($_.Exception.Response) {
-                $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $body = $sr.ReadToEnd()
-                $j = $body | ConvertFrom-Json
-                if ($j.error) { return [pscustomobject]@{ ok = $false; error = [string]$j.error } }
-            }
-        } catch { }
-        return [pscustomobject]@{ ok = $false; error = $msg }
-    }
-}
-
-function Request-PromptParleInvitationCode {
-    Write-Step 'Step 1: Invitation code' 'Cyan'
-    Write-Host 'Your welcome email from PromptParle includes a one-time code like PP-XXXX-XXXX.'
-    Write-Host 'If you have not completed the portal invite form yet, do that first (link in the first email).'
-    Write-Host ''
-
-    $code = $InvitationCode
-    $attempts = 0
-    while ($attempts -lt 5) {
-        $attempts++
-        if (-not $code) {
-            $code = Read-Host 'Invitation code'
-        }
-        if (-not $code) {
-            Write-Host 'Code is required to continue install.' -ForegroundColor Yellow
-            continue
-        }
-        $code = $code.Trim().ToUpperInvariant()
-        Write-Host "Checking code against $BaseUrl ..." -ForegroundColor DarkGray
-        $result = Invoke-PromptParleInviteValidate -Code $code
-        if (-not $result -or -not $result.ok) {
-            $err = if ($result -and $result.error) { [string]$result.error } else { 'Validation failed' }
-            Write-Host "  $err" -ForegroundColor Red
-            $code = ''
-            continue
-        }
-
-        $status = [string]$result.status
-        Write-Host ("  Code OK for {0} (status: {1})" -f $result.email_masked, $status) -ForegroundColor Green
-        Write-Host ''
-        Write-Host 'Next steps from the portal:' -ForegroundColor Yellow
-        foreach ($s in @($result.steps)) {
-            Write-Host ("  • {0}" -f $s)
-        }
-        Write-Host ''
-
-        if ($status -eq 'pending') {
-            Write-Host 'Your invite is not finished on the portal yet.' -ForegroundColor Yellow
-            Write-Host 'Open the invitation link from email, create your password, then re-run this installer.' -ForegroundColor Yellow
-            $open = Read-Host 'Open portal now? [Y/n]'
-            if (-not $open -or $open -match '^[yY]') {
-                Start-Process-PromptParleUrl -Url $BaseUrl
-            }
-            throw 'Finish the invitation form on the portal, then re-run Install-PromptParle.ps1 with your code.'
-        }
-
-        return $code
-    }
-    throw 'Could not validate invitation code. Check the code from your welcome email and try again.'
-}
-
 function Start-Process-PromptParleUrl {
     param([string]$Url)
     try {
@@ -151,14 +80,12 @@ function Start-Process-PromptParleUrl {
 }
 
 function Request-PromptParleApiKeyInteractive {
-    param([string]$InviteCode)
-
-    Write-Step 'Step 3: Desktop API key' 'Cyan'
-    Write-Host 'The local app needs a desktop key from your PromptParle account.'
+    Write-Step 'Step 2: Desktop license key' 'Cyan'
+    Write-Host 'The local app needs a desktop license key (pp_live_...) from your free PromptParle account.'
     Write-Host '  Portal: https://promptparle.com/app/api-keys'
     Write-Host ''
     Write-Host 'Before pasting a key, finish portal setup:'
-    Write-Host '  1) Sign in at https://promptparle.com/login'
+    Write-Host '  1) Create a free account / sign in at https://promptparle.com/register'
     Write-Host '  2) API Keys → Create → copy the full pp_live_… value (shown once)'
     Write-Host '  3) After install: run pp → ⋯ → Providers to save OpenAI/Claude/Gemini/Grok'
     Write-Host '     keys on this PC (not in the portal). Or: Set-PromptParleProviderKey'
@@ -219,24 +146,6 @@ function Request-PromptParleApiKeyInteractive {
         Write-Host 'Checking key with PromptParle...' -ForegroundColor DarkGray
         if (Test-PromptParleKeyWorks) {
             Write-Host 'API key OK.' -ForegroundColor Green
-            if ($InviteCode) {
-                try {
-                    $redeemUrl = "$BaseUrl/api/v1/invite/redeem"
-                    $body = @{ code = $InviteCode } | ConvertTo-Json -Compress
-                    $headers = @{
-                        Authorization  = "Bearer $plain"
-                        'Content-Type' = 'application/json'
-                    }
-                    if ($PSVersionTable.PSVersion.Major -le 5) {
-                        Invoke-WebRequest -Uri $redeemUrl -Method POST -Headers $headers -Body $body -UseBasicParsing -TimeoutSec 20 | Out-Null
-                    } else {
-                        Invoke-RestMethod -Uri $redeemUrl -Method POST -Headers $headers -Body $body -TimeoutSec 20 | Out-Null
-                    }
-                    Write-Host 'Invitation marked complete.' -ForegroundColor DarkGray
-                } catch {
-                    Write-Host "Note: could not mark invitation redeemed (install still OK): $_" -ForegroundColor DarkGray
-                }
-            }
             return $true
         }
 
@@ -249,12 +158,11 @@ function Request-PromptParleApiKeyInteractive {
     return $false
 }
 
-# --- Invitation gate (before module install so bad codes fail fast) ---
-$script:PromptParleInstallInviteCode = $null
-if (-not $SkipInvitePrompt) {
-    $script:PromptParleInstallInviteCode = Request-PromptParleInvitationCode
-} else {
-    Write-Host 'Skipped invitation code (-SkipInvitePrompt).' -ForegroundColor DarkGray
+# Registration is open and free — no invitation code is required. The
+# -InvitationCode / -SkipInvitePrompt params are accepted for backward compat
+# but do nothing.
+if ($InvitationCode -or $SkipInvitePrompt) {
+    Write-Host 'Note: invitation codes are no longer required (registration is open and free).' -ForegroundColor DarkGray
 }
 
 # --- install module files ---
@@ -345,28 +253,12 @@ if (-not $SkipKeyPrompt) {
         if (Test-PromptParleKeyWorks) {
             Write-Host 'Existing API key works.' -ForegroundColor Green
             $keyOk = $true
-            if ($script:PromptParleInstallInviteCode) {
-                try {
-                    $plain = $cfg.ApiKey
-                    $redeemUrl = "$BaseUrl/api/v1/invite/redeem"
-                    $body = @{ code = $script:PromptParleInstallInviteCode } | ConvertTo-Json -Compress
-                    $headers = @{
-                        Authorization  = "Bearer $plain"
-                        'Content-Type' = 'application/json'
-                    }
-                    if ($PSVersionTable.PSVersion.Major -le 5) {
-                        Invoke-WebRequest -Uri $redeemUrl -Method POST -Headers $headers -Body $body -UseBasicParsing -TimeoutSec 20 | Out-Null
-                    } else {
-                        Invoke-RestMethod -Uri $redeemUrl -Method POST -Headers $headers -Body $body -TimeoutSec 20 | Out-Null
-                    }
-                } catch { }
-            }
         } else {
             Write-Host 'Existing API key is missing, revoked, or invalid.' -ForegroundColor Yellow
-            $keyOk = Request-PromptParleApiKeyInteractive -InviteCode $script:PromptParleInstallInviteCode
+            $keyOk = Request-PromptParleApiKeyInteractive
         }
     } else {
-        $keyOk = Request-PromptParleApiKeyInteractive -InviteCode $script:PromptParleInstallInviteCode
+        $keyOk = Request-PromptParleApiKeyInteractive
     }
 } else {
     Write-Host 'Skipped API key prompt (-SkipKeyPrompt).' -ForegroundColor DarkGray

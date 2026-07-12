@@ -1,5 +1,9 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import {
+  GitHubSponsorButton,
+  GitHubSponsorCard,
+} from "@/components/GitHubSponsors";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import { PUBLIC_PLANS, SUPPORT } from "@/lib/pricing";
@@ -11,13 +15,13 @@ export const metadata: Metadata = {
     absolute: "Free. Pay what you can · PromptParle (promptparle.com)",
   },
   description:
-    "PromptParle is free for everyone — no paid tier, no paywall. Optimization and provider calls run on your own PC with your own keys (BYOK). Support the project with an optional pay-what-you-can donation.",
+    "PromptParle is free for everyone - no paid tier, no paywall. Optimization and provider calls run on your own PC with your own keys (BYOK). Support the project with an optional pay-what-you-can donation.",
   alternates: { canonical: "/pricing" },
   robots: { index: true, follow: true },
   openGraph: {
     title: "PromptParle is free",
     description:
-      "Everything is free — no paid tier. Prompts and provider keys never leave your PC. Optional pay-what-you-can support keeps the project maintained.",
+      "Everything is free - no paid tier. Prompts and provider keys never leave your PC. Optional pay-what-you-can support keeps the project maintained.",
     url: "/pricing",
   },
 };
@@ -34,13 +38,13 @@ export default function PricingPage() {
           <h1 className="page-title mt-2 !mb-2">Free. Pay what you can.</h1>
           <p className="aeo-direct-answer page-sub !mx-0 max-w-2xl !text-left">
             PromptParle is{" "}
-            <strong className="text-[var(--text)]">free for everyone</strong> — no
-            paid tier, no paywall, no feature locks. Optimization and provider
-            calls run on your own PC with your own keys (BYOK), so there is no
-            server on the prompt path and nothing to charge you for.
+            <strong className="text-[var(--text)]">free for everyone</strong>{" "}
+            - no paid tier, no paywall, no feature locks. Optimization and
+            provider calls run on your own PC with your own keys (BYOK), so
+            there is no server on the prompt path and nothing to charge you for.
           </p>
           <p className="mt-3 text-sm text-[var(--text-dim)]">
-            Your AI provider still bills its own tokens on your BYOK keys — we
+            Your AI provider still bills its own tokens on your BYOK keys - we
             just help those tokens work harder. Prompts and provider keys never
             leave your PC.
           </p>
@@ -89,19 +93,25 @@ export default function PricingPage() {
                   </div>
                   <h2 className="text-xl font-bold">{SUPPORT.label}</h2>
                   <p className="mt-1 text-sm text-[var(--text-muted)]">
-                    Pay what you can — $0 is a fine answer.
+                    Pay what you can - $0 is a fine answer.
                   </p>
-                  <p className="mt-4 flex-1 text-sm leading-relaxed text-[var(--text-muted)]">
+                  <p className="mt-4 text-sm leading-relaxed text-[var(--text-muted)]">
                     {SUPPORT.blurb}
                   </p>
-                  <a
-                    href={SUPPORT.href}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn btn-secondary mt-6 w-full"
-                  >
-                    {SUPPORT.label}
-                  </a>
+                  <div className="mt-6 flex flex-1 flex-col items-center justify-end gap-4">
+                    <GitHubSponsorCard />
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                      <GitHubSponsorButton />
+                      <a
+                        href={SUPPORT.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm font-medium text-[var(--accent-strong)] hover:underline"
+                      >
+                        Open full Sponsors page
+                      </a>
+                    </div>
+                  </div>
                 </div>
               </div>
             );
@@ -115,12 +125,41 @@ export default function PricingPage() {
               OpenAI, Claude, Gemini, and Grok usage is billed by those
               providers to <strong className="text-[var(--text)]">your</strong>{" "}
               keys. PromptParle does not mark up their meter and never touches
-              those keys — they stay on your PC.
+              those keys - they stay on your PC.
             </p>
             <p className="mt-2">
               Each desktop needs its own license key (pp_live_) to activate. The
               key is free; it just ties a machine to your account for stats and
               support.
+            </p>
+          </div>
+
+          <div className="card mt-6 p-5 text-sm leading-relaxed text-[var(--text-muted)]">
+            <h2 className="text-base font-semibold text-[var(--text)]">
+              Project newsletter
+            </h2>
+            <p className="mt-2">
+              Release notes and support updates land in GitHub Discussions
+              (Announcements). Watch the category to get notified.
+            </p>
+            <p className="mt-3">
+              <a
+                href={SUPPORT.newsletterHref}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-[var(--accent-strong)] hover:underline"
+              >
+                Read the newsletter
+              </a>
+              {" · "}
+              <a
+                href="https://github.com/exiled4disco/promptparle/discussions/1"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-[var(--accent-strong)] hover:underline"
+              >
+                Issue #1
+              </a>
             </p>
           </div>
 

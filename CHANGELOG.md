@@ -9,6 +9,66 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.6] - 2026-07-12
+
+### Added
+
+- GitHub Sponsors embeds on pricing (official card + button) and sponsor button
+  in the site footer and homepage pricing teaser.
+- GitHub Discussions newsletter channel (Announcements) with issue #1.
+- Optional GitHub Sponsors webhook at `POST /api/webhooks/github` (signature
+  verified; audit log + admin email). Set `GITHUB_WEBHOOK_SECRET`.
+
+## [0.32.5] - 2026-07-12
+
+### Fixed
+
+- Left-aligned the per-message savings row (removed a 3.2rem indent gap in
+  terminal-chat mode).
+- Chat History is no longer crushed when all sidebar sections are expanded
+  (flex fix).
+
+## [0.32.4] - 2026-07-12
+
+### Fixed
+
+- Restored Google / GitHub OAuth on the register page (regression from the
+  register rework).
+
+### Changed
+
+- Removed the sticky top signup banner.
+
+## [0.32.3] - 2026-07-12
+
+### Fixed
+
+- Removed the duplicate savings bar — one row only.
+
+## [0.32.2] - 2026-07-12
+
+### Changed
+
+- Unified savings accounting across the per-message bar, session strip, and
+  running-stats sidebar (single canonical before→after figure).
+
+### Fixed
+
+- Discard the stale localStorage savings store via a schema bump so the three
+  panels no longer disagree.
+
+## [0.32.1] - 2026-07-12
+
+### Fixed
+
+- Honest agent-turn savings: credit avoided-ingest from local tools (context
+  fleet / doc briefs) instead of only the tiny cross-round delta.
+
+### Changed
+
+- Response details collapsed to one row.
+- Simple download link for artifacts.
+
 ## [0.32.0] - 2026-07-12
 
 ### Changed

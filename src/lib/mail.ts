@@ -551,7 +551,12 @@ export async function sendFeedbackNotifyEmail(opts: {
 }): Promise<void> {
   const recipients = Array.isArray(opts.to) ? opts.to : [opts.to];
   const adminUrl = `${appUrl()}/app/feedback`;
-  const kindLabel = opts.kind === "bug" ? "Bug report" : "Suggestion";
+  const kindLabel =
+    opts.kind === "bug"
+      ? "Bug report"
+      : opts.kind === "contact"
+        ? "Contact message"
+        : "Suggestion";
   const who =
     [opts.name, opts.email].filter(Boolean).join(" · ") ||
     opts.userId ||
@@ -604,6 +609,61 @@ ${adminUrl}
       html,
     });
   }
+}
+
+/**
+ * Admin reply to a contact/feedback message — sent TO the original submitter.
+ * Quotes their original message so the thread makes sense on their end.
+ */
+export async function sendContactReplyEmail(opts: {
+  to: string;
+  name?: string | null;
+  originalSubject: string;
+  originalBody: string;
+  reply: string;
+  adminName?: string | null;
+}): Promise<void> {
+  const greeting = opts.name ? `Hi ${opts.name},` : "Hi,";
+  const signoff = opts.adminName
+    ? `— ${opts.adminName}, PromptParle`
+    : "— PromptParle";
+
+  const text = `${greeting}
+
+${opts.reply}
+
+${signoff}
+
+---
+Your original message:
+Subject: ${opts.originalSubject}
+
+${opts.originalBody}
+`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#07090f;color:#e8eef8;padding:32px;">
+  <div style="max-width:560px;margin:0 auto;background:#111827;border:1px solid #1e2a3d;border-radius:12px;padding:28px;">
+    <div style="font-size:18px;font-weight:700;margin-bottom:12px;">Prompt<span style="color:#93b4ff;">Parle</span></div>
+    <p style="margin:0 0 12px;color:#c7d7f5;">${escapeHtml(greeting)}</p>
+    <p style="margin:0 0 18px;color:#e8eef8;white-space:pre-wrap;font-size:14px;line-height:1.5;">${escapeHtml(opts.reply)}</p>
+    <p style="margin:0 0 22px;color:#8b9bb8;font-size:13px;">${escapeHtml(signoff)}</p>
+    <div style="border-top:1px solid #1e2a3d;padding-top:14px;color:#6b7a92;font-size:12px;">
+      <div style="margin-bottom:6px;">Your original message:</div>
+      <div style="color:#8b9bb8;margin-bottom:4px;">${escapeHtml(opts.originalSubject)}</div>
+      <div style="white-space:pre-wrap;color:#8b9bb8;">${escapeHtml(opts.originalBody)}</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  await sendMail({
+    to: opts.to,
+    subject: `Re: ${opts.originalSubject}`.slice(0, 180),
+    text,
+    html,
+  });
 }
 
 function escapeHtml(s: string): string {

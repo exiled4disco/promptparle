@@ -1,10 +1,16 @@
 import { prisma } from "./db";
-import { isMailConfigured, sendFeedbackNotifyEmail } from "./mail";
+import {
+  isMailConfigured,
+  sendFeedbackNotifyEmail,
+  sendContactReplyEmail,
+} from "./mail";
 import { resolveAdminRecipients } from "./admin-recipients";
 import { lookupGeo } from "./geoip";
 
-export type FeedbackKind = "bug" | "suggest";
+export type FeedbackKind = "bug" | "suggest" | "contact";
 export type FeedbackSource = "portal" | "desktop";
+
+const FEEDBACK_KINDS: FeedbackKind[] = ["bug", "suggest", "contact"];
 
 export async function createFeedback(opts: {
   kind: FeedbackKind;
@@ -23,7 +29,9 @@ export async function createFeedback(opts: {
   if (!title || !body) {
     throw new Error("Title and details are required");
   }
-  const kind: FeedbackKind = opts.kind === "bug" ? "bug" : "suggest";
+  const kind: FeedbackKind = FEEDBACK_KINDS.includes(opts.kind)
+    ? opts.kind
+    : "suggest";
   const source: FeedbackSource =
     opts.source === "desktop" ? "desktop" : "portal";
 
@@ -94,6 +102,54 @@ export async function listUserFeedback(
       status: true,
       adminNote: true,
       createdAt: true,
+    },
+  });
+}
+
+/**
+ * Admin reply to a submission: email the reply to the submitter, append it to
+ * adminNote (an append-only reply log), and mark the message read/closed.
+ * Requires the submission to have a submitter email. Returns the updated row.
+ */
+export async function replyToFeedback(opts: {
+  id: string;
+  reply: string;
+  adminName?: string | null;
+  close?: boolean;
+}) {
+  const reply = opts.reply.trim().slice(0, 8000);
+  if (!reply) throw new Error("Reply text is required");
+
+  const row = await prisma.feedbackSubmission.findUnique({
+    where: { id: opts.id },
+  });
+  if (!row) throw new Error("Message not found");
+  if (!row.email) {
+    throw new Error("This message has no reply-to email address");
+  }
+  if (!isMailConfigured()) {
+    throw new Error("Email is not configured; cannot send a reply");
+  }
+
+  await sendContactReplyEmail({
+    to: row.email,
+    name: row.name,
+    originalSubject: row.title,
+    originalBody: row.body,
+    reply,
+    adminName: opts.adminName,
+  });
+
+  // Append to an audit-style reply log inside adminNote (never overwrite prior notes).
+  const stamp = new Date().toISOString();
+  const entry = `[reply ${stamp}${opts.adminName ? " · " + opts.adminName : ""}]\n${reply}`;
+  const adminNote = row.adminNote ? row.adminNote + "\n\n" + entry : entry;
+
+  return prisma.feedbackSubmission.update({
+    where: { id: opts.id },
+    data: {
+      adminNote: adminNote.slice(0, 8000),
+      status: opts.close ? "closed" : "read",
     },
   });
 }

@@ -15,6 +15,11 @@ export type AuditAction =
   | "auth.password_reset_request"
   | "auth.password_reset"
   | "auth.invite_request"
+  | "contact.submitted"
+  | "contact.reply"
+  | "sponsors.event"
+  | "sponsors.webhook_ping"
+  | "sponsors.webhook_other"
   | "admin.user_disable"
   | "admin.user_enable"
   | "admin.user_delete"
@@ -23,7 +28,10 @@ export type AuditAction =
   | "provider.save"
   | "provider.delete"
   | "settings.update"
-  | "allowlist.update";
+  | "allowlist.update"
+  | "sponsors.event"
+  | "sponsors.webhook_ping"
+  | "sponsors.webhook_other";
 
 export async function writeAudit(opts: {
   action: AuditAction;
