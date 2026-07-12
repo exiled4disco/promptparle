@@ -655,6 +655,28 @@ function Write-PromptParleMetadata {
     if ($prov)            { Write-Host ("  Provider        : {0}" -f $prov) }
     if ($model)           { Write-Host ("  Model           : {0}" -f $model) }
     if ($prof)            { Write-Host ("  Profile         : {0}" -f $prof) }
+
+    # Per-tool savings breakdown (0.28.0): honest counterfactual per local tool.
+    # chars_saved is vendor-neutral; shown as ~tokens (chars/4). Safety tools (0) labeled.
+    $tb = Get-PromptParleProp $Metadata 'tool_breakdown' $null
+    if ($tb) {
+        $parts = @()
+        foreach ($t in @($tb)) {
+            if ($null -eq $t) { continue }
+            $tn = [string](Get-PromptParleProp $t 'tool' '')
+            if (-not $tn) { continue }
+            $kind = [string](Get-PromptParleProp $t 'kind' 'measured')
+            $cs = [int](Get-PromptParleProp $t 'chars_saved' 0)
+            if ($kind -eq 'none') {
+                $parts += ("{0} (safety)" -f $tn)
+            } elseif ($cs -gt 0) {
+                $parts += ("{0} -{1}t" -f $tn, [Math]::Max(1, [int][Math]::Ceiling($cs / 4.0)))
+            }
+        }
+        if ($parts.Count -gt 0) {
+            Write-Host ("  By tool         : {0}" -f ($parts -join ', ')) -ForegroundColor DarkGreen
+        }
+    }
     $dial = Get-PromptParleProp $Metadata 'compression_level'
     if ($null -eq $dial) { $dial = Get-PromptParleProp $Metadata 'compressionLevel' }
     if ($null -ne $dial -and "$dial" -ne '') {
@@ -1704,7 +1726,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.27.2'
+    $ver = '0.28.0'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -8256,6 +8278,23 @@ function Invoke-PromptParleAgentLocalPrep {
     $framingInjected = 0
     # Rolling disk densify credit (beyond this-turn history wire) — lifts "before" baseline
     $memRollingCredit = 0
+    # Per-tool savings ledger (0.28.0): honest counterfactual — tokens the model would
+    # have used WITHOUT the tool vs WITH it. Vendor-neutral chars; display converts per
+    # selected model. kind: measured | avoided-ingest | none (safety, 0 savings).
+    # Each helper already returns chars_in/chars_out; we stop discarding it.
+    $toolBreakdown = New-Object System.Collections.ArrayList
+    $recordToolSaving = {
+        param([string]$Tool, [int]$Without, [int]$With, [string]$Kind = 'measured')
+        $w0 = [Math]::Max(0, [int]$Without); $w1 = [Math]::Max(0, [int]$With)
+        $saved = if ($Kind -eq 'none') { 0 } else { [Math]::Max(0, $w0 - $w1) }
+        [void]$toolBreakdown.Add([pscustomobject]@{
+            tool          = [string]$Tool
+            kind          = [string]$Kind
+            chars_without = $w0
+            chars_with    = $w1
+            chars_saved   = $saved
+        })
+    }
     $tools = New-Object System.Collections.ArrayList
     # Resolved later (after MEM) so [KNOW] sits above densified history as session truth
     $knowItems = @()
@@ -8396,10 +8435,13 @@ function Invoke-PromptParleAgentLocalPrep {
             # Credit rolling densify: mem.chars_in includes prior session fold savings
             try {
                 $mci = [int](Get-PromptParleProp $mem 'chars_in' 0)
+                $mco = [int](Get-PromptParleProp $mem 'chars_out' ($mem.text.Length))
                 if ($mci -gt $histChars) {
                     $memRollingCredit = $mci - $histChars
                     [void]$notes.Add(("mem-credit:{0}c" -f $memRollingCredit))
                 }
+                # Savings: prior turns densified to the brief actually sent.
+                if ($mci -gt $mco) { & $recordToolSaving 'chat_memory' $mci $mco 'measured' }
             } catch { }
         }
     } catch {
@@ -8479,11 +8521,13 @@ function Invoke-PromptParleAgentLocalPrep {
         $charsBeforeOff = $charsWire + [Math]::Max(0, [int]$memRollingCredit) + [Math]::Max(0, [int]$framingInjected)
         $tokInOff = if ($charsBeforeOff -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsBeforeOff / 4.0)) }
         $tokOutOff = if ($charsOutOff -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsOutOff / 4.0)) }
+        if ($framingInjected -gt 0) { & $recordToolSaving 'framing' $framingInjected $framingInjected 'measured' }
         return ,([pscustomobject]@{
             prompt           = $pr
             context          = $ctx
             notes            = @($notes.ToArray())
             tools            = @($tools)
+            tool_breakdown   = @($toolBreakdown.ToArray())
             agent            = 'none'
             tools_enabled    = $false
             chars_in         = $charsBeforeOff
@@ -8532,11 +8576,13 @@ function Invoke-PromptParleAgentLocalPrep {
             [void]$notes.Add("local −${pctS}%")
         }
         [void]$notes.Add(("prep-tokens:{0}->{1}" -f $tokBeforeS, $tokAfterS))
+        if ($framingInjected -gt 0) { & $recordToolSaving 'framing' $framingInjected $framingInjected 'measured' }
         return ,([pscustomobject]@{
             prompt           = $pr
             context          = $ctx
             notes            = @($notes.ToArray())
             tools            = @($tools | Select-Object -Unique)
+            tool_breakdown   = @($toolBreakdown.ToArray())
             agent            = 'none'
             tools_enabled    = $true
             dial             = $Dial
@@ -8574,7 +8620,12 @@ function Invoke-PromptParleAgentLocalPrep {
     if ($ctx.Length -gt 200) {
         $headKeep = ''
         $restCtx = $ctx
-        while ($restCtx -match '(?s)^(\[(?:CONN|PROJECT|MEM|KNOW|SELF)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+        # Peel each framing card as ONE paragraph block: header + its own non-blank
+        # continuation lines, stopping at the blank line before the next block.
+        # (0.28.0) Prior pattern was greedy — a card's continuation `(?!\[)` swallowed
+        # every following non-bracket line, i.e. the entire document, so the fleet
+        # never saw real content and chat turns showed ~0% savings. Stop at blank line.
+        while ($restCtx -match '(?s)^(\[(?:CONN|PROJECT|MEM|KNOW|SELF)\][^\n]*(?:\n(?![\[\r\n])[^\n]+)*)\n\n+(.*)$') {
             if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
             else { $headKeep = $Matches[1] }
             $restCtx = $Matches[2]
@@ -8584,9 +8635,15 @@ function Invoke-PromptParleAgentLocalPrep {
             $fleet = Invoke-PromptParleFidelityContextLocal -Text $restCtx -Prompt $pr -MaxChars $room -Dial $Dial
             $restCtx = $fleet.text
             foreach ($n in @($fleet.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
+            $fleetTool = 'fleet'
             foreach ($fn in @($fleet.notes)) {
-                if ($fn -match 'error_brief') { [void]$tools.Add('error_brief'); break }
+                if ($fn -match 'error_brief') { [void]$tools.Add('error_brief'); $fleetTool = 'error_brief'; break }
             }
+            try {
+                $fci = [int](Get-PromptParleProp $fleet 'chars_in' ($restCtx.Length))
+                $fco = [int](Get-PromptParleProp $fleet 'chars_out' ($fleet.text.Length))
+                if ($fci -gt $fco) { & $recordToolSaving $fleetTool $fci $fco 'measured' }
+            } catch { }
         }
         if ($headKeep) { $ctx = $headKeep + "`n`n" + $restCtx } else { $ctx = $restCtx }
     }
@@ -8896,6 +8953,7 @@ function Invoke-PromptParleAgentLocalPrep {
 
     # 5) Hard local budget — head+tail fidelity trim; never drop CONN/MEM/KNOW; protect PROVENANCE/GROUNDING
     if ($ctx.Length -gt $budget) {
+        $budgetCapBefore = $ctx.Length
         $protected = New-Object System.Collections.Generic.List[string]
         $work = $ctx
         foreach ($tag in @('PROVENANCE', 'GROUNDING', 'KNOW')) {
@@ -8907,7 +8965,9 @@ function Invoke-PromptParleAgentLocalPrep {
         }
         $headKeep = ''
         $rest = $work
-        while ($rest -match '(?s)^(\[(?:SELF|CONN|PROJECT|MEM)\][^\n]*(?:\n(?!\[)[^\n]*)*)\n\n?(.*)$') {
+        # Per-block peel (stop at blank line) so the document stays in $rest and gets
+        # trimmed to budget, instead of riding into $headKeep untouched. See 0.28.0 note above.
+        while ($rest -match '(?s)^(\[(?:SELF|CONN|PROJECT|MEM)\][^\n]*(?:\n(?![\[\r\n])[^\n]+)*)\n\n+(.*)$') {
             if ($headKeep) { $headKeep = $headKeep + "`n`n" + $Matches[1] }
             else { $headKeep = $Matches[1] }
             $rest = $Matches[2]
@@ -8924,6 +8984,8 @@ function Invoke-PromptParleAgentLocalPrep {
         if ($rest) { $pieces += $rest.Trim() }
         $ctx = ($pieces -join "`n`n")
         [void]$notes.Add("cap $budget")
+        # Savings: over-budget context head+tail trimmed to the dial budget.
+        if ($budgetCapBefore -gt $ctx.Length) { & $recordToolSaving 'budget_cap' $budgetCapBefore $ctx.Length 'measured' }
     }
 
     $charsOut = $ctx.Length + $pr.Length
@@ -8944,11 +9006,17 @@ function Invoke-PromptParleAgentLocalPrep {
         [void]$notes.Add('fidelity ok')
     }
 
+    # Framing memoization ledger entry (measured): today framing is re-sent, so
+    # without==with and saving is 0 (honest). When memoization lands (send once,
+    # pointer after), chars_with drops and this becomes a real per-turn saving.
+    if ($framingInjected -gt 0) { & $recordToolSaving 'framing' $framingInjected $framingInjected 'measured' }
+
     return ,([pscustomobject]@{
         prompt           = $pr
         context          = $ctx
         notes            = @($notes.ToArray())
         tools            = @($tools | Select-Object -Unique)
+        tool_breakdown   = @($toolBreakdown.ToArray())
         agent            = 'none'
         tools_enabled    = $true
         dial             = $Dial
@@ -16501,6 +16569,7 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
 
                         # You → local prep → local-first optimize + provider (dial). Portal = license only.
                         $prep = $null
+                        $toolBreakdownOut = @()
                         $prepTokensBefore = 0
                         $prepTokensAfter = 0
                         $groundingContext = if ($context) { [string]$context } else { '' }
@@ -16574,6 +16643,12 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
                             if ($null -ne $prepCtx) { $context = [string]$prepCtx }
                             $prepNotes = Get-PromptParleProp $prep 'notes' $null
                             if ($prepNotes) { $localNotes = @($localNotes) + @($prepNotes) }
+                            # Per-tool savings ledger from prep (0.28.0) — carried to metaOut for display.
+                            $toolBreakdownOut = @()
+                            try {
+                                $tbRaw = Get-PromptParleProp $prep 'tool_breakdown' $null
+                                if ($tbRaw) { $toolBreakdownOut = @($tbRaw) }
+                            } catch { }
                             # Turn baseline: raw prompt+history+attach before MEM/fleet densify
                             try {
                                 $ptb = Get-PromptParleProp $prep 'tokens_before' $null
@@ -16745,6 +16820,7 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
                                 signals                 = @{}
                                 image_count             = 0
                                 local_tools             = @($localNotes)
+                                tool_breakdown          = @($toolBreakdownOut)
                             }
                             $notesRaw = Get-PromptParleProp $metaIn 'notes' @()
                             if ($null -ne $notesRaw) {

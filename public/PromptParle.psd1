@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.27.2'
+    ModuleVersion     = '0.28.0'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -68,6 +68,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.28.0: Per-tool savings breakdown + head-strip fix. Prep now emits a vendor-neutral tool_breakdown ([{tool,kind,chars_without,chars_with,chars_saved}]) shown per turn ("By tool: fleet -12573t, …"). Fixed a greedy framing head-strip regex that absorbed document context into the protected head so the fleet compressors never ran — the root cause of ~0% savings on chat turns. With the fix a 50k-char doc now compresses 95% (13255->684 tok) and the saving is attributed to the fleet tool.
 0.27.2: Honest savings baseline — always-on client framing ([SELF]/[CONN]/[PROJECT]) now counted into "before" so identical framing nets to 0% instead of showing as expansion. Accounting only; model input unchanged.
 0.27.1: Session catch-up product path — SELF knows chat history is UI/localStorage not .parle/sessions; catch-up modes; quality gate skips menus/hands-only non-product
 0.27.0: Evidence mode session|live|refresh — prep owns depth, chat dispatches hands_allowed; kill 0.26.24–26 hotfixes (no avoided-fleet fiction, no always-true product pack, no chat MEM salvage)
