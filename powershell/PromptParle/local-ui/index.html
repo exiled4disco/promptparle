@@ -542,6 +542,12 @@
     .composer-est .est-sep { opacity: .35; }
     .composer-est.empty .est-tok,
     .composer-est.empty .est-cost { color: var(--dim); font-weight: 500; }
+    .dl-row { margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .4rem; }
+    .dl-link {
+      display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; font-weight: 600;
+      color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+    .dl-link:hover { color: var(--text); }
+    body.chat-style-term .dl-row { margin-left: 3.2rem; }
     .msg .send-meta {
       margin-top: .3rem; font-size: .68rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: center; }
     .msg .send-meta .model-tag {
@@ -1917,12 +1923,33 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     /** Build readable savings line parts (shared by strip + per-message). */
     function buildSavingsExplain(meta) {
-      var orig = Number(meta.original_tokens) || 0; var opt = Number(meta.optimized_tokens) || 0; var pct = Number(meta.token_reduction_percent) || 0; var expanded = !!meta.expanded; var saved = Math.max(0, orig - opt); var provider = meta.provider || (providerEl && providerEl.value) || ''; var model = meta.model || (modelEl && modelEl.value) || ''; var dial = meta.compression_level; var rate = estimateUsdPerMillion(provider, model); var usdSaved = (saved / 1000000) * rate; var usdWould = (orig / 1000000) * rate; var usdNow = (opt / 1000000) * rate; return {
+      var orig = Number(meta.original_tokens) || 0; var opt = Number(meta.optimized_tokens) || 0; var pct = Number(meta.token_reduction_percent) || 0; var expanded = !!meta.expanded; var provider = meta.provider || (providerEl && providerEl.value) || ''; var model = meta.model || (modelEl && modelEl.value) || ''; var dial = meta.compression_level; var rate = estimateUsdPerMillion(provider, model);
+      var isAgent = !!meta.is_agent_turn;
+      // Savings basis (guardian Rule 6 — honest counterfactual):
+      //  - single-shot turn: before→after on the prompt we actually sent.
+      //  - agent/build turn: there is no single before/after, but the real value is
+      //    the avoided ingestion — the local tools (context fleet, doc/error/code
+      //    briefs, git/ssh/slice) that condensed the source BEFORE the model saw it.
+      //    That's tool_breakdown, summed. (Dropping 8 docs → summary lives here, not
+      //    in the tiny per-round delta.)
+      var toolSaved = localToolTokensSaved(meta);
+      var saved = isAgent ? toolSaved : Math.max(0, orig - opt);
+      // Counterfactual "would-be" input for the % on an agent turn = what the model
+      // would have ingested WITHOUT the tools = actual cost + avoided tokens.
+      var agentCost = Number(meta.agent_cost_tokens) || opt || 0;
+      var agentWould = agentCost + toolSaved;
+      if (isAgent) {
+        pct = agentWould > 0 ? Math.round((toolSaved / agentWould) * 100) : 0;
+      }
+      var usdSaved = (saved / 1000000) * rate; var usdWould = (orig / 1000000) * rate; var usdNow = (opt / 1000000) * rate; return {
         orig: orig,
         opt: opt,
         pct: pct,
         expanded: expanded,
         saved: saved,
+        toolSaved: toolSaved,
+        agentCost: agentCost,
+        agentWould: agentWould,
         provider: provider,
         model: model,
         dial: dial,
@@ -2532,13 +2559,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (nmeta.compression_level != null) {
           smBits.push('<span>dial ' + nmeta.compression_level + '/5</span>'); }
         sendM.innerHTML = smBits.join(' · '); div.appendChild(sendM); }
-      // Document deliverables; big download buttons
+      // Document deliverables; simple inline download link(s) on one row (no filename).
       if (nmeta && (nmeta.export_count > 0 || (nmeta.exports && nmeta.exports.length))) {
-        const ex = document.createElement('div'); ex.className = 'meta'; ex.style.borderColor = 'rgba(96, 165, 250, 0.55)'; ex.style.background = 'rgba(59, 130, 246, 0.12)'; const list = nmeta.exports || []; let html = '<span class="ok"><strong>Downloads ready</strong></span>'; html += '<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.45rem">'; list.forEach(function (e) {
-          if (!e) return; const name = String(e.name || e.file || 'file'); const url = String(e.download_url || e.downloadUrl || e.url || ''); if (!url) return; const kb = e.bytes ? Math.max(1, Math.ceil(Number(e.bytes) / 1024)) : null; html += '<a href="' + url.replace(/"/g, '') + '" download="' + name.replace(/"/g, '') + '" class="btn" ' +
-            'style="display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .7rem;font-size:.82rem;' +
-            'background:var(--accent);color:#0b1220;border-radius:8px;text-decoration:none;font-weight:600">' +
-            '⬇ ' + name + (kb ? ' · ' + kb + ' KB' : '') + '</a>'; }); html += '</div>'; ex.innerHTML = html; div.appendChild(ex); }
+        const ex = document.createElement('div'); ex.className = 'dl-row'; const list = nmeta.exports || []; var links = [];
+        list.forEach(function (e, i) {
+          if (!e) return; const name = String(e.name || e.file || 'file'); const url = String(e.download_url || e.downloadUrl || e.url || ''); if (!url) return;
+          const label = list.length > 1 ? ('Download ' + (i + 1)) : 'Download';
+          links.push('<a href="' + url.replace(/"/g, '') + '" download="' + name.replace(/"/g, '') + '" class="dl-link">⬇ ' + label + '</a>');
+        });
+        if (links.length) { ex.innerHTML = links.join(' '); div.appendChild(ex); }
+      }
       // Always-visible: what actually landed on the server (not buried in prose)
       if (nmeta && (nmeta.applied_count > 0 || (nmeta.applied_files && nmeta.applied_files.length))) {
         const ab = document.createElement('div'); ab.className = 'meta'; ab.style.borderColor = 'rgba(52, 211, 153, 0.45)'; ab.style.background = 'rgba(16, 185, 129, 0.08)'; const files = nmeta.applied_files || []; const n = nmeta.applied_count || files.length; ab.innerHTML = '<span class="ok"><strong>Landed ' + n + ' file(s) on server</strong></span>' +
@@ -2555,31 +2585,33 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           'Est. $ uses rough public list prices (blended); not a bill.\n' +
           'Model = the model that answered this turn.'; const parts = [];
         var isAgent = !!nmeta.is_agent_turn;
-        if (isAgent) {
-          // Multi-round agent build: no honest single before→after. Show a COST readout,
-          // not a savings verdict (guardian Rule 6). Credit real cross-round compression if any.
-          var rounds = nmeta.agent_rounds || 0; var cost = nmeta.agent_cost_tokens || s.opt || 0;
-          parts.push('<span class="flat">' + rounds + '-round agent build</span>');
-          parts.push('<span><span class="lbl">used</span> <span class="val">' + compactTok(cost) + '</span> <span class="lbl">tok</span></span>');
-          if (s.saved > 0) {
-            parts.push('<span class="ok">−' + compactTok(s.saved) + ' tok compressed across rounds</span>'); }
+        // before/after for the "N → M tok" chip. Agent turns have no single prompt
+        // before/after, so we use the honest counterfactual: would-have-ingested
+        // (cost + avoided by local tools) → actually sent (cost).
+        var beforeTok = isAgent ? s.agentWould : s.orig;
+        var afterTok = isAgent ? s.agentCost : s.opt;
+        // Verdict
+        if (!isAgent && s.expanded && s.opt > s.orig) {
+          parts.push('<span class="warn">↑ expanded</span>');
+        } else if (s.pct > 0 && s.saved > 0) {
+          parts.push('<span class="ok">−' + s.pct + '% tokens saved</span>');
         } else {
-          if (s.expanded && s.opt > s.orig) {
-            parts.push('<span class="warn">↑ expanded</span>'); } else if (s.pct > 0 && s.saved > 0) {
-            parts.push('<span class="ok">−' + s.pct + '% tokens saved</span>'); } else {
-            parts.push('<span class="flat">0% tokens saved</span>'); }
-          parts.push(
-            '<span><span class="lbl">before</span> <span class="val">' + compactTok(s.orig) +
-            '</span> <span class="lbl">→ after</span> <span class="val">' + compactTok(s.opt) +
-            '</span> <span class="lbl">tok</span></span>'
-          ); if (s.saved > 0) {
-            parts.push('<span class="ok">−' + compactTok(s.saved) + ' tok</span>'); }
-          parts.push(
-            '<span class="cost-tag" title="Rough estimate from public list prices (~$' +
-              s.rate + '/M tok blended). Not a bill.">est. ' +
-              formatUsdEstimate(s.usdSaved) + ' saved</span>'
-          );
+          parts.push('<span class="flat">0% tokens saved</span>');
         }
+        // before → after tokens (kept for both single-shot and agent turns)
+        parts.push(
+          '<span><span class="lbl">before</span> <span class="val">' + compactTok(beforeTok) +
+          '</span> <span class="lbl">→ after</span> <span class="val">' + compactTok(afterTok) +
+          '</span> <span class="lbl">tok</span></span>'
+        );
+        if (s.saved > 0) {
+          parts.push('<span class="ok">−' + compactTok(s.saved) + ' Tokens</span>');
+        }
+        parts.push(
+          '<span class="cost-tag" title="Rough estimate from public list prices (~$' +
+            s.rate + '/M tok blended). Not a bill.">est. ' +
+            formatUsdEstimate(s.usdSaved) + ' saved</span>'
+        );
         if (s.model) {
           parts.push('<span><span class="lbl">model</span> <span class="model-tag">' +
             String(s.model).replace(/</g, '') + '</span></span>'); } else if (s.provider) {
