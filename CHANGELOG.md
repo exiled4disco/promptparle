@@ -9,6 +9,18 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.9] - 2026-07-12
+
+### Changed
+- Portal cleanup now that the desktop client is the source of truth:
+  - Settings: removed the "Chat defaults (provider/model/dial/tools)" and
+    "Desktop project connections" editors — you set these in the desktop app,
+    which syncs them to the portal via the heartbeat. The sync API is unchanged.
+  - Admin nav: collapsed Messages / Accounts / Invitations into a single
+    **Admin** dropdown so the header no longer overflows.
+  - Dashboard: removed the "Manage provider keys" quick link (providers live on
+    the PC) and the developer-facing `POST /api/v1/prompt` note.
+
 ## [0.32.8] - 2026-07-12
 
 ### Added

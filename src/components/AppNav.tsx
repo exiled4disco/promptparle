@@ -7,6 +7,8 @@ export type AppNavItem = {
   href: string;
   label: string;
   exact?: boolean;
+  /** When set, renders as a dropdown group instead of a direct link. */
+  children?: AppNavItem[];
 };
 
 function itemActive(item: AppNavItem, pathname: string): boolean {
@@ -43,7 +45,10 @@ export function AppNav({
         className="container flex gap-1 overflow-x-auto pb-3"
         aria-label="App"
       >
-        {items.map((item) => {
+        {/* Flatten groups inline on mobile (no dropdowns in a scroll strip). */}
+        {items.flatMap((item) =>
+          item.children && item.children.length ? item.children : [item]
+        ).map((item) => {
           const active = itemActive(item, pathname);
           return (
             <Link
@@ -63,6 +68,46 @@ export function AppNav({
   return (
     <nav className="flex items-center gap-1" aria-label="App">
       {items.map((item) => {
+        if (item.children && item.children.length) {
+          const groupActive = item.children.some((c) => itemActive(c, pathname));
+          return (
+            <div key={item.label} className="relative group">
+              <button
+                type="button"
+                className={linkClass(groupActive) + " inline-flex items-center gap-1"}
+                aria-haspopup="true"
+              >
+                {item.label}
+                <span aria-hidden className="text-[0.65em] opacity-70">▾</span>
+              </button>
+              {/* CSS-only dropdown: shows on hover/focus-within, no JS needed */}
+              <div
+                className="invisible absolute right-0 top-full z-30 mt-1 min-w-[11rem] rounded-lg border border-[var(--border)] bg-[var(--bg)] p-1 opacity-0 shadow-lg transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+                role="menu"
+              >
+                {item.children.map((c) => {
+                  const cActive = itemActive(c, pathname);
+                  return (
+                    <Link
+                      key={c.href}
+                      href={c.href}
+                      role="menuitem"
+                      className={
+                        "block whitespace-nowrap rounded-md px-3 py-1.5 text-sm " +
+                        (cActive
+                          ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                          : "text-[var(--text-muted)] hover:bg-white/5 hover:text-[var(--text)]")
+                      }
+                      aria-current={cActive ? "page" : undefined}
+                    >
+                      {c.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        }
         const active = itemActive(item, pathname);
         return (
           <Link

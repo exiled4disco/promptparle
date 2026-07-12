@@ -134,11 +134,8 @@ export default async function DashboardPage({
         <section className="card p-6 lg:col-span-2">
           <h2 className="text-lg font-semibold">Quick links</h2>
           <div className="mt-4 grid gap-2">
-            <Link href="/app/providers" className="btn btn-secondary justify-start">
-              Manage provider keys
-            </Link>
             <Link href="/app/api-keys" className="btn btn-secondary justify-start">
-              Create desktop API key
+              License keys
             </Link>
             <Link href="/app/usage" className="btn btn-secondary justify-start">
               View usage history
@@ -146,11 +143,6 @@ export default async function DashboardPage({
             <Link href="/app/settings" className="btn btn-secondary justify-start">
               Retention settings
             </Link>
-          </div>
-          <div className="mt-6 rounded-xl border border-[var(--border)] bg-[var(--accent-soft)] p-4 text-sm text-[#bfdbfe]">
-            Usage appears when clients call{" "}
-            <span className="mono">POST /api/v1/prompt</span> with a desktop
-            API key. Optimize-only and full provider routing are both live.
           </div>
         </section>
       </div>
