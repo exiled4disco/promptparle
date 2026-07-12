@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.20'
+    $ver = '0.32.21'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -6510,6 +6510,19 @@ function Resolve-PromptParleEvidenceMode {
         }
     }
     $hasSession = ($memLen -ge 400) -or ($knowN -gt 0) -or ($recentAsstLen -ge 280)
+
+    # 0.32.21 — Composer attachments THIS turn are fresh, primary evidence that
+    # lives in the turn context, NOT in session MEM/KNOW. Without this, a turn like
+    # "summarize these documents in chat" (no path, no file ext in the prompt) with
+    # an established chat history satisfies $hasSession and falls through to
+    # mode=session, whose directive tells the model to answer from MEM/KNOW only and
+    # say "refresh" — so the model never reads the attached docs. Attachments must
+    # force live so prep keeps the document at full fidelity and the hands agent is
+    # allowed to read it. (The prompt reliably carries the [ATTACHED THIS TURN /
+    # [N attachment(s)] marker the composer injects.)
+    if ($p -match '\[ATTACHED THIS TURN' -or $p -match '(?im)^\s*\[\d+\s*attachment\(s\)\]') {
+        return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'composer-attachments' }
+    }
 
     # Explicit live re-pull (user agency)
     if ($p -match '(?i)\b(refresh|re-?check|re-?fetch|re-?scan|pull again|look again)\b') {

@@ -9,6 +9,22 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.21] - 2026-07-12
+
+### Fixed
+- Attached-document summary STILL returned "I don't have the contents … say
+  refresh" on turns with an established chat history — the real root cause,
+  upstream of the 0.32.18/0.32.20 fixes. The evidence-mode resolver decided
+  `session` (answer from memory only, tell the user to say "refresh") for a
+  prompt like "summarize these documents in chat" because it inspected only the
+  prompt text — which has no file path or extension — and never saw that the
+  documents were attached in the turn context. It then returned before the
+  fidelity guard could run, so the attached docs were never read. Composer
+  attachments are now recognized as fresh primary evidence and force `live`
+  mode, so prep keeps the document at full fidelity and the model reads it.
+  Plain memory-recall turns (no attachment) still resolve to `session` — no
+  regression. This is the fix that makes 0.32.18 + 0.32.20 actually reachable.
+
 ## [0.32.20] - 2026-07-12
 
 ### Fixed
