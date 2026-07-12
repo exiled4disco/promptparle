@@ -4851,7 +4851,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         (function (idx) {
           thinkTimers.push(setTimeout(function () { paintThink(idx); }, thinkSteps[idx].at)); })(ti); }
 
-      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null; const timer = controller ? setTimeout(function () { controller.abort(); }, 180000) : null; try {
+      // Tier the client abort by turn kind. Implement/tool turns run a multi-round
+      // agent loop server-side (soft deadline ≤540s), so the client backstop must be
+      // LONGER than that or it kills real work mid-turn. Quick turns fail fast.
+      // The server's own deadline returns a best-so-far answer well before this fires.
+      var actLike = /\b(implement|build|ship|create|make|fix|add|write|refactor|generate|apply|deploy|scaffold|set up|wire)\b/i.test(String(prompt || ''));
+      var abortMs = optOnly ? 120000 : (actLike || images.length || (context && context.length > 4000) ? 600000 : 240000);
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null; const timer = controller ? setTimeout(function () { controller.abort(); }, abortMs) : null; try {
         const payload = {
           provider: providerEl.value,
           profile: 'general',
@@ -4894,7 +4900,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         }
       } catch (err) {
         if (err && err.name === 'AbortError') {
-          addMsg('bot', 'Timed out. Try fewer attachments or Optimize only first.', null, true); } else {
+          var tmsg = (images.length || (context && context.length > 4000))
+            ? 'Timed out. This turn had a large attachment — try dial 4–5, or use Optimize only first.'
+            : 'Timed out — the model/agent loop ran long. Try again, lower the dial, or split the request into smaller steps. (Provider keys and work stay on this PC.)';
+          addMsg('bot', tmsg, null, true); } else {
           addMsg('bot', 'Local server error: ' + (err.message || err), null, true); }
       } finally {
         if (timer) clearTimeout(timer); for (var ci = 0; ci < thinkTimers.length; ci++) clearTimeout(thinkTimers[ci]); const w = document.getElementById('waiting'); if (w) w.remove(); // Belt-and-suspenders: never leave chips after a send attempt

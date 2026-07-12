@@ -1879,7 +1879,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.29.0'
+    $ver = '0.29.1'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -5756,6 +5756,10 @@ function Invoke-PromptParleLegacyTextHandsTurn {
         [string]$Model = '',
         [object]$Images = $null,
         [int]$MaxRounds = 0,
+        # Soft wall-clock budget for the whole turn. When the next round would
+        # exceed it, do ONE final synthesis call and return the best answer so
+        # far — never loop until the client aborts. 0 = derive from rounds.
+        [int]$DeadlineSeconds = 0,
         [switch]$OptimizeOnly
     )
     if ($MaxRounds -le 0) {
@@ -5796,8 +5800,24 @@ function Invoke-PromptParleLegacyTextHandsTurn {
     $lastResp = ''
     $lastResult = $null
 
+    # Soft deadline: keep the total turn under a wall-clock budget so the client
+    # never has to hard-abort (which would discard partial work + uncaptured
+    # tokens). One provider call can take ~180s; leave room for a final synthesis.
+    if ($DeadlineSeconds -le 0) {
+        $DeadlineSeconds = [Math]::Min(540, 150 * [Math]::Max(1, $MaxRounds))
+    }
+    $deadlineHit = $false
+    $turnStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
     for ($round = 1; $round -le $MaxRounds; $round++) {
         $roundsUsed = $round
+        # Before starting a fresh round (past the first), check the budget. If we
+        # are close, stop looping and force a final answer-now synthesis instead.
+        if ($round -gt 1 -and $turnStopwatch.Elapsed.TotalSeconds -ge $DeadlineSeconds) {
+            Write-Host ("  agent: soft deadline {0}s reached at round {1} — final synthesis, returning best-so-far" -f $DeadlineSeconds, $round) -ForegroundColor Yellow
+            $deadlineHit = $true
+            break
+        }
         Write-Host ("  agent: round {0}/{1} (token-first hands loop)" -f $round, $MaxRounds) -ForegroundColor DarkCyan
 
         $params = @{
@@ -5894,6 +5914,39 @@ function Invoke-PromptParleLegacyTextHandsTurn {
             $lastResp = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
             $roundsUsed++
             break
+        }
+    }
+
+    # Soft-deadline break: one final answer-now synthesis using the evidence we
+    # already gathered, so the user gets a real answer (not a silent client abort).
+    if ($deadlineHit -and (Test-PromptParleResponseNeedsHands -Text ([string]$lastResp))) {
+        Write-Host '  agent: deadline final synthesis (answer now from gathered evidence)' -ForegroundColor Yellow
+        $packD = if ($allHands.Count -gt 0) { Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000 } else { '' }
+        $ctxD = @($handsCatalog, $evidenceSpine, $packD | Where-Object { $_ }) -join "`n`n"
+        $paramsD = @{
+            Prompt           = ($Prompt.Trim() + "`n`n[CLIENT DIRECTIVE — time budget reached] Answer NOW from the evidence already gathered. No more tool requests. If a document was asked for, emit it. Be complete but do not stall.")
+            Context          = $ctxD
+            System           = $System
+            Runtime          = ($runtime + ' DEADLINE: final answer, no hands.')
+            Provider         = $Provider
+            Profile          = $Profile
+            CompressionLevel = $CompressionLevel
+            Quiet            = $true
+            Raw              = $true
+        }
+        if ($Model) { $paramsD.Model = $Model }
+        try {
+            $resultD = Invoke-PromptParle @paramsD
+            $lastResult = $resultD
+            $metaD = Get-PromptParleProp $resultD 'metadata'
+            if ($metaD) {
+                try { $sumOrig += [int](Get-PromptParleProp $metaD 'original_tokens' 0) } catch { }
+                try { $sumOpt += [int](Get-PromptParleProp $metaD 'optimized_tokens' 0) } catch { }
+            }
+            $rd = [string](Get-PromptParleProp $resultD 'response' (Get-PromptParleProp $resultD 'Response' ''))
+            if ($rd) { $lastResp = $rd }
+        } catch {
+            Write-Host ("  agent: deadline synthesis failed ({0}) — returning best-so-far" -f $_.Exception.Message) -ForegroundColor DarkYellow
         }
     }
 
