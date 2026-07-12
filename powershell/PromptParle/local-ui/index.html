@@ -1941,9 +1941,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (isAgent) {
         pct = agentWould > 0 ? Math.round((toolSaved / agentWould) * 100) : 0;
       }
-      var usdSaved = (saved / 1000000) * rate; var usdWould = (orig / 1000000) * rate; var usdNow = (opt / 1000000) * rate; return {
+      // Canonical (before → after) pair used by ALL rollups so every panel agrees.
+      //  single-shot: prompt before → after.  agent: would-have-ingested → actually sent.
+      // saved = billedBefore − billedAfter by construction, so saved never exceeds before
+      // and % = saved/before is always coherent (fixes the strip vs sidebar discrepancy).
+      var billedBefore = isAgent ? agentWould : orig;
+      var billedAfter = isAgent ? agentCost : opt;
+      saved = Math.max(0, billedBefore - billedAfter);
+      var usdSaved = (saved / 1000000) * rate; var usdWould = (billedBefore / 1000000) * rate; var usdNow = (billedAfter / 1000000) * rate; return {
         orig: orig,
         opt: opt,
+        billedBefore: billedBefore,
+        billedAfter: billedAfter,
         pct: pct,
         expanded: expanded,
         saved: saved,
@@ -2009,13 +2018,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (!n || !(n.original_tokens > 0 || n.optimized_tokens > 0)) continue;
         var s = buildSavingsExplain(n);
         sum.msgs += 1;
+        // One coherent path: every turn adds its canonical before→after so
+        // Total Tokens, Saved, and % all agree (billedBefore ≥ billedAfter).
+        sum.orig += s.billedBefore; sum.opt += s.billedAfter;
+        sum.saved += s.saved; sum.usd += s.usdSaved;
         if (n.is_agent_turn) {
           sum.agentTurns += 1;
           sum.agentRounds += (n.agent_rounds || 0);
-          sum.agentCost += (n.agent_cost_tokens || s.opt || 0);
-          sum.saved += s.saved; sum.usd += s.usdSaved;   // real cross-round compression only
-        } else {
-          sum.orig += s.orig; sum.opt += s.opt; sum.saved += s.saved; sum.usd += s.usdSaved;
+          sum.agentCost += s.agentCost;
         }
         var tb = n.tool_breakdown || [];
         for (var j = 0; j < tb.length; j++) {
@@ -2154,19 +2164,25 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // headline totals are the cumulative truth the user watches).
     var RUN_STATS_CUM_KEY = 'pp_run_stats_cum_v1';
     var RUN_STATS_SEEN_KEY = 'pp_run_stats_seen_v1';
+    var CUM_SCHEMA = 3;   // bump when accrual math changes → old (stale-math) store is discarded
     function loadCumStats() {
       var d = lsGet(RUN_STATS_CUM_KEY, null);
-      if (!d || typeof d !== 'object') d = { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
+      // Discard a store written under older accrual math (schema mismatch) so stale
+      // numbers from a previous version can't linger in the sidebar forever.
+      if (!d || typeof d !== 'object' || d.schema !== CUM_SCHEMA) {
+        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
+        lsSet(RUN_STATS_SEEN_KEY, {});   // forget seen-ids too, so this session re-accrues cleanly
+      }
       return d;
     }
     function loadSeenTurns() { var s = lsGet(RUN_STATS_SEEN_KEY, null); return (s && typeof s === 'object') ? s : {}; }
     function resetCumStats() {
-      lsSet(RUN_STATS_CUM_KEY, { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 });
+      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 });
       lsSet(RUN_STATS_SEEN_KEY, {});
     }
     // Record one completed turn into the cumulative store (idempotent by id).
-    // Single-shot turns accrue their before→after; agent turns have no honest single
-    // before/after, so only their real cross-round compression credits saved (guardian Rule 6).
+    // Every turn accrues its canonical before→after (billedBefore/billedAfter from
+    // buildSavingsExplain) so cum.orig/opt/saved stay coherent with the session strip.
     function accrueTurnToCum(id, s, isAgent) {
       if (!id) return;
       var seen = loadSeenTurns();
@@ -2174,7 +2190,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       seen[id] = 1;
       var cum = loadCumStats();
       cum.msgs += 1;
-      if (!isAgent) { cum.orig += (s.orig || 0); cum.opt += (s.opt || 0); }
+      cum.orig += (s.billedBefore || 0); cum.opt += (s.billedAfter || 0);
       cum.saved += (s.saved || 0); cum.usd += (s.usdSaved || 0);
       // Bound the seen-map so it can't grow forever.
       var keys = Object.keys(seen);
@@ -2202,13 +2218,12 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           byModel[key] = { key: key, model: model, provider: prov, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
         }
         var row = byModel[key];
-        var agentTurn = !!n.is_agent_turn;
         row.msgs += 1;
-        if (!agentTurn) { row.orig += s.orig; row.opt += s.opt; }
+        row.orig += s.billedBefore; row.opt += s.billedAfter;
         row.saved += s.saved;
         row.usd += s.usdSaved;
         totals.msgs += 1;
-        if (!agentTurn) { totals.orig += s.orig; totals.opt += s.opt; }
+        totals.orig += s.billedBefore; totals.opt += s.billedAfter;
         totals.saved += s.saved;
         totals.usd += s.usdSaved;
       }
@@ -2585,11 +2600,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           'Est. $ uses rough public list prices (blended); not a bill.\n' +
           'Model = the model that answered this turn.'; const parts = [];
         var isAgent = !!nmeta.is_agent_turn;
-        // before/after for the "N → M tok" chip. Agent turns have no single prompt
-        // before/after, so we use the honest counterfactual: would-have-ingested
-        // (cost + avoided by local tools) → actually sent (cost).
-        var beforeTok = isAgent ? s.agentWould : s.orig;
-        var afterTok = isAgent ? s.agentCost : s.opt;
+        // Canonical before→after (single-shot: prompt; agent: would-ingest → sent).
+        var beforeTok = s.billedBefore;
+        var afterTok = s.billedAfter;
         // Verdict
         if (!isAgent && s.expanded && s.opt > s.orig) {
           parts.push('<span class="warn">↑ expanded</span>');
