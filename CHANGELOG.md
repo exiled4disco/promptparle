@@ -9,6 +9,27 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.10] - 2026-07-12
+
+### Fixed
+- Downloads: the client no longer shows a "Downloads ready · click to
+  download" header + link when zero files were actually written. A failed
+  ```file``` block (empty/unsupported/oversized) previously produced a link to
+  a token that was never registered → the browser got a 404 "file wasn't
+  available on site" and the user was told a file existed that didn't. Now it
+  reports "Deliverable not created" with the reason, and only emits download
+  links for files that really landed.
+- Web-search intent: a question about a LOCAL artifact (a filename with a
+  doc/data extension, "this chat", "this PC", "workbook/spreadsheet",
+  "downloads folder") no longer triggers a web search. This fixes turns like
+  "what's in ALL_ISSUES.xlsx" wrongly searching the web (and returning
+  irrelevant Google Drive / Windows-update results), and removes the ~2s+ that
+  wasted per turn.
+
+### Changed
+- Tightened web-search / page-fetch timeouts during turn prep (12–18s → 6–7s)
+  so a slow or hung fetch can't add 10s+ of latency to a turn.
+
 ## [0.32.9] - 2026-07-12
 
 ### Changed

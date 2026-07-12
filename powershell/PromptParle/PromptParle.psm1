@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.9'
+    $ver = '0.32.10'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -2616,11 +2616,27 @@ function Get-PromptParleWebSearchQuery {
 }
 
 function Test-PromptParleWebSearchIntent {
-    <# 0.18/0.21/0.26.17: structural web observe — URLs/domains/research verbs + live/current-info asks. #>
+    <# 0.18/0.21/0.26.17: structural web observe — URLs/domains/research verbs + live/current-info asks.
+       0.32.x: local-reference guard first — a question about a local file / this
+       chat / a spreadsheet must NOT trigger a (slow, wrong) web search. #>
     param([string]$Prompt)
     if (-not $Prompt) { return $false }
     $b = $Prompt.ToLowerInvariant()
+    # An explicit URL always means web.
     if ($b -match 'https?://') { return $true }
+    # LOCAL-REFERENCE GUARD: if the ask is clearly about a local artifact — a
+    # filename with a doc/data extension, a spreadsheet/workbook, "this chat",
+    # "this PC", a downloads/desktop path — do NOT infer a web search. These are
+    # local/SSH-tool targets. (Fixes "what's currently in ALL ISSUES.xlsx"
+    # wrongly web-searching, and the ~2s+ it wasted.)
+    $localRef = (
+        ($b -match '(?i)\.(xlsx?|xls|csv|docx?|pdf|md|txt|json|log|pptx?|zip|ps1|psm1|py|ts|tsx|js)\b') -or
+        ($b -match '(?i)\b(this chat|in chat|this conversation|this pc|my (pc|computer|machine|downloads|desktop|documents)|downloads folder|local (file|folder|drive)|workbook|spreadsheet|worksheet)\b')
+    )
+    # Only skip when there is ALSO no explicit web signal (URL handled above;
+    # "search the web"/domain handled below force web even for a local-ish word).
+    $explicitWeb = ($b -match '(?i)\b(search the web|web search|online|on the (web|internet)|from (the )?(web|internet)|google (it|for))\b') -or ($b -match '(?i)\b[\w.-]+\.(?:com|org|net|io|ai|dev|co)\b')
+    if ($localRef -and -not $explicitWeb) { return $false }
     if ($b -match '(?i)\b(search the web|web search|look up|google|find online|according to (the )?(docs|documentation|internet|web)|on the website|from (their|the) site)\b') { return $true }
     # research / understand / strengths of a product or site
     if ($b -match '(?i)\b(research|investigate|dig into|learn about|tell me about|overview of|strengths?( of)?|weaknesses?( of)?|capabilities of|understand (this |the )?(solution|product|company|platform|site|website))\b') { return $true }
@@ -2692,7 +2708,7 @@ function Invoke-PromptParleWebSearchLocal {
     try {
         $enc = [uri]::EscapeDataString($q)
         $ddgUrl = "https://api.duckduckgo.com/?q=$enc&format=json&no_html=1&skip_disambig=1"
-        $ddg = Invoke-RestMethod -Uri $ddgUrl -TimeoutSec 12 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+        $ddg = Invoke-RestMethod -Uri $ddgUrl -TimeoutSec 6 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
         $abs = [string](Get-PromptParleProp $ddg 'AbstractText' '')
         if (-not $abs) { $abs = [string](Get-PromptParleProp $ddg 'Abstract' '') }
         $absUrl = [string](Get-PromptParleProp $ddg 'AbstractURL' '')
@@ -2755,7 +2771,7 @@ function Invoke-PromptParleWebSearchLocal {
         try {
             $enc = [uri]::EscapeDataString($q)
             $osUrl = "https://en.wikipedia.org/w/api.php?action=opensearch&search=$enc&limit=$MaxResults&namespace=0&format=json"
-            $os = Invoke-RestMethod -Uri $osUrl -TimeoutSec 12 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+            $os = Invoke-RestMethod -Uri $osUrl -TimeoutSec 6 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
             # opensearch: [query, [titles], [descs], [urls]]
             $titles = @()
             $descs = @()
@@ -2776,7 +2792,7 @@ function Invoke-PromptParleWebSearchLocal {
                     try {
                         $canon = ($t -replace ' ', '_')
                         $sumUrl = "https://en.wikipedia.org/api/rest_v1/page/summary/$([uri]::EscapeDataString($canon))"
-                        $sum = Invoke-RestMethod -Uri $sumUrl -TimeoutSec 10 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+                        $sum = Invoke-RestMethod -Uri $sumUrl -TimeoutSec 6 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
                         $ext = [string](Get-PromptParleProp $sum 'extract' '')
                         if ($ext) {
                             $d = if ($ext.Length -gt 200) { $ext.Substring(0, 197) + '…' } else { $ext }
@@ -2976,7 +2992,7 @@ function Invoke-PromptParleWebSearchHtml {
     $url = "https://html.duckduckgo.com/html/?q=$enc"
     $html = ''
     try {
-        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 18 -Headers @{
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 7 -Headers @{
             'User-Agent' = $ua
             'Accept'     = 'text/html,application/xhtml+xml'
         } -ErrorAction Stop
@@ -7219,7 +7235,7 @@ function Invoke-PromptParleWebPageFetch {
     if ($url -notmatch '^https?://') { $url = 'https://' + $url }
     $ua = 'PromptParle/0.26 (desktop observe; +https://promptparle.com)'
     try {
-        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 18 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 7 -Headers @{ 'User-Agent' = $ua } -ErrorAction Stop
         $html = [string]$resp.Content
         if (-not $html) {
             return [pscustomobject]@{ ok = $false; text = ''; url = $url; notes = @('empty-body') }
@@ -12527,21 +12543,34 @@ function Invoke-PromptParleDeliverResponseBlocks {
         }
     }
 
+    # Nothing landed AND nothing to report → leave the text untouched.
     if ($delivered.Count -eq 0 -and $errors.Count -eq 0) {
         return [pscustomobject]@{ text = $text; exports = @(); count = 0; errors = @() }
     }
 
     $hdr = New-Object System.Collections.Generic.List[string]
-    $hdr.Add('## Downloads ready')
-    $hdr.Add('_Client built real files from ```file name=…``` blocks — click to download._')
-    $hdr.Add('')
-    foreach ($d in $delivered) {
-        $kb = [Math]::Max(1, [int][Math]::Ceiling($d.bytes / 1024.0))
-        $hdr.Add(("- **[{0}]({1})** · {2} KB · ``{3}``" -f $d.name, $d.download_url, $kb, $d.content_type))
-    }
-    if ($errors.Count -gt 0) {
+    # ONLY claim "Downloads ready" + emit download links when a file was actually
+    # written. If delivery failed (empty/unsupported/oversized block), a header +
+    # "click to download" would point at a token that was never registered → the
+    # browser gets a 404 "file wasn't available on site" and the user is told a
+    # file exists that does not. Surface the failure instead.
+    if ($delivered.Count -gt 0) {
+        $hdr.Add('## Downloads ready')
+        $hdr.Add('_Client built real files from ```file name=…``` blocks — click to download._')
         $hdr.Add('')
-        $hdr.Add('**Deliver errors:**')
+        foreach ($d in $delivered) {
+            $kb = [Math]::Max(1, [int][Math]::Ceiling($d.bytes / 1024.0))
+            $hdr.Add(("- **[{0}]({1})** · {2} KB · ``{3}``" -f $d.name, $d.download_url, $kb, $d.content_type))
+        }
+        if ($errors.Count -gt 0) {
+            $hdr.Add('')
+            $hdr.Add('**Some deliverables failed:**')
+            foreach ($e in $errors) { $hdr.Add("- $e") }
+        }
+    } else {
+        # No file was created — do NOT show a download link. Report why.
+        $hdr.Add('## Deliverable not created')
+        $hdr.Add('_No file was written (the ```file``` block was empty, unsupported, or too large). Nothing to download._')
         foreach ($e in $errors) { $hdr.Add("- $e") }
     }
     $hdr.Add('')
