@@ -4,9 +4,25 @@ import { PageHeader } from "@/components/PageHeader";
 import { getSessionUser } from "@/lib/auth";
 import { formatNumber, providerLabel } from "@/lib/format";
 import { getUsageSummary } from "@/lib/usage";
+import { getToolSavingsSummary } from "@/lib/tool-savings";
 import { UsageHistory } from "./UsageHistory";
 
 export const metadata = { title: "Usage" };
+
+const TOOL_LABELS: Record<string, string> = {
+  fleet: "Context fleet",
+  relevant_slice: "Relevant slice",
+  git: "Git (local)",
+  ssh_read: "SSH read",
+  error_brief: "Error brief",
+  chat_memory: "Chat memory",
+  budget_cap: "Budget cap",
+  framing: "Framing",
+};
+
+function toolLabel(id: string): string {
+  return TOOL_LABELS[id] ?? id;
+}
 
 export default async function UsagePage() {
   const user = await getSessionUser();
@@ -17,7 +33,23 @@ export default async function UsagePage() {
     includePromptBodies: false,
   });
 
+  const toolSavings = await getToolSavingsSummary(user.id, { sinceDays: 30 });
+
   const isFree = usage.planLimits.id === "free";
+
+  const toolStats = toolSavings.byTool
+    .slice()
+    .sort((a, b) => b.tokensSaved - a.tokensSaved)
+    .map((row) => ({
+      id: row.tool,
+      label: toolLabel(row.tool),
+      tokensSaved: row.tokensSaved,
+      occurrences: row.occurrences,
+      pct:
+        toolSavings.totalTokensSaved > 0
+          ? Math.round((row.tokensSaved / toolSavings.totalTokensSaved) * 100)
+          : 0,
+    }));
 
   const providerStats = usage.byProvider.map((row) => {
     const saved = Math.max(0, row.originalTokens - row.optimizedTokens);
@@ -100,6 +132,58 @@ export default async function UsagePage() {
           ) : (
             <p className="text-sm text-[var(--text-muted)]">
               Appears after your first completed request.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Per-tool savings: total stat + one row per tool */}
+      <div className="card overflow-hidden">
+        <div className="grid grid-cols-2 divide-y divide-[var(--border)] sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          <StatCell
+            label="Tokens saved by tools"
+            value={formatNumber(toolSavings.totalTokensSaved)}
+            hint="tokens"
+            accent
+          />
+          <StatCell
+            label="Occurrences"
+            value={formatNumber(toolSavings.totalOccurrences)}
+            hint={`last ${toolSavings.sinceDays} days`}
+          />
+        </div>
+
+        <div className="flex flex-col gap-2 border-t border-[var(--border)] px-4 py-3 sm:px-5">
+          <div className="shrink-0 text-[0.7rem] font-medium uppercase tracking-wide text-[var(--text-dim)]">
+            Savings by tool
+          </div>
+          {toolStats.length > 0 ? (
+            <div className="grid gap-2">
+              {toolStats.map((t) => (
+                <div key={t.id} className="flex items-center gap-3 text-sm">
+                  <span className="w-28 shrink-0 truncate font-medium text-[var(--text)]">
+                    {t.label}
+                  </span>
+                  <span className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
+                    <span
+                      className="absolute inset-y-0 left-0 rounded-full bg-[var(--success)]"
+                      style={{ width: `${Math.max(2, t.pct)}%` }}
+                      aria-hidden
+                    />
+                  </span>
+                  <span className="shrink-0 font-semibold text-[var(--success)]">
+                    {formatNumber(t.tokensSaved)}
+                  </span>
+                  <span className="w-20 shrink-0 text-right text-xs text-[var(--text-dim)]">
+                    {formatNumber(t.occurrences)} occ
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-[var(--text-muted)]">
+              No per-tool savings recorded yet — use the desktop client to start
+              tracking.
             </p>
           )}
         </div>

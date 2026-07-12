@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.28.0'
+    ModuleVersion     = '0.29.0'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -68,6 +68,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.29.0: Tool-savings bridge + avoided-ingest attribution. Local tools that do work the model can't (git, ssh_read, relevant_slice) now report an honest avoided-ingest saving (raw output that never hit the model vs the compact result sent). Per-turn savings roll up locally and flush to the portal on heartbeat (aggregate numbers only — no prompt bodies), so the Usage page shows a "Savings by tool" breakdown across devices. In-chat savings strip gains a "By tool" line. Also synced the Windows/Linux/FromGitHub installers to parity (BaseUrl + SkipInvitePrompt).
 0.28.0: Per-tool savings breakdown + head-strip fix. Prep now emits a vendor-neutral tool_breakdown ([{tool,kind,chars_without,chars_with,chars_saved}]) shown per turn ("By tool: fleet -12573t, …"). Fixed a greedy framing head-strip regex that absorbed document context into the protected head so the fleet compressors never ran — the root cause of ~0% savings on chat turns. With the fix a 50k-char doc now compresses 95% (13255->684 tok) and the saving is attributed to the fleet tool.
 0.27.2: Honest savings baseline — always-on client framing ([SELF]/[CONN]/[PROJECT]) now counted into "before" so identical framing nets to 0% instead of showing as expansion. Accounting only; model input unchanged.
 0.27.1: Session catch-up product path — SELF knows chat history is UI/localStorage not .parle/sessions; catch-up modes; quality gate skips menus/hands-only non-product

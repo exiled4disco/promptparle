@@ -1772,7 +1772,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         applied_files: appliedList,
         applied_count: appliedCount,
         exports: exportsList,
-        export_count: exportCount
+        export_count: exportCount,
+        tool_breakdown: (function () { var tb = metaGet(raw, 'tool_breakdown') ?? metaGet(raw, 'toolBreakdown') ?? []; return Array.isArray(tb) ? tb : []; })()
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -1845,12 +1846,39 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         flat: !expanded && !(pct > 0)
       }; }
 
+    /** Friendly labels for the per-tool breakdown line. */
+    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page' };
+
+    /** "By tool: Context fleet −6.7k, Git (local) −1.9k" — honest counterfactual, ~tokens (chars/4). */
+    function buildToolBreakdownLine(meta) {
+      var tb = meta && meta.tool_breakdown; if (!tb || !tb.length) return '';
+      var parts = [];
+      for (var i = 0; i < tb.length; i++) {
+        var t = tb[i]; if (!t) continue;
+        var name = TOOL_LABELS[t.tool] || String(t.tool || '');
+        if (!name) continue;
+        var kind = String(t.kind || 'measured');
+        var cs = Number(t.chars_saved) || 0;
+        if (kind === 'none') { continue; }         // safety tools: not a token saving
+        if (cs <= 0) continue;
+        var tok = Math.ceil(cs / 4);
+        parts.push({ name: name, tok: tok });
+      }
+      if (!parts.length) return '';
+      parts.sort(function (a, b) { return b.tok - a.tok; });
+      var frag = parts.map(function (p) { return p.name + ' −' + compactTok(p.tok); });
+      return 'By tool: ' + frag.join(', ');
+    }
+
     function updateSavingsStrip(meta) {
       if (!meta || !(meta.original_tokens > 0 || meta.optimized_tokens > 0)) {
         return; }
-      var s = buildSavingsExplain(meta); var big = (s.expanded && s.opt > s.orig) ? '↑ expanded' : (s.pct > 0 && s.saved > 0 ? '−' + s.pct + '% tokens' : '0% saved'); var bits = []; bits.push('before ' + compactTok(s.orig) + ' → after ' + compactTok(s.opt) + ' tok'); if (s.saved > 0) bits.push(compactTok(s.saved) + ' tok cut'); bits.push('est. ' + formatUsdEstimate(s.usdSaved) + ' saved'); if (s.model) bits.push('model ' + s.model); else if (s.provider) bits.push(s.provider); if (s.dial != null) bits.push('dial ' + s.dial + '/5'); savingsStrip.innerHTML =
+      var s = buildSavingsExplain(meta); var big = (s.expanded && s.opt > s.orig) ? '↑ expanded' : (s.pct > 0 && s.saved > 0 ? '−' + s.pct + '% tokens' : '0% saved'); var bits = []; bits.push('before ' + compactTok(s.orig) + ' → after ' + compactTok(s.opt) + ' tok'); if (s.saved > 0) bits.push(compactTok(s.saved) + ' tok cut'); bits.push('est. ' + formatUsdEstimate(s.usdSaved) + ' saved'); if (s.model) bits.push('model ' + s.model); else if (s.provider) bits.push(s.provider); if (s.dial != null) bits.push('dial ' + s.dial + '/5');
+      var toolLine = buildToolBreakdownLine(meta);
+      savingsStrip.innerHTML =
         '<span class="big' + (s.flat ? ' flat' : '') + '">' + big + '</span>' +
-        '<span class="muted">' + bits.join(' · ') + '</span>'; savingsStrip.classList.add('show'); }
+        '<span class="muted">' + bits.join(' · ') + '</span>' +
+        (toolLine ? '<span class="muted tool-breakdown" style="display:block;margin-top:2px;opacity:.85">' + escapeHtml(toolLine) + '</span>' : ''); savingsStrip.classList.add('show'); }
 
     /** Epoch: only count chat turns saved after this (Reset). Chats stay; stats restart. */
     var RUN_STATS_EPOCH_KEY = 'pp_run_stats_epoch_v1';

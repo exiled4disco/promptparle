@@ -772,6 +772,159 @@ function Get-PromptParleSessionStatePath {
     return (Join-Path $script:PromptParleConfigDir 'session.json')
 }
 
+# --- 0.29 Tool-savings bridge: local rollup → periodic POST to portal ---
+# Privacy: aggregate numbers/labels only (tool, provider, chars_saved, count).
+# NEVER prompt/context bodies. Rolls up per day; flushed on heartbeat.
+$script:PromptParleToolSavingsTools = @(
+    'fleet', 'error_brief', 'code_brief', 'relevant_slice', 'git', 'ssh_read',
+    'chat_memory', 'budget_cap', 'framing', 'web_page'
+)
+
+function Get-PromptParleToolSavingsPath {
+    return (Join-Path $script:PromptParleConfigDir 'tool-savings.json')
+}
+
+function Add-PromptParleToolSavings {
+    <#
+    .SYNOPSIS
+      Accumulate one turn's tool_breakdown into the local daily rollup.
+      Keyed by day|tool|provider → { chars_saved, occurrences }. Numbers only.
+    #>
+    param(
+        [object[]]$Breakdown = @(),
+        [string]$Provider = 'unknown',
+        [string]$Day = ''
+    )
+    if (-not $Breakdown -or $Breakdown.Count -eq 0) { return }
+    $d = if ($Day) { $Day } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') }
+    $prov = if ($Provider) { [string]$Provider } else { 'unknown' }
+    # Load existing rows into a plain hashtable keyed "day|tool|provider".
+    $rows = Get-PromptParleToolSavingsRows
+    foreach ($b in $Breakdown) {
+        if ($null -eq $b) { continue }
+        $tool = [string](Get-PromptParleProp $b 'tool' '')
+        if (-not $tool -or ($script:PromptParleToolSavingsTools -notcontains $tool)) { continue }
+        $saved = [int](Get-PromptParleProp $b 'chars_saved' 0)
+        if ($saved -le 0) { continue }   # only real savings roll up (safety tools = 0)
+        $key = "$d|$tool|$prov"
+        if (-not $rows.ContainsKey($key)) {
+            $rows[$key] = @{ day = $d; tool = $tool; provider = $prov; chars_saved = 0; occurrences = 0 }
+        }
+        $rows[$key]['chars_saved'] = [int]$rows[$key]['chars_saved'] + $saved
+        $rows[$key]['occurrences'] = [int]$rows[$key]['occurrences'] + 1
+    }
+    Save-PromptParleToolSavingsRows -Rows $rows
+}
+
+function Get-PromptParleToolSavingsRows {
+    <# Load the rollup file into a plain hashtable keyed "day|tool|provider". #>
+    $path = Get-PromptParleToolSavingsPath
+    $rows = @{}
+    if (-not (Test-Path -LiteralPath $path)) { return $rows }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if (-not $raw) { return $rows }
+        $parsed = ConvertFrom-PromptParleJson -Json $raw
+        $arr = Get-PromptParleProp $parsed 'rows' @()
+        foreach ($r in @($arr)) {
+            if ($null -eq $r) { continue }
+            $day = [string](Get-PromptParleProp $r 'day' '')
+            $tool = [string](Get-PromptParleProp $r 'tool' '')
+            $prov = [string](Get-PromptParleProp $r 'provider' 'unknown')
+            if (-not $day -or -not $tool) { continue }
+            $key = "$day|$tool|$prov"
+            $rows[$key] = @{
+                day         = $day
+                tool        = $tool
+                provider    = $prov
+                chars_saved = [int](Get-PromptParleProp $r 'chars_saved' 0)
+                occurrences = [int](Get-PromptParleProp $r 'occurrences' 0)
+            }
+        }
+    } catch { return @{} }
+    return $rows
+}
+
+function Save-PromptParleToolSavingsRows {
+    <# Persist the rollup hashtable as { rows: [ {day,tool,provider,chars_saved,occurrences} ] }. #>
+    param([hashtable]$Rows = @{})
+    $path = Get-PromptParleToolSavingsPath
+    $list = New-Object System.Collections.ArrayList
+    foreach ($k in @($Rows.Keys)) {
+        $r = $Rows[$k]
+        [void]$list.Add([pscustomobject]@{
+            day         = [string]$r['day']
+            tool        = [string]$r['tool']
+            provider    = [string]$r['provider']
+            chars_saved = [int]$r['chars_saved']
+            occurrences = [int]$r['occurrences']
+        })
+    }
+    try {
+        $obj = [pscustomobject]@{ rows = @($list.ToArray()) }
+        $json = ConvertTo-PromptParleJson -InputObject $obj -Depth 6
+        Set-Content -LiteralPath $path -Value $json -Encoding UTF8
+    } catch { }
+}
+
+function Send-PromptParleToolSavings {
+    <#
+    .SYNOPSIS
+      Flush unsent daily rollup rows to the portal (POST /api/v1/desktop/savings).
+      On 200, clears the flushed rows. Best-effort; silent on failure (offline OK).
+    #>
+    param([int]$MinRows = 1)
+    $path = Get-PromptParleToolSavingsPath
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $store = $null
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if ($raw) { $store = ConvertFrom-PromptParleJson -Json $raw -AsHashtable }
+    } catch { return }
+    if ($null -eq $store -or -not $store.ContainsKey('rows')) { return }
+    $rows = $store['rows']
+    $keys = @($rows.Keys)
+    if ($keys.Count -lt $MinRows) { return }
+
+    # Group by day → items[] for the endpoint (one POST per day present)
+    $byDay = @{}
+    foreach ($k in $keys) {
+        $r = $rows[$k]
+        $day = [string]$r['day']
+        if (-not $byDay.ContainsKey($day)) { $byDay[$day] = New-Object System.Collections.ArrayList }
+        [void]$byDay[$day].Add(@{
+            tool        = [string]$r['tool']
+            provider    = [string]$r['provider']
+            chars_saved = [int]$r['chars_saved']
+            occurrences = [int]$r['occurrences']
+        })
+    }
+    $sentAny = $false
+    foreach ($day in @($byDay.Keys)) {
+        $items = @($byDay[$day].ToArray())
+        if ($items.Count -eq 0) { continue }
+        try {
+            $body = @{ day = $day; items = $items }
+            $null = Invoke-PromptParleApi -Method POST -Path '/api/v1/desktop/savings' -Body $body
+            # On success, drop this day's rows from the store
+            foreach ($k in @($rows.Keys)) {
+                if ([string]$rows[$k]['day'] -eq $day) { [void]$rows.Remove($k) }
+            }
+            $sentAny = $true
+        } catch {
+            # Offline / older server without the endpoint: keep rows for next flush.
+            Write-PromptParleDebugLog ("tool-savings flush skipped: " + $_.Exception.Message)
+        }
+    }
+    if ($sentAny) {
+        try {
+            $store['rows'] = $rows
+            $json = ($store | ConvertTo-PromptParleJson -Depth 6)
+            Set-Content -LiteralPath $path -Value $json -Encoding UTF8
+        } catch { }
+    }
+}
+
 # --- 0.26 multi-connection + on-disk catalog (token-cheap) ---
 $script:PromptParleMaxLocalConnections = 5
 $script:PromptParleMaxKnowledgeConnections = 2
@@ -1726,7 +1879,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.28.0'
+    $ver = '0.29.0'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -3835,9 +3988,13 @@ function Get-PromptParleRelevantSlice {
     $chunks.Add("[SLICE] prompt-ranked code (fidelity windows · top $($top.Count) of $($scored.Count) hits · scanned $scanned)")
     $used = 0
     $fileN = 0
+    # Counterfactual baseline: full chars of the files we sliced from (what a
+    # no-tool client would have had to paste/ingest to reach the same answer).
+    $rawChars = 0
     foreach ($f in $top) {
         $fileN++
         $lineArr = @($f.lines)
+        try { $rawChars += (($lineArr -join "`n").Length) } catch { }
         $ranges = New-Object System.Collections.Generic.List[object]
         $hits = @($f.hits)
         if ($hits.Count -eq 0) {
@@ -3889,6 +4046,9 @@ function Get-PromptParleRelevantSlice {
         text  = $text
         notes = @("slice: $fileN files · score-top · $used chars")
         files = $fileN
+        # avoided-ingest counterfactual: full sliced-file chars vs the slice emitted
+        chars_without = $rawChars
+        chars_with    = $text.Length
     }
 }
 
@@ -4148,9 +4308,13 @@ function Get-PromptParleGitDiffPack {
         if ($patch.Trim()) { $parts.Add($patch.Trim()) }
     } catch { }
     $text = ($parts -join "`n")
+    # avoided-ingest side channel: raw git output the model could not have produced
+    # itself (git ran on this PC for 0 model tokens). prep reads this right after.
+    $script:PromptParleLastGitRawChars = $text.Length
     if ($text.Length -gt $MaxChars) {
         $text = $text.Substring(0, $MaxChars) + "`n…[diff]"
     }
+    $script:PromptParleLastGitWithChars = $text.Length
     return $text
 }
 
@@ -6355,6 +6519,7 @@ function Get-PromptParleSshPromptEvidence {
     $notes = New-Object System.Collections.Generic.List[string]
     $got = New-Object System.Collections.Generic.List[string]
     $used = 0
+    $sshRawTotal = 0
     $n = 0
     $hostLabel = $target
     if ($cwd) { $hostLabel = "$target · $cwd" }
@@ -6410,6 +6575,8 @@ fi
         }
         $content = ($contentLines -join "`n")
         if (-not $content) { continue }
+        # Counterfactual: full remote file chars (the model cannot ssh; this ran on PC).
+        $sshRawTotal += $content.Length
 
         $room = $MaxChars - $used - 80
         if ($room -lt 200) { break }
@@ -6442,6 +6609,9 @@ fi
         notes = @($notes.ToArray())
         files = $blocks.Count
         paths = @($got.ToArray())
+        # avoided-ingest: full remote file chars vs the packed evidence emitted
+        chars_without = $sshRawTotal
+        chars_with    = $textOut.Length
     }
 }
 
@@ -8662,6 +8832,11 @@ function Invoke-PromptParleAgentLocalPrep {
                 if ($sn -and $sn -match '^ssh-ok:') { [void]$notes.Add([string]$sn) }
             }
             [void]$tools.Add('ssh')
+            try {
+                $sw = [int](Get-PromptParleProp $sshEv 'chars_without' 0)
+                $swWith = [int](Get-PromptParleProp $sshEv 'chars_with' ($sshEv.text.Length))
+                if ($sw -gt $swWith) { & $recordToolSaving 'ssh_read' $sw $swWith 'avoided-ingest' }
+            } catch { }
         } elseif ($sshEv -and $sshEv.notes) {
             $miss = @($sshEv.notes | Where-Object { $_ -match '^ssh-miss:' } | Select-Object -First 4)
             if ($miss.Count -gt 0) {
@@ -8892,7 +9067,11 @@ function Invoke-PromptParleAgentLocalPrep {
         try {
             if ($wantDiff -and $ws.is_git) {
                 $extra = Get-PromptParleGitDiffPack -MaxChars ([Math]::Min(18000, [int]($budget * 0.55)))
-                if ($extra) { [void]$notes.Add('diff'); [void]$tools.Add('git_diff') }
+                if ($extra) {
+                    [void]$notes.Add('diff'); [void]$tools.Add('git_diff')
+                    $gw = [int]$script:PromptParleLastGitRawChars; $gwWith = [int]$script:PromptParleLastGitWithChars
+                    if ($gw -gt $gwWith) { & $recordToolSaving 'git' $gw $gwWith 'avoided-ingest' }
+                }
             } elseif ($wantDeps) {
                 $extra = Get-PromptParleWorkspaceDepsMap -MaxChars 2800
                 if ($extra) { [void]$notes.Add('deps'); [void]$tools.Add('deps') }
@@ -8905,6 +9084,11 @@ function Invoke-PromptParleAgentLocalPrep {
                     $extra = $sl.text
                     foreach ($n in @($sl.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
                     [void]$tools.Add('relevant_slice')
+                    try {
+                        $slw = [int](Get-PromptParleProp $sl 'chars_without' 0)
+                        $slWith = [int](Get-PromptParleProp $sl 'chars_with' ($sl.text.Length))
+                        if ($slw -gt $slWith) { & $recordToolSaving 'relevant_slice' $slw $slWith 'avoided-ingest' }
+                    } catch { }
                 } elseif ($wantMap -or $bodyLen -lt 40) {
                     $extra = Get-PromptParleWorkspaceFileIndex -MaxChars 1800
                     if ($extra) { [void]$notes.Add('idx'); [void]$tools.Add('file_index') }
@@ -8934,6 +9118,11 @@ function Invoke-PromptParleAgentLocalPrep {
                 foreach ($n in @($sl.notes)) { if ($n) { [void]$notes.Add([string]$n) } }
                 [void]$notes.Add('slice>bulk')
                 [void]$tools.Add('relevant_slice')
+                try {
+                    $slw2 = [int](Get-PromptParleProp $sl 'chars_without' 0)
+                    $slWith2 = [int](Get-PromptParleProp $sl 'chars_with' ($sl.text.Length))
+                    if ($slw2 -gt $slWith2) { & $recordToolSaving 'relevant_slice' $slw2 $slWith2 'avoided-ingest' }
+                } catch { }
             }
         } catch { }
     } elseif ($ws -and $ws.exists -and $ws.is_git -and $wantDiff) {
@@ -8946,6 +9135,8 @@ function Invoke-PromptParleAgentLocalPrep {
                     $ctx = if ($connKeep) { $connKeep + "`n`n" + $gd } else { $gd }
                     [void]$notes.Add('diff>files')
                     [void]$tools.Add('git_diff')
+                    $gw2 = [int]$script:PromptParleLastGitRawChars; $gwWith2 = [int]$script:PromptParleLastGitWithChars
+                    if ($gw2 -gt $gwWith2) { & $recordToolSaving 'git' $gw2 $gwWith2 'avoided-ingest' }
                 }
             } catch { }
         }
@@ -15780,6 +15971,9 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
                             app_version = [string]$ver
                         }
                         $result = Invoke-PromptParleApi -Method POST -Path '/api/v1/desktop/heartbeat' -Body $body
+                        # Piggyback: flush accumulated per-tool savings to the portal
+                        # (aggregate numbers only). Best-effort; failure never blocks heartbeat.
+                        try { Send-PromptParleToolSavings } catch { }
                         $json = ($result | ConvertTo-Json -Depth 8 -Compress)
                         Write-PromptParleHttpResponse -Context $ctx -ContentType 'application/json; charset=utf-8' -Body $json
                     } catch {
@@ -16822,6 +17016,13 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
                                 local_tools             = @($localNotes)
                                 tool_breakdown          = @($toolBreakdownOut)
                             }
+                            # Roll up this turn's per-tool savings for the portal bridge
+                            # (aggregate numbers only; flushed on heartbeat). Best-effort.
+                            try {
+                                if ($toolBreakdownOut -and @($toolBreakdownOut).Count -gt 0) {
+                                    Add-PromptParleToolSavings -Breakdown @($toolBreakdownOut) -Provider ([string]$metaOut.provider)
+                                }
+                            } catch { }
                             $notesRaw = Get-PromptParleProp $metaIn 'notes' @()
                             if ($null -ne $notesRaw) {
                                 $nAcc = New-Object System.Collections.ArrayList

@@ -64,6 +64,7 @@ model User {
   invitationsSent      Invitation[] @relation("InvitationsSent")
   invitationAccepted   Invitation?  @relation("InvitationAccepted")
   feedbackSubmissions  FeedbackSubmission[]
+  toolSavingsDaily     ToolSavingsDaily[]
 
   @@map("users")
 }
@@ -202,6 +203,25 @@ model DesktopClient {
   @@unique([userId, clientId])
   @@index([userId, lastSeenAt])
   @@map("desktop_clients")
+}
+
+// Per-tool aggregate token savings pushed by local-first desktop clients.
+// Privacy: aggregate counts/labels only. no prompt/context bodies ever stored.
+model ToolSavingsDaily {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  day         String // "YYYY-MM-DD" (UTC)
+  tool        String // fleet | relevant_slice | git | ssh_read | error_brief | chat_memory | budget_cap | framing
+  provider    String
+  charsSaved  Int      @default(0) @map("chars_saved")
+  occurrences Int      @default(0)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, day, tool, provider])
+  @@index([userId])
+  @@map("tool_savings_daily")
 }
 
 model Session {

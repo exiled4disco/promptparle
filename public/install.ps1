@@ -4,7 +4,9 @@
 #   $PromptParleClonePath = 'D:\src\promptparle'
 #   $PromptParleStart = $true
 #   $PromptParleSkipKeyPrompt = $true
+#   $PromptParleSkipInvitePrompt = $true
 #   $PromptParleInvitationCode = 'PP-XXXX-XXXX'   # from welcome email
+#   $PromptParleBaseUrl = 'https://promptparle.com'
 
 $ErrorActionPreference = 'Stop'
 
@@ -13,7 +15,9 @@ $Branch = 'main'
 $ClonePath = $null
 $DoStart = $false
 $SkipKeyPrompt = $false
+$SkipInvitePrompt = $false
 $InvitationCode = ''
+$BaseUrl = 'https://promptparle.com'
 
 if (Get-Variable -Name PromptParleClonePath -ErrorAction SilentlyContinue) {
     if ($PromptParleClonePath) { $ClonePath = [string]$PromptParleClonePath }
@@ -24,8 +28,14 @@ if (Get-Variable -Name PromptParleStart -ErrorAction SilentlyContinue) {
 if (Get-Variable -Name PromptParleSkipKeyPrompt -ErrorAction SilentlyContinue) {
     if ($PromptParleSkipKeyPrompt) { $SkipKeyPrompt = $true }
 }
+if (Get-Variable -Name PromptParleSkipInvitePrompt -ErrorAction SilentlyContinue) {
+    if ($PromptParleSkipInvitePrompt) { $SkipInvitePrompt = $true }
+}
 if (Get-Variable -Name PromptParleInvitationCode -ErrorAction SilentlyContinue) {
     if ($PromptParleInvitationCode) { $InvitationCode = [string]$PromptParleInvitationCode }
+}
+if (Get-Variable -Name PromptParleBaseUrl -ErrorAction SilentlyContinue) {
+    if ($PromptParleBaseUrl) { $BaseUrl = [string]$PromptParleBaseUrl }
 }
 
 if (-not $ClonePath) {
@@ -84,9 +94,10 @@ if (-not (Test-Path -LiteralPath $installScript)) {
 
 Write-Host 'Running installer (invitation code → module → API key)...' -ForegroundColor Yellow
 Write-Host 'You need the invitation code from your PromptParle welcome email.' -ForegroundColor DarkGray
-$installerArgs = @{}
+$installerArgs = @{ BaseUrl = $BaseUrl }
 if ($DoStart) { $installerArgs['Start'] = $true }
 if ($SkipKeyPrompt) { $installerArgs['SkipKeyPrompt'] = $true }
+if ($SkipInvitePrompt) { $installerArgs['SkipInvitePrompt'] = $true }
 if ($InvitationCode) { $installerArgs['InvitationCode'] = $InvitationCode }
 & $installScript @installerArgs
 
