@@ -1103,6 +1103,31 @@
       display: inline-block; margin-top: .35rem; padding: .25rem .45rem; background: #1a0505;
       border-radius: 6px; color: #fff; font-size: .78rem; }
     #ppUiFailBanner strong { color: #fff; }
+
+    /* ---- First-run guided tour (coach marks) ---- */
+    #ppTourOverlay { position: fixed; inset: 0; z-index: 100000; display: none; }
+    #ppTourOverlay.on { display: block; }
+    /* Dim everything except the spotlight (a transparent hole via box-shadow). */
+    #ppTourSpot {
+      position: fixed; border-radius: 10px; pointer-events: none;
+      box-shadow: 0 0 0 4px rgba(91,140,255,.9), 0 0 0 9999px rgba(3,6,12,.72);
+      transition: all .25s ease; }
+    #ppTourPop {
+      position: fixed; z-index: 100001; max-width: 340px; width: calc(100vw - 2rem);
+      background: #0c111b; border: 1px solid rgba(91,140,255,.5); border-radius: 12px;
+      box-shadow: 0 18px 50px rgba(0,0,0,.6); padding: 1rem 1.1rem; color: var(--text);
+      font-size: .88rem; line-height: 1.5; }
+    #ppTourPop h4 { margin: 0 0 .35rem; font-size: .95rem; font-weight: 700; }
+    #ppTourPop p { margin: 0 0 .75rem; color: var(--muted); }
+    #ppTourPop .tour-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+    #ppTourPop .tour-step { font-size: .72rem; color: var(--dim); }
+    #ppTourPop .tour-btns { display: flex; gap: .4rem; }
+    #ppTourPop button {
+      font: inherit; font-size: .8rem; font-weight: 600; border-radius: 999px; cursor: pointer;
+      padding: .35rem .8rem; border: 1px solid var(--border); background: #10151f; color: var(--muted); }
+    #ppTourPop button.tour-next { background: linear-gradient(135deg,#5b8cff,#3d6ef5); color: #fff; border: 0; }
+    #ppTourPop button.tour-skip { background: transparent; border: 0; color: var(--dim); padding: .35rem .4rem; }
+    #ppTourPop button:hover { filter: brightness(1.1); }
   </style>
 </head>
 <body>
@@ -1462,6 +1487,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         <button type="button" class="stop-btn" id="helpStop" style="width:auto">Stop server</button>
       </div>
       <div class="row-actions">
+        <button type="button" class="secondary" id="helpReplayTour">Replay setup tour</button>
         <button type="button" class="secondary" id="helpClose">Close</button>
       </div>
       <div class="help-legal" aria-label="Copyright and trademark">
@@ -4815,6 +4841,130 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function openInfo(kind) { loadInfo(kind); }
 
     // Help modal + ⋯ menu
+    /* ================= First-run guided tour (steps 6–11) ================= */
+    var PP_TOUR_KEY = 'pp_tour_done_v1';
+    var ppTourSteps = [
+      { el: '#sidebar', title: 'Left menu, dials & boards',
+        body: 'Your chat history, project connections (This PC / SSH / Git), and the optimize dial live here. The dial (1–5) trades fidelity for savings; profiles tune what to keep.',
+        placement: 'right' },
+      { el: '#dial', title: 'The optimize dial',
+        body: 'Slide 1 (max fidelity) to 5 (max savings). 3 is balanced. Noisy logs shrink a lot; clean prose barely moves — the savings line on each reply is the real proof.',
+        placement: 'right' },
+      { el: '#toolsEnabled', title: 'Tools & chat mode',
+        body: 'Tools lets the AI read files, run allowlisted commands, and use Git/SSH locally. “Optimize only” skips the model call. “Terminal chat” switches to a terminal-style view.',
+        placement: 'bottom' },
+      { el: '#feedbackLink', title: 'Found a bug? Have an idea?',
+        body: 'Send a bug report or suggestion any time from here — it reaches us and you can track it in the portal Bugs page.',
+        placement: 'top' },
+      { el: '#helpBtn', title: 'Help & commands',
+        body: 'Help lists slash commands and what each tool does. The ⋯ menu has New chat, Providers, Usage/savings, Activity log, and Update.',
+        placement: 'bottom' },
+      { el: '#sideStats', title: 'Usage & savings',
+        body: 'Your running token savings and estimated $ saved, on this PC. Click the chart icon for per-model detail, or mute the savings sound.',
+        placement: 'right' },
+      { el: '#menuProviders', title: 'Now add your AI provider keys',
+        body: 'Open Providers to add your own OpenAI / Claude / Gemini / Grok keys.',
+        placement: 'left', before: function () { openMenu(); } },
+      { el: null, title: 'Your keys stay on this machine',
+        body: 'In Providers: click “Get key” to open your provider’s page, then pick the provider from the dropdown and paste the API key. It’s stored locally (never uploaded to PromptParle). Add all your providers, then close the panel.',
+        before: function () { try { closeMenu(); loadInfo('providers'); } catch (e) {} } },
+      { el: null, title: 'That’s it — happy chatting!',
+        body: 'You’re set up. Type a message below to start. You can replay this tour any time from Help.',
+        before: function () { try { closeInfo(); } catch (e) {} } }
+    ];
+    var ppTourIdx = 0;
+    function ppTourEnsureNodes() {
+      var ov = document.getElementById('ppTourOverlay');
+      if (ov) return ov;
+      ov = document.createElement('div'); ov.id = 'ppTourOverlay';
+      ov.innerHTML = '<div id="ppTourSpot"></div><div id="ppTourPop"></div>';
+      document.body.appendChild(ov);
+      return ov;
+    }
+    function ppTourEnd(done) {
+      var ov = document.getElementById('ppTourOverlay'); if (ov) ov.classList.remove('on');
+      try { closeMenu(); } catch (e) {}
+      if (done) { try { localStorage.setItem(PP_TOUR_KEY, '1'); } catch (e) {} }
+    }
+    function ppTourShow(i) {
+      var steps = ppTourSteps;
+      if (i < 0) i = 0;
+      if (i >= steps.length) { ppTourEnd(true); return; }
+      ppTourIdx = i;
+      var s = steps[i];
+      if (typeof s.before === 'function') { try { s.before(); } catch (e) {} }
+      var ov = ppTourEnsureNodes(); ov.classList.add('on');
+      var spot = document.getElementById('ppTourSpot');
+      var pop = document.getElementById('ppTourPop');
+      // position after a tick so any before() DOM change settles
+      setTimeout(function () {
+        var el = s.el ? document.querySelector(s.el) : null;
+        var r = el ? el.getBoundingClientRect() : null;
+        if (r && r.width > 0) {
+          var pad = 6;
+          spot.style.display = 'block';
+          spot.style.top = (r.top - pad) + 'px';
+          spot.style.left = (r.left - pad) + 'px';
+          spot.style.width = (r.width + pad * 2) + 'px';
+          spot.style.height = (r.height + pad * 2) + 'px';
+        } else {
+          // centered modal-style step (no anchor)
+          spot.style.display = 'none';
+        }
+        var isLast = (i === steps.length - 1);
+        pop.innerHTML =
+          '<h4>' + s.title + '</h4><p>' + s.body + '</p>' +
+          '<div class="tour-row"><span class="tour-step">' + (i + 1) + ' / ' + steps.length + '</span>' +
+          '<div class="tour-btns">' +
+          '<button class="tour-skip" data-tour="skip">Skip</button>' +
+          (i > 0 ? '<button data-tour="back">Back</button>' : '') +
+          '<button class="tour-next" data-tour="next">' + (isLast ? 'Done' : 'Next') + '</button>' +
+          '</div></div>';
+        // place the popover near the spot (or center it)
+        if (r && r.width > 0) {
+          var pw = Math.min(340, window.innerWidth - 32), ph = pop.offsetHeight || 160;
+          var top, left;
+          var place = s.placement || 'bottom';
+          if (place === 'right') { left = r.right + 14; top = r.top; }
+          else if (place === 'left') { left = r.left - pw - 14; top = r.top; }
+          else if (place === 'top') { left = r.left; top = r.top - ph - 14; }
+          else { left = r.left; top = r.bottom + 14; }
+          left = Math.max(12, Math.min(left, window.innerWidth - pw - 12));
+          top = Math.max(12, Math.min(top, window.innerHeight - ph - 12));
+          pop.style.left = left + 'px'; pop.style.top = top + 'px';
+        } else {
+          pop.style.left = '50%'; pop.style.top = '50%';
+          pop.style.transform = 'translate(-50%,-50%)';
+          return;
+        }
+        pop.style.transform = 'none';
+      }, 60);
+    }
+    function ppTourStart() { ppTourShow(0); }
+    (function () {
+      var rb = document.getElementById('helpReplayTour');
+      if (rb) rb.addEventListener('click', function () { try { closeHelp(); } catch (e) {} setTimeout(ppTourStart, 150); });
+    })();
+    // delegated controls
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-tour]') : null;
+      if (!b) return;
+      var act = b.getAttribute('data-tour');
+      if (act === 'skip') { ppTourEnd(true); }
+      else if (act === 'back') { ppTourShow(ppTourIdx - 1); }
+      else if (act === 'next') { ppTourShow(ppTourIdx + 1); }
+    });
+    window.addEventListener('resize', function () {
+      var ov = document.getElementById('ppTourOverlay');
+      if (ov && ov.classList.contains('on')) ppTourShow(ppTourIdx);
+    });
+    // First-run trigger: show once, after the UI has settled.
+    try {
+      if (!localStorage.getItem(PP_TOUR_KEY)) {
+        setTimeout(ppTourStart, 900);
+      }
+    } catch (e) {}
+
     helpBtn.addEventListener('click', openHelp); document.getElementById('menuHelp').addEventListener('click', openHelp); document.getElementById('helpClose').addEventListener('click', closeHelp); helpModal.addEventListener('click', function (e) {
       if (e.target === helpModal) closeHelp(); }); infoModal.addEventListener('click', function (e) {
       if (e.target === infoModal) closeInfo(); }); document.getElementById('infoClose').addEventListener('click', closeInfo); document.getElementById('infoRefresh').addEventListener('click', function () {

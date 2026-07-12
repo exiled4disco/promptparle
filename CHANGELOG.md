@@ -9,6 +9,17 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.12] - 2026-07-12
+
+### Added
+- Desktop first-run guided tour (client): the local UI now walks new users
+  through the app once on first launch — left menu / optimize dial, tools &
+  chat-mode toggles, the bug/suggest link, Help & the ⋯ menu, Usage & savings,
+  and finally opens Providers to add BYOK API keys ("your keys stay on this
+  machine"). Coach-mark spotlight with Next/Back/Skip; one-time (localStorage
+  `pp_tour_done_v1`). Replayable any time via Help → "Replay setup tour". This
+  is the desktop half that pairs with the portal /welcome wizard (0.32.11).
+
 ## [0.32.11] - 2026-07-12
 
 ### Added
