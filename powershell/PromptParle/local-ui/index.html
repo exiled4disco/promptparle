@@ -2034,7 +2034,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }; }
 
     /** Friendly labels for the per-tool breakdown line. */
-    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page', quality_gate: 'Quality gate (local)', doc_dedup: 'Duplicate docs' };
+    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page', quality_gate: 'Quality gate (local)', doc_dedup: 'Duplicate docs', carried_context: 'Carried docs (not re-sent)' };
 
     /** "By tool: Context fleet −6.7k, Git (local) −1.9k" — honest counterfactual, ~tokens (chars/4). */
     function buildToolBreakdownLine(meta) {
@@ -2053,7 +2053,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       if (!parts.length) return '';
       parts.sort(function (a, b) { return b.tok - a.tok; });
-      var frag = parts.map(function (p) { return p.name + ' −' + compactTok(p.tok); });
+      var hasCarried = tb.some(function (t) { return t && t.tool === 'carried_context' && (Number(t.chars_saved) || 0) > 0; });
+      var frag = parts.map(function (p) {
+        if (p.name === TOOL_LABELS.carried_context) {
+          // Document the counterfactual right on the figure — it's a fact about how AI
+          // clients work, stated plainly, not a PP-specific claim.
+          return '<span title="A standard AI API is stateless: it re-sends the whole conversation — including attached document bodies — on every turn, and re-bills each one. PromptParle carries a compact summary forward instead, so documents from earlier turns are not re-sent. This figure is that avoided re-ingestion. This is how AI clients work, not a PP quirk.">' + p.name + ' −' + compactTok(p.tok) + '</span>';
+        }
+        return p.name + ' −' + compactTok(p.tok);
+      });
       return 'By tool: ' + frag.join(', ');
     }
 
@@ -3428,7 +3436,64 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           const f = items[i].getAsFile(); if (f) files.push(f); }
       }
       if (files.length) { e.preventDefault(); addFiles(files); }
-    }); function buildContextFromAttachments() {
+    });
+    /* ---- Carried-context ledger (honest avoided re-ingest) ----------------------
+     * FACT ABOUT AI CLIENTS (documented, not a PP claim): a standard chat/completions
+     * API is STATELESS — the client must re-send the ENTIRE conversation, including any
+     * attached document bodies, on every single turn, and every one of those tokens is
+     * billed again as input. PromptParle instead carries a compact densified summary of
+     * prior turns forward (the [MEM] brief), so a document discussed earlier is NOT
+     * re-sent full each turn. The avoided re-ingest is a real, ongoing saving.
+     * We meter it ONLY while the doc is still within the history window a plain client
+     * would carry (HIST_MAX_MSGS turns) — once it scrolls out, a plain client drops it
+     * too, so the credit stops. Measured in the doc's real token size (known here on the
+     * client; the server never sees the full body because history is capped before send). */
+    var PP_DOC_LEDGER_KEY = 'pp_doc_ledger_v1';
+    function loadDocLedger(chatId) {
+      if (!chatId) return { turn: 0, docs: [] };
+      try { var all = JSON.parse(localStorage.getItem(PP_DOC_LEDGER_KEY) || '{}'); return (all && all[chatId]) || { turn: 0, docs: [] }; } catch (e) { return { turn: 0, docs: [] }; } }
+    function saveDocLedger(chatId, led) {
+      if (!chatId) return;
+      try {
+        var all = JSON.parse(localStorage.getItem(PP_DOC_LEDGER_KEY) || '{}');
+        all[chatId] = led;
+        var chats = Object.keys(all); if (chats.length > 60) { delete all[chats[0]]; }
+        localStorage.setItem(PP_DOC_LEDGER_KEY, JSON.stringify(all));
+      } catch (e) { /* quota: skip credit this turn */ }
+    }
+    /**
+     * Called on every send. Advances the chat's turn counter, records any docs attached
+     * THIS turn (they are paid in full this turn — no credit), and returns the avoided
+     * re-ingest tokens for docs established on PRIOR turns that are still in-window and
+     * were NOT re-attached this turn.
+     */
+    function accrueCarriedContext(chatId, docsAttachedThisTurn) {
+      if (!chatId) return { carriedTok: 0, carriedDocs: 0 };
+      var led = loadDocLedger(chatId);
+      led.turn = (led.turn || 0) + 1;
+      var thisTurnHashes = {};
+      (docsAttachedThisTurn || []).forEach(function (d) { thisTurnHashes[d.hash] = true; });
+      // Credit prior docs still within the window a plain client would re-send.
+      var carriedTok = 0, carriedDocs = 0;
+      (led.docs || []).forEach(function (d) {
+        var ageTurns = led.turn - d.firstTurn;
+        var inWindow = ageTurns > 0 && ageTurns < HIST_MAX_MSGS;   // still carried by a plain client
+        if (inWindow && !thisTurnHashes[d.hash]) { carriedTok += (d.tok || 0); carriedDocs += 1; }
+      });
+      // Record docs newly attached this turn (paid in full now; credited on later turns).
+      (docsAttachedThisTurn || []).forEach(function (d) {
+        var exists = (led.docs || []).some(function (x) { return x.hash === d.hash; });
+        if (!exists) { led.docs = (led.docs || []); led.docs.push({ hash: d.hash, tok: d.tok, firstTurn: led.turn }); }
+      });
+      if (led.docs && led.docs.length > 40) led.docs = led.docs.slice(-40);
+      saveDocLedger(chatId, led);
+      return { carriedTok: carriedTok, carriedDocs: carriedDocs };
+    }
+    function docLedgerHash(s) {
+      var h = 5381; s = String(s || ''); for (var i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); h |= 0; }
+      return 'd' + (h >>> 0).toString(36) + '.' + (s.length.toString(36)); }
+
+    function buildContextFromAttachments() {
       const parts = []; const texts = attachments.filter(function (a) { return a.kind === 'text'; }); const imgs = attachments.filter(function (a) { return a.kind === 'image'; }); // Explicit relevance header so the model treats composer attachments as live evidence
       if (texts.length || imgs.length) {
         const names = attachments.map(function (a) {
@@ -5610,7 +5675,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault(); hideSlashMenu(); form.requestSubmit(); }
     }); form.addEventListener('submit', async function (e) {
-      e.preventDefault(); hideSlashMenu(); let prompt = inputEl.value.trim(); const context = buildContextFromAttachments(); const images = buildImagesPayload(); const dial = parseInt(dialEl.value, 10) || 3; // Local /mode terminal|chat; no server round-trip
+      e.preventDefault(); hideSlashMenu(); let prompt = inputEl.value.trim();
+      // Capture this turn's text docs (hash + real token size) BEFORE context build clears nothing yet.
+      var __docsThisTurn = [];
+      try {
+        (attachments || []).filter(function (a) { return a.kind === 'text' && a.text; }).forEach(function (a) {
+          __docsThisTurn.push({ hash: docLedgerHash(a.text), tok: Math.max(1, Math.ceil(a.text.length / 4)) });
+        });
+      } catch (e) { /* ignore */ }
+      const context = buildContextFromAttachments(); const images = buildImagesPayload(); const dial = parseInt(dialEl.value, 10) || 3; // Local /mode terminal|chat; no server round-trip
       if (/^\/mode(\s|$)/i.test(prompt)) {
         inputEl.value = ''; addMsg('user', prompt); var modeArg = prompt.replace(/^\/mode\s*/i, '').trim().toLowerCase(); if (!modeArg || modeArg === 'status') {
           addMsg('sys', 'Chat layout: ' + (getChatStyle() === 'term' ? 'terminal' : 'bubble') +
@@ -5713,6 +5786,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var actLike = /\b(implement|build|ship|create|make|fix|add|write|refactor|generate|apply|deploy|scaffold|set up|wire)\b/i.test(String(prompt || ''));
       var abortMs = optOnly ? 120000 : (actLike || images.length || (context && context.length > 4000) ? 600000 : 240000);
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null; const timer = controller ? setTimeout(function () { controller.abort(); }, abortMs) : null; try {
+        // Carried-context: credit the doc re-ingestion PP avoids this turn vs a stateless
+        // API (which would re-send every prior doc body). Computed here because only the
+        // client knows each doc's true size (history is capped before it reaches the server).
+        var __carried = { carriedTok: 0, carriedDocs: 0 };
+        try { __carried = accrueCarriedContext(currentChatId, __docsThisTurn); } catch (e) { /* ignore */ }
         const payload = {
           provider: providerEl.value,
           profile: 'general',
@@ -5773,7 +5851,17 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           throw new Error('Bad JSON from local server: ' + raw.slice(0, 200)); }
 
         // Pull metadata from common shapes
-        let meta = data.metadata || data.Metadata || null; if (!meta && data.original_tokens != null) meta = data; if (!res.ok) {
+        let meta = data.metadata || data.Metadata || null; if (!meta && data.original_tokens != null) meta = data;
+        // Inject the carried-context credit into tool_breakdown so it flows through the
+        // same honest ledger the rest of the meter uses (chars = tok*4 for the ledger unit).
+        try {
+          if (meta && __carried && __carried.carriedTok > 0) {
+            var mtb = meta.tool_breakdown || meta.toolBreakdown; if (!Array.isArray(mtb)) { mtb = []; }
+            mtb.push({ tool: 'carried_context', kind: 'avoided-ingest', chars_without: __carried.carriedTok * 4, chars_with: 0, chars_saved: __carried.carriedTok * 4, docs: __carried.carriedDocs });
+            meta.tool_breakdown = mtb;
+          }
+        } catch (e) { /* ignore */ }
+        if (!res.ok) {
           addMsg('bot', data.error || data.Error || ('Request failed HTTP ' + res.status), meta, true); } else if (optOnly) {
           const text = data.optimized_prompt || data.OptimizedPrompt || data.optimizedPrompt || '(empty optimized prompt)'; addMsg('bot', text, meta); } else {
           const text = data.response || data.Response || '(empty response)'; addMsg('bot', text, meta); if (!meta || !(normalizeMeta(meta).original_tokens > 0)) {

@@ -9,6 +9,28 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.23] - 2026-07-12
+
+### Added
+- **Carried-context savings — the biggest hidden win, now metered honestly.** A
+  standard AI API is stateless: it re-sends the entire conversation, *including
+  attached document bodies*, on every turn, re-billing each token. PromptParle
+  carries a compact summary forward instead, so a document discussed earlier is
+  not re-sent full each turn. That avoided re-ingestion was previously credited
+  $0. It is now credited as **"Carried docs (not re-sent)"** in the per-turn
+  breakdown — the doc's real token size, credited on every follow-up turn while
+  the doc is still within the window a plain client would carry, and $0 once it
+  ages out (a plain client would drop it too). Measured client-side because only
+  the client knows the doc's full size (history is capped before it reaches the
+  server). This is why a summarize turn shows little input savings ("docs kept
+  intact") but the following turns finally show the value.
+
+### Documented
+- README now states the stateless-API counterfactual as a **fact about how AI
+  clients work, not a PromptParle claim** ("How savings are measured"), and the
+  carried-docs figure carries the same explanation in its tooltip. Upfront about
+  the basis for every number.
+
 ## [0.32.22] - 2026-07-12
 
 ### Changed

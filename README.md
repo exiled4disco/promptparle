@@ -180,6 +180,30 @@ PromptParle portal (separate, rare):
 
 Security policy & reporting: **[SECURITY.md](SECURITY.md)** · Threat model: **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**
 
+### How savings are measured (the honest counterfactual)
+
+Every "saved" figure is **the difference between what the same result would have cost
+without PromptParle's local work and what it actually cost** — measured in vendor-neutral
+characters, converted to tokens and dollars at your selected model's **published input
+price** (savings are input-side). It is an estimate for display, not a bill.
+
+One saving deserves a plain-language note, because it is a **fact about how AI clients
+work, not a PromptParle claim**:
+
+> **A standard chat/completions API is stateless.** To continue a conversation, the client
+> must re-send the *entire* conversation every turn — including the full text of any
+> documents you attached earlier — and every one of those tokens is billed again as input.
+> A long thread with a pasted document gets expensive precisely because the document is
+> re-sent on turn 2, turn 3, turn 4, and so on.
+
+PromptParle carries a **compact densified summary** of prior turns forward instead of the
+raw source, so a document discussed earlier is **not re-sent full each turn**. That avoided
+re-ingestion is credited as **"Carried docs (not re-sent)"** in the per-turn breakdown, for
+as long as the document is still within the conversation window a plain client would carry.
+On a *read/summarize* turn the attached documents are deliberately kept **uncompressed** so
+the answer stays faithful — that turn shows little input savings by design ("docs kept
+intact"); the value shows up on the following turns, when the summary carries the weight.
+
 ---
 
 ## Public desktop API
