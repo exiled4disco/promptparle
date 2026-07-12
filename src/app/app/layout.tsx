@@ -12,7 +12,7 @@ const NAV = [
   { href: "/app/api-keys", label: "Licenses" },
   { href: "/app/bugs", label: "Bugs" },
   { href: "/app/changelog", label: "Change control" },
-  { href: "/guide", label: "Guide" },
+  { href: "/app/guide", label: "Guide" },
   { href: "/app/invite", label: "Invites" },
   { href: "/app/settings", label: "Settings" },
 ];
