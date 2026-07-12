@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.24'
+    $ver = '0.32.25'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -5917,6 +5917,9 @@ function Invoke-PromptParleNativeAgentTurn {
         )
         signals                 = @{}
         image_count             = 0
+        # Real provider token counts summed across agent rounds — OUTPUT is the costly side.
+        provider_input_tokens   = [int]$sumIn
+        provider_output_tokens  = [int]$sumOut
     }
 
     return [pscustomobject]@{
@@ -16256,6 +16259,11 @@ function Invoke-PromptParleChatTurnCore {
                 tool_breakdown          = @($toolBreakdownOut)
                 docs_kept_fidelity      = $false
                 docs_kept_tokens        = 0
+                # Real provider token counts (from the model's usage) — OUTPUT is where the
+                # real spend is (5-8x input). LocalFirst.ps1 captures these; forward them so
+                # the UI can show/price actual output, not just estimated input savings.
+                provider_input_tokens   = (ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $metaIn 'provider_input_tokens' 0) -Default 0)
+                provider_output_tokens  = (ConvertTo-PromptParleInt32 -Value (Get-PromptParleProp $metaIn 'provider_output_tokens' 0) -Default 0)
             }
             # Attached-doc summarize/read: we DELIBERATELY keep the docs at full
             # fidelity (the answer needs them intact), so a big "% saved" would tell
@@ -16385,6 +16393,38 @@ function Invoke-PromptParleChatTurnCore {
             }
         }
         $respText = [string](Get-PromptParleProp $result 'response' (Get-PromptParleProp $result 'Response' ''))
+        # DOC-TURN SAVINGS (0.32.25) — the honest number for "summarize these documents".
+        # The general meter above compares INPUT-in vs INPUT-out; on a summarize turn we
+        # deliberately send the docs uncompressed, so that difference is ~0 ($0.0012 for
+        # 50 pages — nonsense). The REAL efficiency of a summary is OUTPUT compression:
+        # the attached source (e.g. 22k tok across 4 docs) becomes a small answer (~500
+        # tok) that now represents those pages in the conversation. Meter THAT: source
+        # documents in -> summary out. Same plain before->after line, honest big number.
+        try {
+            if ($null -ne $metaOut -and $script:PromptParleKeepDocFidelity -and -not [bool]$metaOut.is_agent_turn) {
+                $srcDocs = if ($context) { [string]$context } else { '' }
+                # Sum ONLY the attached document bodies (===== FILE: name ===== ... blocks),
+                # not framing cards — that is the source the summary stands in for.
+                $docChars = 0
+                foreach ($m in [regex]::Matches($srcDocs, '(?ms)^===== FILE:[^\n]*\n(.*?)(?=\r?\n===== FILE:|\z)')) {
+                    $docChars += $m.Groups[1].Value.Length
+                }
+                if ($docChars -lt 200 -and $srcDocs) {
+                    # No FILE markers survived (older path) — fall back to full context size.
+                    $docChars = $srcDocs.Length
+                }
+                $srcTok = if ($docChars -gt 0) { [int][Math]::Ceiling($docChars / 4.0) } else { 0 }
+                $sumTok = if ($respText) { [int][Math]::Ceiling($respText.Length / 4.0) } else { 0 }
+                if ($srcTok -gt 0 -and $sumTok -ge 0 -and $srcTok -gt $sumTok) {
+                    $metaOut.original_tokens  = $srcTok
+                    $metaOut.optimized_tokens = $sumTok
+                    $metaOut.tokens_saved     = [Math]::Max(0, $srcTok - $sumTok)
+                    $metaOut.token_reduction_percent = [int][Math]::Round(100.0 * $metaOut.tokens_saved / $srcTok)
+                    $metaOut.expanded = $false
+                    $metaOut.doc_summary_basis = $true   # UI hint: this % is source->summary
+                }
+            }
+        } catch { }
         # 0.16.1: always run implement pipeline post-pass when implement OR any apply/run/homework signal
         $applyInfo = $null
         $pipeTrigger = $false

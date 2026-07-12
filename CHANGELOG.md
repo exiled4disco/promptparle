@@ -9,6 +9,32 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.25] - 2026-07-12
+
+### Fixed
+- **Document-summary savings were meaningless ($0.0012 for 50 pages).** The meter
+  compared input-in vs input-out; on a summarize turn we deliberately send the docs
+  uncompressed (for a faithful answer), so that difference is ~0. But a summary's
+  real efficiency is OUTPUT compression: 50 pages of source (~22k tok) become a
+  ~500-token summary that represents them going forward. Doc-summary turns now meter
+  **source documents in → summary out** (e.g. 22k → 500 = −98%), the honest number.
+- **Per-model prices were wrong/stale.** Corrected to published rates: Claude Opus
+  4.5–4.8 **$5 in / $25 out** (was mispriced as the retired 4.1's $15/$75 — a regex
+  matched "opus-4-8" as "opus-4"), Sonnet $3/$15, Haiku $1/$5, Fable $10/$50, gpt-5
+  $1.25/$10, Grok 4.5 $2/$6, Gemini 3.5 Flash $1.50/$9, 2.5 Flash $0.30/$2.50. Each
+  turn is priced at the model that actually answered it.
+- Reverted the "docs kept intact · fidelity preserved" wording that replaced the
+  numbers on doc turns — every turn now shows the same plain before→after line.
+
+### Added
+- **Real output-token spend, surfaced at last.** OUTPUT is where the cost is (5–8×
+  input). LocalFirst.ps1 already captured each provider's real output-token count
+  (`usage`) but it never reached the UI. Now forwarded (single-shot + agent paths)
+  and shown per turn as **"output N tok · $X"**, priced at the model's published
+  OUTPUT rate. You can finally see where the money actually goes, per model.
+- No savings row / stats pulse / fireworks on an empty or errored answer (carried
+  over from the honest-metering pass).
+
 ## [0.32.24] - 2026-07-12
 
 ### Fixed

@@ -1908,7 +1908,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         agent_cost_tokens: Number(metaGet(raw, 'agent_cost_tokens') ?? metaGet(raw, 'agentCostTokens') ?? 0),
         tool_breakdown: (function () { var tb = metaGet(raw, 'tool_breakdown') ?? metaGet(raw, 'toolBreakdown') ?? []; return Array.isArray(tb) ? tb : []; })(),
         docs_kept_fidelity: Boolean(metaGet(raw, 'docs_kept_fidelity') ?? metaGet(raw, 'docsKeptFidelity') ?? false),
-        docs_kept_tokens: Number(metaGet(raw, 'docs_kept_tokens') ?? metaGet(raw, 'docsKeptTokens') ?? 0)
+        docs_kept_tokens: Number(metaGet(raw, 'docs_kept_tokens') ?? metaGet(raw, 'docsKeptTokens') ?? 0),
+        // Real provider token counts (model's own usage). OUTPUT is the costly side (5-8x input).
+        provider_input_tokens: Number(metaGet(raw, 'provider_input_tokens') ?? metaGet(raw, 'providerInputTokens') ?? 0),
+        provider_output_tokens: Number(metaGet(raw, 'provider_output_tokens') ?? metaGet(raw, 'providerOutputTokens') ?? 0)
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -1917,40 +1920,52 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     /**
      * Published list prices, USD per 1M tokens, SPLIT input vs output.
-     * PromptParle's savings are all on the INPUT side (we trim what you send
-     * before the model reads it), so the "$ saved" figure must be priced at the
-     * INPUT rate — a blended input+output rate over-states the dollars.
-     * Rates are public list prices (not a bill); update as vendors change them.
+     * OUTPUT is where the real spend is — 5-8x input on every vendor (e.g. Claude
+     * Opus $5 in / $25 out; gpt-5 $1.25 / $10; Gemini 3.5 Flash $1.50 / $9). We must
+     * track and price OUTPUT tokens, not just input. Per-MODEL rates (the selected
+     * model's price is what applies to its turn). Public list prices, not a bill;
+     * most-specific match first. Sources: vendor pricing pages (2026).
      */
     function modelPrice(provider, model) {
       var p = String(provider || '').toLowerCase(); var m = String(model || '').toLowerCase();
       if (p === 'openai' || /gpt-|o[1-9]|chatgpt/.test(m)) {
         if (/o3|o1-pro|o1\b/.test(m)) return { input: 15, output: 60 };
-        if (/gpt-5.*mini|gpt-5.*nano/.test(m)) return { input: 0.25, output: 2 };
+        if (/gpt-5.*(mini|nano)/.test(m)) return { input: 0.25, output: 2 };
         if (/gpt-5|o4/.test(m)) return { input: 1.25, output: 10 };
         if (/4\.1|4o|gpt-4/.test(m)) return { input: 2.5, output: 10 };
         if (/mini|nano/.test(m)) return { input: 0.15, output: 0.6 };
-        return { input: 2.5, output: 10 }; }
+        return { input: 1.25, output: 10 }; }
       if (p === 'anthropic' || /claude/.test(m)) {
-        if (/opus/.test(m)) return { input: 15, output: 75 };
-        if (/haiku/.test(m)) return { input: 0.8, output: 4 };
-        if (/sonnet/.test(m)) return { input: 3, output: 15 };
-        return { input: 3, output: 15 }; }
+        // Claude 5 family + Opus/Sonnet/Haiku 4.x — output is the 5x-costly side.
+        if (/fable|mythos/.test(m)) return { input: 10, output: 50 };
+        // Retired/deprecated Opus 4.0 / 4.1 ONLY ($15/$75). Match the version explicitly so
+        // it does NOT swallow opus-4-5..4-8 (current, $5/$25). "opus-4-8" must NOT match here.
+        if (/opus-?4[.\-]?1\b|opus-?4(?![.\-]?[2-9])(?![0-9])/.test(m)) return { input: 15, output: 75 };
+        if (/opus/.test(m)) return { input: 5, output: 25 };                                  // Opus 4.5-4.8 (current)
+        if (/haiku-3|haiku 3/.test(m)) return { input: 0.8, output: 4 };
+        if (/haiku/.test(m)) return { input: 1, output: 5 };                                  // Haiku 4.5
+        if (/sonnet/.test(m)) return { input: 3, output: 15 };                                // Sonnet 4.x/5 std (intro $2/$10)
+        return { input: 5, output: 25 }; }
       if (p === 'gemini' || /gemini/.test(m)) {
+        if (/3\.5.*flash|flash.*3\.5/.test(m)) return { input: 1.5, output: 9 };              // Gemini 3.5 Flash
+        if (/2\.5.*flash-lite|flash-lite/.test(m)) return { input: 0.1, output: 0.4 };
+        if (/2\.5.*flash|flash/.test(m)) return { input: 0.3, output: 2.5 };                  // Gemini 2.5 Flash
         if (/pro/.test(m)) return { input: 1.25, output: 10 };
-        if (/flash.*lite|lite/.test(m)) return { input: 0.1, output: 0.4 };
-        if (/flash|8b/.test(m)) return { input: 0.3, output: 2.5 };
-        return { input: 0.3, output: 2.5 }; }
+        return { input: 1.5, output: 9 }; }
       if (p === 'grok' || /grok/.test(m)) {
+        if (/grok-4\.5|grok-4-5/.test(m)) return { input: 2, output: 6 };                     // Grok 4.5
         if (/grok-4/.test(m)) return { input: 3, output: 15 };
         if (/mini/.test(m)) return { input: 0.3, output: 0.5 };
         if (/grok-3|grok-2/.test(m)) return { input: 3, output: 15 };
-        return { input: 3, output: 15 }; }
-      return { input: 2, output: 8 }; }
+        return { input: 2, output: 6 }; }
+      return { input: 2, output: 10 }; }
 
-    /** Input-side USD per 1M tokens — the correct rate for "$ saved" (savings are input). */
+    /** Input-side USD per 1M tokens (for input-side savings like carried context/dedup). */
     function estimateUsdPerMillion(provider, model) {
       return modelPrice(provider, model).input; }
+    /** Output-side USD per 1M tokens — where the real spend is (5-8x input). */
+    function outputUsdPerMillion(provider, model) {
+      return modelPrice(provider, model).output; }
 
     function formatUsdEstimate(usd) {
       if (!isFinite(usd) || usd <= 0) return '$0'; if (usd < 0.001) return '<$0.001'; if (usd < 0.01) return '$' + usd.toFixed(3); if (usd < 1) return '$' + usd.toFixed(3); if (usd < 10) return '$' + usd.toFixed(2); return '$' + usd.toFixed(2); }
@@ -2837,19 +2852,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         // Canonical before→after (single-shot: prompt; agent: would-ingest → sent).
         var beforeTok = s.billedBefore;
         var afterTok = s.billedAfter;
-        // Attached-doc summarize/read: we KEPT the docs at full fidelity on purpose,
-        // so the value here is "answer preserved," not a big %. Telling the honest
-        // story (guardian: no misleading savings) instead of a confusing number.
-        if (nmeta.docs_kept_fidelity) {
-          var keptTok = Number(nmeta.docs_kept_tokens) || 0;
-          parts.push('<span class="ok">✓ docs kept intact</span>');
-          if (keptTok > 0) {
-            parts.push('<span><span class="lbl">' + compactTok(keptTok) +
-              ' tok of source sent in full</span></span>');
-          }
-          parts.push('<span class="lbl" title="On a read/summarize ask we send the attached documents uncompressed so the answer is faithful. Savings would mean a worse answer, so we do not compress here.">answer fidelity preserved</span>');
-        } else {
-        // Verdict
+        // ONE consistent savings line on EVERY turn — verdict · before→after tok · −N tok.
+        // (Doc summaries just show a small %; that is honest and reads the same as any
+        // other turn. No special "fidelity preserved" wording — it confused people.)
         if (!isAgent && s.expanded && s.opt > s.orig) {
           parts.push('<span class="warn">↑ expanded</span>');
         } else if (s.pct > 0 && s.saved > 0) {
@@ -2857,7 +2862,6 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         } else {
           parts.push('<span class="flat">0% tokens saved</span>');
         }
-        // before → after tokens (kept for both single-shot and agent turns)
         parts.push(
           '<span><span class="lbl">before</span> <span class="val">' + compactTok(beforeTok) +
           '</span> <span class="lbl">→ after</span> <span class="val">' + compactTok(afterTok) +
@@ -2866,12 +2870,22 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (s.saved > 0) {
           parts.push('<span class="ok">−' + compactTok(s.saved) + ' Tokens</span>');
         }
-        }
         parts.push(
           '<span class="cost-tag" title="Input tokens saved priced at this model&#39;s published input rate ($' +
             s.rate + '/M input tok). Savings are input-side; not a bill.">est. ' +
             formatUsdEstimate(s.usdSaved) + ' saved</span>'
         );
+        // Real OUTPUT token spend (the costly side, 5-8x input). Shown from the model's
+        // actual usage when available — this is where the money actually goes, so we
+        // surface it honestly next to the input savings.
+        var outTok = Number(nmeta.provider_output_tokens) || 0;
+        if (outTok > 0) {
+          var outRate = outputUsdPerMillion(s.provider, s.model);
+          var outUsd = (outTok / 1000000) * outRate;
+          parts.push('<span class="cost-tag" title="Actual output tokens the model generated this turn, priced at its published OUTPUT rate ($' +
+            outRate + '/M output tok). Output is the costly side (5-8x input). Not a bill.">' +
+            'output ' + compactTok(outTok) + ' tok · ' + formatUsdEstimate(outUsd) + '</span>');
+        }
         if (s.model) {
           parts.push('<span><span class="lbl">model</span> <span class="model-tag">' +
             String(s.model).replace(/</g, '') + '</span></span>'); } else if (s.provider) {
