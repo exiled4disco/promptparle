@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.23'
+    $ver = '0.32.24'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -14870,18 +14870,43 @@ try {
     Write-Host ("  http://127.0.0.1:{0}/" -f `$Port) -ForegroundColor Green
     Write-Host ''
 
-    # Blocking when healthy. Early return (no key / bind fail) must not silent-exit.
+    # Background health probe: confirm the server actually accepts a connection ON THE
+    # EXPECTED PORT and log it. The previous restart log ended at "import ok" and never
+    # said whether/where the server bound — that silence is what stranded the browser
+    # (server drifted to another port; UI kept polling the old one). StrictPort below
+    # forbids the drift; this probe records the truth either way.
+    `$probe = Start-Job -ArgumentList `$Port, `$LogPath -ScriptBlock {
+        param(`$ProbePort, `$ProbeLog)
+        function _log(`$m) { try { Add-Content -LiteralPath `$ProbeLog -Value ('{0}  {1}' -f (Get-Date -Format o), `$m) -Encoding UTF8 } catch {} }
+        `$ok = `$false
+        for (`$i = 0; `$i -lt 40; `$i++) {
+            try {
+                `$c = New-Object System.Net.Sockets.TcpClient
+                `$iar = `$c.BeginConnect('127.0.0.1', `$ProbePort, `$null, `$null)
+                if (`$iar.AsyncWaitHandle.WaitOne(300, `$false) -and `$c.Connected) { `$ok = `$true; `$c.Close(); break }
+                `$c.Close()
+            } catch {}
+            Start-Sleep -Milliseconds 500
+        }
+        if (`$ok) { _log ("HEALTH ok: server accepting connections on port {0}" -f `$ProbePort) }
+        else { _log ("HEALTH FAIL: nothing accepting on port {0} after ~20s — browser will report 'did not come back'" -f `$ProbePort) }
+    }
+
+    # Blocking when healthy. StrictPort = never drift to another port during handoff.
     `$before = Get-Date
     try {
-        Start-PromptParleLocalServer -Port `$Port
+        Start-PromptParleLocalServer -Port `$Port -StrictPort
     } catch {
         Write-PpRestartLog ("Start-PromptParleLocalServer threw: `$_")
         throw
     }
     `$elapsed = ((Get-Date) - `$before).TotalSeconds
-    Write-PpRestartLog ("server returned after {0:N1}s" -f `$elapsed)
+    `$boundLog = '?'
+    try { `$gv = Get-Variable -Name PromptParleBoundPort -Scope Script -ErrorAction SilentlyContinue; if (`$gv) { `$boundLog = [string]`$gv.Value } } catch {}
+    Write-PpRestartLog ("server returned after {0:N1}s (bound port={1})" -f `$elapsed, `$boundLog)
+    try { Remove-Job -Job `$probe -Force -ErrorAction SilentlyContinue } catch {}
     if (`$elapsed -lt 4) {
-        throw "Local server exited immediately (port busy, missing API key, or UI missing). See log: `$LogPath"
+        throw "Local server exited immediately (could not bind port `$Port, missing API key, or UI missing). See log: `$LogPath"
     }
     Write-Host 'Local server stopped.' -ForegroundColor DarkGray
     Write-Host 'Run  pp  to start again.' -ForegroundColor Cyan
@@ -16597,7 +16622,12 @@ function Start-PromptParleLocalServer {
     #>
     [CmdletBinding()]
     param(
-        [int]$Port = 7788
+        [int]$Port = 7788,
+        # Restart handoff: bind ONLY $Port. A silent drift to another port during an
+        # update handoff strands the browser (it polls the old port and reports "chat
+        # did not come back" while the server is actually serving elsewhere). When set,
+        # fail loudly instead of drifting so the caller can keep the old server alive.
+        [switch]$StrictPort
     )
 
     $config = Get-PromptParleConfigInternal
@@ -16670,9 +16700,11 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
     }
 
     # Free preferred port only if busy, then bind. Try next ports only on failure.
+    # StrictPort (restart handoff): bind ONLY the requested port — never drift, or the
+    # browser is left polling a port nothing serves.
     $listener = $null
     $boundPort = $null
-    $tryPorts = @($Port) + @(7788..7798 | Where-Object { $_ -ne $Port })
+    $tryPorts = if ($StrictPort) { @($Port) } else { @($Port) + @(7788..7798 | Where-Object { $_ -ne $Port }) }
 
     foreach ($tryPort in $tryPorts) {
         # Fast path: only clear when something is actually listening
@@ -16697,12 +16729,22 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
     }
 
     if (-not $listener) {
-        Write-Host 'Could not start local chat - ports 7788-7798 are busy.' -ForegroundColor Red
-        Write-Host 'Run:  Stop-PromptParleLocalServer -AllCommonPorts' -ForegroundColor Cyan
-        Write-Host 'Or close other PowerShell windows, then:  pp' -ForegroundColor Cyan
+        if ($StrictPort) {
+            Write-Host ("Could not bind port {0} (still held by the previous server or blocked)." -f $Port) -ForegroundColor Red
+            Write-Host '  Restart handoff aborted — the previous server stays up so chat is not lost.' -ForegroundColor Yellow
+        } else {
+            Write-Host 'Could not start local chat - ports 7788-7798 are busy.' -ForegroundColor Red
+            Write-Host 'Run:  Stop-PromptParleLocalServer -AllCommonPorts' -ForegroundColor Cyan
+            Write-Host 'Or close other PowerShell windows, then:  pp' -ForegroundColor Cyan
+        }
+        # Signal the (restart) caller which port we FAILED to bind so it can log/keep old alive.
+        $script:PromptParleBoundPort = 0
         return
     }
 
+    # Publish the actually-bound port so the restart script can log it (the log ending at
+    # "import ok" with no bound-port line is exactly what stranded the UI before).
+    $script:PromptParleBoundPort = $boundPort
     if ($boundPort -ne 7788) {
         Write-Host ("Using port {0} (7788 was busy)." -f $boundPort) -ForegroundColor Yellow
     }

@@ -2817,7 +2817,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       // / agent_cost_tokens / tool_breakdown), or a strategy tag. A web-search or
       // agent reply keeps its savings in tool_breakdown/agent_cost, not the
       // top-level token fields, so those must count too (else the row vanishes).
-      if (nmeta && (
+      // Never show a savings/celebration line on a failed or EMPTY answer — a "$ saved"
+      // on "(empty response)" is a dishonest number (guardian Rule 6). Suppress it.
+      var __answerText = String(text == null ? '' : text).trim();
+      var __emptyAnswer = isError || __answerText === '' || __answerText === '(empty response)' || __answerText === '(empty optimized prompt)';
+      if (!__emptyAnswer && nmeta && (
         nmeta.original_tokens > 0 || nmeta.optimized_tokens > 0 || nmeta.strategy ||
         nmeta.is_agent_turn || (nmeta.agent_cost_tokens > 0) ||
         (Array.isArray(nmeta.tool_breakdown) && nmeta.tool_breakdown.length > 0)
@@ -3275,10 +3279,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           return; }
         const nextUrl = data.url || (window.location.origin + '/'); // ~60s: new process waits for port free, then imports + binds
         const up = await waitForServer(nextUrl.endsWith('/') ? nextUrl : nextUrl + '/', 90); if (up) window.location.href = nextUrl; else {
+          var restartLog = data.restart_log || '%TEMP%\\promptparle-restart.log';
           addMsg('sys',
-            'Updated on disk, but local chat did not come back. Open a new PowerShell and run:  pp' +
-            (data.restart_log ? ('  · log: ' + data.restart_log) : '  · log: %TEMP%\\promptparle-restart.log'),
-            null, true); setUpdateBusy(false); }
+            'Updated on disk (v' + (data.version || '?') + '), but the local chat server did not come back on this port. ' +
+            'The new server may have started on a different port, or a bind failed — the restart log says which: ' + restartLog + '. ' +
+            'Fix: open a new PowerShell and run  pp  (it will bind a fresh port and reopen the browser).',
+            null, true);
+          logOps('Restart after update did not return on the expected port. See ' + restartLog + ' — HEALTH line states the bound port.', { level: 'error' });
+          setUpdateBusy(false); }
       } catch (e) {
         // Network blip: check if local server still alive; do not force reload into a dead page
         const up = await waitForServer(window.location.origin + '/', 12); if (up) {
@@ -5864,7 +5872,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (!res.ok) {
           addMsg('bot', data.error || data.Error || ('Request failed HTTP ' + res.status), meta, true); } else if (optOnly) {
           const text = data.optimized_prompt || data.OptimizedPrompt || data.optimizedPrompt || '(empty optimized prompt)'; addMsg('bot', text, meta); } else {
-          const text = data.response || data.Response || '(empty response)'; addMsg('bot', text, meta); if (!meta || !(normalizeMeta(meta).original_tokens > 0)) {
+          const rawResp = data.response || data.Response; const text = (rawResp && String(rawResp)) || '(empty response)';
+          var __isEmpty = !rawResp || !String(rawResp).trim();
+          addMsg('bot', text, meta, __isEmpty ? true : false);
+          if (__isEmpty) {
+            // Empty from the local server most often means it restarted onto a different
+            // port after an update (this page is polling the old one) or the provider
+            // returned nothing. Point at the actionable cause, not a savings number.
+            addMsg('sys', 'The model returned an empty response. If this followed an update, the local server may have restarted on a different port — run  pp  in a new PowerShell, or reload this page. Otherwise try again or lower the dial.', null, true);
+            logOps('Empty response from local server (possible post-update restart on another port, or provider returned nothing).', { level: 'error' });
+          } else if (!meta || !(normalizeMeta(meta).original_tokens > 0)) {
             addMsg('sys', 'Note: token savings metadata missing from response. Check the PowerShell window for PromptParle stats.', null, true); } else if (normalizeMeta(meta).token_reduction_percent === 0 && context && context.length > 2000) {
             addMsg('sys', '0% reduction on a large attach; try dial 4-5 (dial is the only shrink knob).', null, true); }
         }

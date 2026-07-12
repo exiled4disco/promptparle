@@ -9,6 +9,33 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.24] - 2026-07-12
+
+### Fixed
+- **"(empty response)" after an update — the real cause.** On the post-update
+  restart, the local server's bind loop could silently fall through to a
+  *different* port (7788–7798) if the intended port wasn't instantly reclaimable.
+  The browser kept polling the original port, reported "local chat did not come
+  back," and the next turn hit a dead/wrong listener → an empty response. The
+  restart log ended at "import ok" and never said where the server bound, so the
+  drift was invisible. Fix: the restart now binds the intended port **strictly**
+  (`-StrictPort`) — no silent drift; if it truly can't bind, it fails loudly and
+  the previous server is kept alive instead of stranding the browser.
+- **No savings line / fireworks on an empty or failed answer.** A "$ saved" on
+  "(empty response)" is a dishonest number (guardian Rule 6). The savings row,
+  running-stats pulse, and fireworks are now suppressed when the answer is empty
+  or errored.
+
+### Changed
+- **Restart logging (`%TEMP%\promptparle-restart.log`) now records the truth.** A
+  background health probe logs whether the server is actually accepting
+  connections and **on which port** ("HEALTH ok/FAIL"), plus the bound port on
+  return. No more silence after "import ok."
+- **Actionable UI messages.** "Did not come back" and empty-response notices now
+  explain the likely cause (restart on another port) and tell you to run `pp` or
+  reload — instead of implying the turn simply failed. Both also write an
+  Activity-log entry pointing at the restart log's HEALTH line.
+
 ## [0.32.23] - 2026-07-12
 
 ### Added
