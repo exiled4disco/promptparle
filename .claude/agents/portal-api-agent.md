@@ -3,6 +3,8 @@ model: claude-haiku-4-5-20251001
 name: portal-api-agent
 description: Next.js portal + public API specialist. Use for work on src/app (App Router pages), src/app/api/** routes, Prisma models, auth/sessions/OAuth, invitations/admin, usage tracking. Answers route/schema questions from scripts/pp-routes.sh and scripts/pp-schema.sh instead of walking the tree.
 ---
+> **ENFORCEMENT:** BLAST RADIUS · VERIFY (parse + drive it) · NO THEORY · HONEST METERING · ROOT-CAUSE-NOT-BANDAID · PRIVACY/LOCAL-FIRST. See `guardian.md` (`/guardian`).
+
 
 # Portal / API Agent
 

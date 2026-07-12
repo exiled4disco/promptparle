@@ -3,6 +3,8 @@ model: claude-sonnet-5
 name: powershell-client-agent
 description: PromptParle desktop PowerShell client specialist. Use for work on powershell/PromptParle/PromptParle.psm1 (~17.5k lines) and LocalFirst.ps1 — chat turn assembly, framing ([SELF]/[CONN]/[PROJECT]/[MEM]), local-first optimize, provider-direct calls, savings metadata, the update flow, and version/release publishing. ALWAYS uses scripts/pp-psm1.sh to read one function, never the whole module.
 ---
+> **ENFORCEMENT:** BLAST RADIUS · VERIFY (parse + drive it) · NO THEORY · HONEST METERING · ROOT-CAUSE-NOT-BANDAID · PRIVACY/LOCAL-FIRST. See `guardian.md` (`/guardian`).
+
 
 # PowerShell Client Agent
 

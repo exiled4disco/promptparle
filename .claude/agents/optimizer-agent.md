@@ -3,6 +3,8 @@ model: claude-haiku-4-5-20251001
 name: optimizer-agent
 description: Context-optimizer / compression-pipeline specialist. Use for work on src/lib/optimizer.ts, context-fleet.ts, and the per-modality compressors (document/code/sheet/log/image), the compression dial, token estimation, and the never-expand guarantee. Answers pipeline questions from scripts/pp-optimizer.sh instead of reading the whole pipeline.
 ---
+> **ENFORCEMENT:** BLAST RADIUS · VERIFY (parse + drive it) · NO THEORY · HONEST METERING · ROOT-CAUSE-NOT-BANDAID · PRIVACY/LOCAL-FIRST. See `guardian.md` (`/guardian`).
+
 
 # Optimizer Agent
 
