@@ -301,6 +301,20 @@
       cursor: pointer; padding: 0.1rem 0.2rem; border-radius: 4px;
     }
     .side-stats .stats-reset:hover { color: var(--accent); }
+    .side-stats .stats-sound {
+      background: transparent; border: 0; color: var(--dim); font: inherit; font-size: 0.72rem;
+      cursor: pointer; padding: 0.1rem 0.25rem; border-radius: 4px; line-height: 1;
+    }
+    .side-stats .stats-sound:hover { background: var(--accent-soft); }
+    .side-stats .stats-sound.is-muted { opacity: 0.6; }
+    @keyframes ppSavingsPop {
+      0% { transform: scale(1); text-shadow: none; }
+      35% { transform: scale(1.28); text-shadow: 0 0 10px var(--success); }
+      100% { transform: scale(1); text-shadow: none; }
+    }
+    .side-stats .stat-cell .val.pp-savings-pop {
+      display: inline-block; animation: ppSavingsPop 0.5s ease-out;
+    }
     .side-stats .stats-totals {
       display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; flex: 0 0 auto; margin: 0;
     }
@@ -623,6 +637,28 @@
         grid-column: 1 / -1; }
     }
     .modal .row-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .85rem; }
+    /* Usage modal: fixed height; only the Recent list scrolls internally */
+    .modal.usage-modal {
+      display: flex; flex-direction: column; overflow: hidden;
+      height: min(80vh, 720px); max-height: min(80vh, 720px);
+    }
+    .modal.usage-modal h2,
+    .modal.usage-modal .sub,
+    .modal.usage-modal #infoBody { flex: 0 0 auto; }
+    .modal.usage-modal #infoBody {
+      display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+    }
+    .modal.usage-modal .usage-fixed { flex: 0 0 auto; }
+    .modal.usage-modal .row-actions { flex: 0 0 auto; margin-top: .5rem; }
+    .modal.usage-modal .usage-recent-h { flex: 0 0 auto; }
+    .modal.usage-modal .usage-recent-scroll {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: .1rem;
+    }
+    .savings-alerts { display: flex; flex-direction: column; gap: .3rem; margin: .1rem 0 .2rem; }
+    .savings-alerts label {
+      display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: var(--text); cursor: pointer;
+    }
+    .savings-alerts input { accent-color: var(--accent); }
     /* Bug / Suggest — simple text under composer (bottom-right) */
     .composer-foot {
       flex: 0 0 auto; display: flex; justify-content: flex-end; align-items: center;
@@ -1169,6 +1205,7 @@
               </button>
               <div class="side-sec-actions">
                 <button type="button" class="stats-usage" id="sideStatsUsage" data-info="usage" title="Open Usage for per-model detail" aria-label="Open usage details"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1 14h14v1H1v-1zm2-1V8h2v5H3zm4 0V4h2v9H7zm4 0V6h2v7h-2z"/></svg></button>
+                <button type="button" class="stats-sound" id="sideStatsSound" title="Savings sound on/off (mute)" aria-label="Toggle savings sound">🔊</button>
                 <button type="button" class="stats-reset" id="sideStatsReset" title="Zero the on-this-PC running totals (does not delete chats)">Reset</button>
               </div>
             </div>
@@ -1847,7 +1884,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }; }
 
     /** Friendly labels for the per-tool breakdown line. */
-    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page' };
+    var TOOL_LABELS = { fleet: 'Context fleet', error_brief: 'Error brief', code_brief: 'Code brief', relevant_slice: 'Relevant slice', git: 'Git (local)', ssh_read: 'SSH read', chat_memory: 'Chat memory', budget_cap: 'Budget cap', framing: 'Framing', web_page: 'Web page', quality_gate: 'Quality gate (local)' };
 
     /** "By tool: Context fleet −6.7k, Git (local) −1.9k" — honest counterfactual, ~tokens (chars/4). */
     function buildToolBreakdownLine(meta) {
@@ -1870,13 +1907,43 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return 'By tool: ' + frag.join(', ');
     }
 
+    // Total tokens saved by local tools this turn (chars_saved → tokens). This is
+    // work PP did on the PC that a raw provider would have billed (context trimmed,
+    // framing memoized, quality-gate/validation run locally at 0 AI tokens).
+    function localToolTokensSaved(meta) {
+      var tb = meta && meta.tool_breakdown; if (!tb || !tb.length) return 0;
+      var c = 0; for (var i = 0; i < tb.length; i++) { var t = tb[i]; if (t && String(t.kind) !== 'none') c += (Number(t.chars_saved) || 0); }
+      return Math.ceil(c / 4);
+    }
+
     function updateSavingsStrip(meta) {
       if (!meta || !(meta.original_tokens > 0 || meta.optimized_tokens > 0)) {
         return; }
-      var s = buildSavingsExplain(meta); var big = (s.expanded && s.opt > s.orig) ? '↑ expanded' : (s.pct > 0 && s.saved > 0 ? '−' + s.pct + '% tokens' : '0% saved'); var bits = []; bits.push('before ' + compactTok(s.orig) + ' → after ' + compactTok(s.opt) + ' tok'); if (s.saved > 0) bits.push(compactTok(s.saved) + ' tok cut'); bits.push('est. ' + formatUsdEstimate(s.usdSaved) + ' saved'); if (s.model) bits.push('model ' + s.model); else if (s.provider) bits.push(s.provider); if (s.dial != null) bits.push('dial ' + s.dial + '/5');
+      var s = buildSavingsExplain(meta);
+      var localSaved = localToolTokensSaved(meta);
+      // A generation/deliver turn produces OUTPUT the model can't avoid — that's the
+      // artifact the user asked for, not bloat. If local tools saved tokens, lead with
+      // that instead of a misleading "expanded". Context-in vs output-out are different things.
+      var isGenExpand = s.expanded && s.opt > s.orig;
+      var big, headClass;
+      if (localSaved > 0) {
+        big = '−' + compactTok(localSaved) + ' tok (local tools)'; headClass = '';
+      } else if (isGenExpand) {
+        big = 'output turn'; headClass = ' flat';   // no context to trim; model produced a deliverable
+      } else if (s.pct > 0 && s.saved > 0) {
+        big = '−' + s.pct + '% tokens'; headClass = '';
+      } else { big = '0% saved'; headClass = ' flat'; }
+      var bits = [];
+      bits.push('context ' + compactTok(s.orig) + ' → ' + compactTok(s.opt) + ' tok');
+      if (localSaved > 0) bits.push('local work saved ~' + compactTok(localSaved) + ' tok');
+      else if (isGenExpand) bits.push('generated output (deliverable) — little context to trim');
+      var usd = localSaved > 0 ? (localSaved / 1000000) * s.rate : s.usdSaved;
+      bits.push('est. ' + formatUsdEstimate(usd) + ' saved');
+      if (s.model) bits.push('model ' + s.model); else if (s.provider) bits.push(s.provider);
+      if (s.dial != null) bits.push('dial ' + s.dial + '/5');
       var toolLine = buildToolBreakdownLine(meta);
       savingsStrip.innerHTML =
-        '<span class="big' + (s.flat ? ' flat' : '') + '">' + big + '</span>' +
+        '<span class="big' + headClass + '">' + big + '</span>' +
         '<span class="muted">' + bits.join(' · ') + '</span>' +
         (toolLine ? '<span class="muted tool-breakdown" style="display:block;margin-top:2px;opacity:.85">' + escapeHtml(toolLine) + '</span>' : ''); savingsStrip.classList.add('show'); }
 
@@ -1986,17 +2053,50 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
      * Aggregate token savings across local chat history (this browser).
      * Totals shown in sidebar; per-model rows used in Usage modal only.
      */
+    // Cumulative running totals (0.31): increment-only, keyed by message id so a
+    // turn is counted ONCE and deleting a chat NEVER lowers the totals. Reset zeroes it.
+    // Per-model breakdown stays computed live from surviving chats (that's fine — the
+    // headline totals are the cumulative truth the user watches).
+    var RUN_STATS_CUM_KEY = 'pp_run_stats_cum_v1';
+    var RUN_STATS_SEEN_KEY = 'pp_run_stats_seen_v1';
+    function loadCumStats() {
+      var d = lsGet(RUN_STATS_CUM_KEY, null);
+      if (!d || typeof d !== 'object') d = { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
+      return d;
+    }
+    function loadSeenTurns() { var s = lsGet(RUN_STATS_SEEN_KEY, null); return (s && typeof s === 'object') ? s : {}; }
+    function resetCumStats() {
+      lsSet(RUN_STATS_CUM_KEY, { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 });
+      lsSet(RUN_STATS_SEEN_KEY, {});
+    }
+    // Record one completed turn into the cumulative store (idempotent by id).
+    function accrueTurnToCum(id, s) {
+      if (!id) return;
+      var seen = loadSeenTurns();
+      if (seen[id]) return;               // already counted — re-render safe
+      seen[id] = 1;
+      var cum = loadCumStats();
+      cum.msgs += 1; cum.orig += (s.orig || 0); cum.opt += (s.opt || 0);
+      cum.saved += (s.saved || 0); cum.usd += (s.usdSaved || 0);
+      // Bound the seen-map so it can't grow forever.
+      var keys = Object.keys(seen);
+      if (keys.length > 5000) { var trimmed = {}; keys.slice(-3000).forEach(function (k) { trimmed[k] = 1; }); seen = trimmed; }
+      lsSet(RUN_STATS_CUM_KEY, cum); lsSet(RUN_STATS_SEEN_KEY, seen);
+    }
+
     function computeRunningStats() {
       var epoch = getRunStatsEpoch();
       var totals = { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
       var byModel = {};
-      function ingest(meta, at) {
+      function ingest(meta, at, id) {
         if (epoch > 0 && at && at < epoch) return;
         var n = normalizeMeta(meta);
         if (!n || !(n.original_tokens > 0 || n.optimized_tokens > 0)) return;
         if (!n.model && modelEl && modelEl.value) n.model = modelEl.value;
         if (!n.provider && providerEl && providerEl.value) n.provider = providerEl.value;
         var s = buildSavingsExplain(n);
+        // Cumulative accrual (increment-only, id-keyed) — survives chat deletion.
+        accrueTurnToCum(id, s);
         var model = String(s.model || 'unknown').trim() || 'unknown';
         var prov = String(s.provider || '').trim();
         var key = (prov ? prov + ' · ' : '') + model;
@@ -2021,7 +2121,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           // Prefer explicit message stamp; if Reset epoch is set, only count stamped turns after it
           var at = m.at || m.ts || m.updatedAt || 0;
           if (epoch > 0 && !at) return;
-          ingest(m.meta, at);
+          ingest(m.meta, at, m.id);
         });
       }
       try {
@@ -2042,8 +2142,12 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (b.saved !== a.saved) return b.saved - a.saved;
         return b.msgs - a.msgs;
       });
-      var pct = totals.orig > 0 ? Math.round(100 * totals.saved / totals.orig) : 0;
-      return { totals: totals, models: models, pct: pct };
+      // Headline totals = cumulative store (increment-only; unaffected by chat deletion).
+      // Falls back to the live walk on the very first render before anything accrued.
+      var cum = loadCumStats();
+      var headline = (cum.msgs > 0) ? cum : totals;
+      var pct = headline.orig > 0 ? Math.round(100 * headline.saved / headline.orig) : 0;
+      return { totals: headline, models: models, pct: pct, live: totals };
     }
 
     function renderSideStats() {
@@ -2063,10 +2167,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       html += '<div class="stat-cell wide"><div class="lbl">Tokens</div><div class="val">' +
         compactTok(t.orig) + ' → ' + compactTok(t.opt) +
         ' <span class="ok" style="font-size:.72rem;font-weight:700">−' + compactTok(t.saved) + '</span></div></div>';
-      html += '<div class="stat-cell wide"><div class="lbl">Est. value saved</div><div class="val ok">' +
+      html += '<div class="stat-cell wide"><div class="lbl">Est. value saved</div><div class="val ok" id="sideStatUsdVal">' +
         formatUsdEstimate(t.usd) + '</div></div>';
       html += '</div>';
       body.innerHTML = html;
+      // Savings alert: fire only on a positive increase vs the previously rendered value
+      var prev = window.__ppPrevUsdSaved;
+      var cur = Number(t.usd) || 0;
+      if (typeof prev === 'number' && cur - prev > 0) {
+        if (isSavingsVisualOn()) {
+          var valEl = document.getElementById('sideStatUsdVal');
+          if (valEl) {
+            valEl.classList.remove('pp-savings-pop');
+            void valEl.offsetWidth; // reflow so the animation re-triggers
+            valEl.classList.add('pp-savings-pop');
+            setTimeout(function () { valEl.classList.remove('pp-savings-pop'); }, 600);
+          }
+        }
+        if (isSoundEnabled() && isSavingsSoundOn()) { playChaChing(); }
+      }
+      window.__ppPrevUsdSaved = cur;
     }
 
     /** Local running totals + per-model rows for the Usage modal. */
@@ -2113,6 +2233,38 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return html;
     }
 
+    /* ---- Savings alerts (sound + visual), persisted in localStorage ---- */
+    function ppBoolPref(key, dflt) {
+      var v = lsGet(key, null); return v == null ? dflt : !!v; }
+    function isSoundEnabled() { return ppBoolPref('pp_sound_enabled', true); }
+    function isSavingsSoundOn() { return ppBoolPref('pp_savings_sound', true); }
+    function isSavingsVisualOn() { return ppBoolPref('pp_savings_visual', true); }
+    function updateSoundToggleIcon() {
+      var btn = document.getElementById('sideStatsSound'); if (!btn) return;
+      var on = isSoundEnabled();
+      btn.textContent = on ? '🔊' : '🔇';
+      btn.classList.toggle('is-muted', !on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    /** Synthesized cash-register "cha-ching" (two quick bell tones); autoplay-safe. */
+    function playChaChing() {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+        var ctx = window.__ppAudioCtx || (window.__ppAudioCtx = new AC());
+        if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+        var now = ctx.currentTime;
+        [[1318.5, 0], [1567.98, 0.09]].forEach(function (pair) {
+          var f = pair[0], t = now + pair[1];
+          var osc = ctx.createOscillator(); var gain = ctx.createGain();
+          osc.type = 'triangle'; osc.frequency.setValueAtTime(f, t);
+          gain.gain.setValueAtTime(0.0001, t);
+          gain.gain.exponentialRampToValueAtTime(0.18, t + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(t); osc.stop(t + 0.24);
+        });
+      } catch (e) { /* autoplay / no-audio safe */ }
+    }
     function scheduleSideStatsRefresh() {
       try {
         if (window.__ppSideStatsTimer) clearTimeout(window.__ppSideStatsTimer);
@@ -2313,7 +2465,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       // Document deliverables; big download buttons
       if (nmeta && (nmeta.export_count > 0 || (nmeta.exports && nmeta.exports.length))) {
         const ex = document.createElement('div'); ex.className = 'meta'; ex.style.borderColor = 'rgba(96, 165, 250, 0.55)'; ex.style.background = 'rgba(59, 130, 246, 0.12)'; const list = nmeta.exports || []; let html = '<span class="ok"><strong>Downloads ready</strong></span>'; html += '<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.45rem">'; list.forEach(function (e) {
-          if (!e) return; const name = String(e.name || e.file || 'file'); const url = String(e.download_url || e.downloadUrl || e.url || ''); if (!url) return; const kb = e.bytes ? Math.max(1, Math.ceil(Number(e.bytes) / 1024)) : null; html += '<a href="' + url.replace(/"/g, '') + '" download class="btn" ' +
+          if (!e) return; const name = String(e.name || e.file || 'file'); const url = String(e.download_url || e.downloadUrl || e.url || ''); if (!url) return; const kb = e.bytes ? Math.max(1, Math.ceil(Number(e.bytes) / 1024)) : null; html += '<a href="' + url.replace(/"/g, '') + '" download="' + name.replace(/"/g, '') + '" class="btn" ' +
             'style="display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .7rem;font-size:.82rem;' +
             'background:var(--accent);color:#0b1220;border-radius:8px;text-decoration:none;font-weight:600">' +
             '⬇ ' + name + (kb ? ' · ' + kb + ' KB' : '') + '</a>'; }); html += '</div>'; ex.innerHTML = html; div.appendChild(ex); }
@@ -2998,7 +3150,21 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       sideStatsReset.addEventListener('click', function () {
         if (!confirm('Reset running stats on this PC? Chat history is kept; counters start fresh from the next message.')) return;
         setRunStatsEpoch(Date.now());
+        resetCumStats();   // zero the cumulative store too (0.31)
         scheduleSideStatsRefresh();
+      });
+    }
+    var sideStatsSound = document.getElementById('sideStatsSound');
+    if (sideStatsSound) {
+      updateSoundToggleIcon();
+      sideStatsSound.addEventListener('click', function () {
+        var next = !isSoundEnabled();
+        lsSet('pp_sound_enabled', next);
+        // Master mute also flips the savings-sound setting so the two stay in sync
+        lsSet('pp_savings_sound', next);
+        updateSoundToggleIcon();
+        var chk = document.getElementById('ppSavingsSoundChk');
+        if (chk) chk.checked = next;
       });
     }
     // Initial paint (empty until history has token meta)
@@ -4330,9 +4496,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           '<div class="info-stat"><div class="lbl">Plan</div><div class="val" style="font-size:.9rem">' + esc(plan || '-') + '</div></div>' +
         '</div>' +
         '<div class="sub" style="margin:0 0 .4rem">' + fmtN(orig) + ' → ' + fmtN(opt) + ' tokens (lifetime completed)</div>';
+      html += renderSavingsAlertsSection();
+      // Fixed-height body: only the RECENT list scrolls (buttons sit above it, always visible)
+      html = '<div class="usage-fixed">' + html + '</div>';
       const recent = pick(data, 'recent') || [];
+      html += '<h3 class="usage-recent-h">Recent</h3>';
+      html += '<div class="usage-recent-scroll">';
       if (recent.length) {
-        html += '<h3>Recent</h3><ul class="info-list">';
+        html += '<ul class="info-list">';
         recent.slice(0, 5).forEach(function (r) {
           const prov = pick(r, 'provider') || '?';
           const o = pick(r, 'original_tokens', 'originalTokens') || 0;
@@ -4347,7 +4518,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       } else {
         html += '<p class="info-loading">No portal requests yet. Local savings still count above.</p>';
       }
+      html += '</div>';
       return html;
+    }
+
+    /** Client-side "Savings alerts" toggles (sound + visual), persisted in localStorage. */
+    function renderSavingsAlertsSection() {
+      return '<div class="usage-local-h">Savings alerts (this PC)</div>' +
+        '<div class="savings-alerts">' +
+        '<label><input type="checkbox" id="ppSavingsSoundChk"' + (isSavingsSoundOn() ? ' checked' : '') +
+        '> Play cha-ching sound on new savings</label>' +
+        '<label><input type="checkbox" id="ppSavingsVisualChk"' + (isSavingsVisualOn() ? ' checked' : '') +
+        '> Animate the “Est. value saved” number</label>' +
+        '</div>';
+    }
+
+    /** Wire the Savings alerts checkboxes after the Usage modal renders. */
+    function bindSavingsAlerts() {
+      var s = document.getElementById('ppSavingsSoundChk');
+      if (s) s.addEventListener('change', function () {
+        lsSet('pp_savings_sound', s.checked);
+        // Keep master mute (speaker icon / pp_sound_enabled) in sync with the sound toggle
+        lsSet('pp_sound_enabled', s.checked);
+        updateSoundToggleIcon();
+      });
+      var v = document.getElementById('ppSavingsVisualChk');
+      if (v) v.addEventListener('change', function () { lsSet('pp_savings_visual', v.checked); });
     }
 
     function renderApiKeys(data) {
@@ -4397,11 +4593,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         infoEdit.href = '#'; infoEdit.textContent = '';
         infoEdit.style.display = 'none';
       }
-      infoBody.className = 'info-loading'; infoBody.textContent = 'Loading…'; infoModal.classList.add('open'); try {
+      infoBody.className = 'info-loading'; infoBody.textContent = 'Loading…';
+      var infoModalEl = infoModal.querySelector('.modal');
+      if (infoModalEl) {
+        infoModalEl.classList.toggle('usage-modal', kind === 'usage');
+        // Restore action buttons to the modal (they may have been moved into infoBody by a prior usage render)
+        var raReset = infoModalEl.querySelector('.row-actions');
+        if (raReset && raReset.parentElement !== infoModalEl) infoModalEl.appendChild(raReset);
+      }
+      infoModal.classList.add('open'); try {
         const res = await fetch(meta.path, { cache: 'no-store' }); let data = {}; try { data = await res.json(); } catch (e) { data = {}; }
         if (!res.ok) {
           throw new Error(data.error || data.Error || ('HTTP ' + res.status)); }
         infoBody.className = ''; infoBody.innerHTML = meta.render(data);
+        if (kind === 'usage') {
+          try { bindSavingsAlerts(); } catch (eSa) { /* ignore */ }
+          // Feature 5: move action buttons ABOVE the Recent history so they stay visible
+          try {
+            var rowActions = infoModalEl ? infoModalEl.querySelector('.row-actions') : null;
+            var recentH = infoBody.querySelector('.usage-recent-h');
+            if (rowActions && recentH) infoBody.insertBefore(rowActions, recentH);
+          } catch (eMove) { /* ignore */ }
+        } else if (infoModalEl) {
+          // Restore buttons to the modal bottom for non-usage kinds
+          var ra = infoModalEl.querySelector('.row-actions');
+          if (ra && ra.parentElement !== infoModalEl) infoModalEl.appendChild(ra);
+        }
         if (kind === 'providers') {
           var pickEl = document.getElementById('localProvPick');
           var getKeyEl = document.getElementById('localProvGetKey');

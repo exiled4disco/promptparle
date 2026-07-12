@@ -20,6 +20,9 @@ export const TOOL_ALLOWLIST = [
   "chat_memory",
   "budget_cap",
   "framing",
+  "code_brief",
+  "web_page",
+  "quality_gate",
 ] as const;
 
 export type ToolName = (typeof TOOL_ALLOWLIST)[number];

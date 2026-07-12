@@ -945,7 +945,7 @@ function Get-PromptParleSessionStatePath {
 # NEVER prompt/context bodies. Rolls up per day; flushed on heartbeat.
 $script:PromptParleToolSavingsTools = @(
     'fleet', 'error_brief', 'code_brief', 'relevant_slice', 'git', 'ssh_read',
-    'chat_memory', 'budget_cap', 'framing', 'web_page'
+    'chat_memory', 'budget_cap', 'framing', 'web_page', 'quality_gate'
 )
 
 function Get-PromptParleToolSavingsPath {
@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.30.1'
+    $ver = '0.31.0'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -16138,6 +16138,21 @@ function Invoke-PromptParleChatTurnCore {
             if ($metaOut) {
                 $metaOut.quality_reason = [string]$qg.reason
                 if ($null -ne $qg.score_pct) { $metaOut.quality_score_pct = [int]$qg.score_pct }
+                # Meter truth (0.31): the quality gate self-checks the answer LOCALLY at
+                # 0 AI tokens. Without PP, verifying that output means another model round
+                # (~ re-ingesting the response). Credit that avoided round as local-work
+                # savings so generation turns don't read as pure "expansion".
+                try {
+                    if ($qg.applied -or ($null -ne $qg.score_pct)) {
+                        $qgChars = [Math]::Min(20000, ([string]$respText).Length)
+                        if ($qgChars -gt 0) {
+                            $qgEntry = [pscustomobject]@{ tool = 'quality_gate'; kind = 'avoided-ingest'; chars_without = [int]$qgChars; chars_with = 0; chars_saved = [int]$qgChars }
+                            $metaOut.tool_breakdown = @($metaOut.tool_breakdown) + @($qgEntry)
+                            # Also roll up to the portal savings bridge (numbers only).
+                            try { Add-PromptParleToolSavings -Breakdown @($qgEntry) -Provider ([string]$metaOut.provider) } catch { }
+                        }
+                    }
+                } catch { }
                 try {
                     $metaOut.quality_supported = [int]$qg.supported
                     $metaOut.quality_partial = [int]$qg.partial
