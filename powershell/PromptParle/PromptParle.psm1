@@ -2047,7 +2047,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.31.1'
+    $ver = '0.31.2'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }

@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PromptParle.psm1'
-    ModuleVersion     = '0.31.1'
+    ModuleVersion     = '0.31.2'
     GUID              = 'a8c3e2f1-9b4d-4e6a-8f2c-1d5e7a9b0c3d'
     Author            = 'PromptParle'
     CompanyName       = 'PromptParle'
@@ -70,6 +70,7 @@
             Tags         = @('AI', 'Prompt', 'OpenAI', 'Claude', 'Gemini', 'Grok', 'PromptParle')
             ProjectUri   = 'https://promptparle.com'
             ReleaseNotes = @'
+0.31.2: Simpler top savings strip. The top strip is no longer a dense per-turn dump — it's now a clean SESSION summary for the open chat: "Session Stats · Messages N · Total Tokens A → B · Saved Tokens N · Est $ Saved · Framing N". The detailed per-turn breakdown still lives in the per-message line under each answer. Refreshes when you switch chats.
 0.31.1: Savings UX polish. Per-message savings line now spans the full chat width (both Terminal + Web modes). Background-job status ("⏳ N running · ✓ N ready") moved inline into the composer status row — one row, no floating element. Usage & savings alert checkboxes are on one row with simple labels: "Play Sound" · "Animate Stats".
 0.31.0: Honest generation metering + cumulative stats + savings alerts. (1) Fixed HTML deliverables downloading as .json (download uses the real filename). (2) Meter truth: generation turns (build a 14KB file + local quality-gate) no longer read as "expanded" — the quality gate self-checks locally at 0 AI tokens (work a raw provider would bill), now credited as an avoided-ingest saving; the strip separates context-in from generated output and leads with local-tool savings. (3) Running stats are now CUMULATIVE — deleting a chat no longer lowers your totals (increment-only store, id-keyed; Reset still zeroes it). (4) Sound + visual savings alerts: speaker mute toggle in the Running Stats card, a one-shot grow/glow on the Est-value cell + a synthesized "cha-ching" when a turn saves, both toggleable (pp_savings_sound / pp_savings_visual). (5) Usage & savings modal: only the Recent history scrolls now (header/stats/buttons stay put) and the action buttons moved above Recent.
 0.30.1: Background UX + deliverables + framing memoization. (1) Fixed a 0.30.0 regression — the "working in the background" note went to the Activity log instead of the chat; now it's a visible pending bubble that becomes the answer in place. (2) "create/build/make me a web form/app/script/page/tool" now produces a downloadable FILE (not code pasted in chat) — with no bound workspace these artifact asks resolve to deliver, not mutate. (3) Framing memoization: the [SELF] identity card is sent in full only on turn 1 of a chat; later turns send a 1-line pointer (~1.3k chars / ~325 tok saved per turn), so short follow-ups stop reading as "expanded" and the saving is credited to the framing tool.

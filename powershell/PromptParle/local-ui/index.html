@@ -372,6 +372,10 @@
     .savings-strip .big {
       font-size: .85rem; font-weight: 800; letter-spacing: -0.01em; color: #34d399; }
     .savings-strip .big.flat { color: var(--dim); font-weight: 600; }
+    .savings-strip .big-label { font-size: .7rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #34d399; margin-right: .3rem; }
+    .savings-strip .sess-stat { color: var(--muted); font-size: .72rem; margin-right: .1rem; }
+    .savings-strip .sess-stat b { color: var(--text); font-weight: 700; }
+    .savings-strip .sess-stat b.ok { color: #34d399; }
     .savings-strip .muted { color: var(--muted); font-size: .7rem; }
     .savings-strip .chip {
       font-size: .65rem; padding: .08rem .35rem; border-radius: 999px; background: #0a0e16; border: 1px solid var(--border); color: var(--muted); display: inline-flex; max-width: none; }
@@ -1924,36 +1928,42 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return Math.ceil(c / 4);
     }
 
+    // Top strip = SIMPLE session summary for THIS chat (0.31.2). The dense per-turn
+    // detail lives in the per-message meta line; this is just the running session
+    // roll-up: messages, total tokens, saved, est $, framing. Computed from
+    // currentMessages so it reflects the open chat.
+    function computeSessionSummary() {
+      var sum = { msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, framing: 0 };
+      var msgs = currentMessages || [];
+      for (var i = 0; i < msgs.length; i++) {
+        var m = msgs[i]; if (!m || !m.meta) continue;
+        var n = normalizeMeta(m.meta);
+        if (!n || !(n.original_tokens > 0 || n.optimized_tokens > 0)) continue;
+        var s = buildSavingsExplain(n);
+        sum.msgs += 1; sum.orig += s.orig; sum.opt += s.opt; sum.saved += s.saved; sum.usd += s.usdSaved;
+        var tb = n.tool_breakdown || [];
+        for (var j = 0; j < tb.length; j++) {
+          var t = tb[j]; if (t && t.tool === 'framing' && String(t.kind) !== 'none') sum.framing += Math.ceil((Number(t.chars_saved) || 0) / 4);
+        }
+      }
+      return sum;
+    }
+
     function updateSavingsStrip(meta) {
-      if (!meta || !(meta.original_tokens > 0 || meta.optimized_tokens > 0)) {
-        return; }
-      var s = buildSavingsExplain(meta);
-      var localSaved = localToolTokensSaved(meta);
-      // A generation/deliver turn produces OUTPUT the model can't avoid — that's the
-      // artifact the user asked for, not bloat. If local tools saved tokens, lead with
-      // that instead of a misleading "expanded". Context-in vs output-out are different things.
-      var isGenExpand = s.expanded && s.opt > s.orig;
-      var big, headClass;
-      if (localSaved > 0) {
-        big = '−' + compactTok(localSaved) + ' tok (local tools)'; headClass = '';
-      } else if (isGenExpand) {
-        big = 'output turn'; headClass = ' flat';   // no context to trim; model produced a deliverable
-      } else if (s.pct > 0 && s.saved > 0) {
-        big = '−' + s.pct + '% tokens'; headClass = '';
-      } else { big = '0% saved'; headClass = ' flat'; }
-      var bits = [];
-      bits.push('context ' + compactTok(s.orig) + ' → ' + compactTok(s.opt) + ' tok');
-      if (localSaved > 0) bits.push('local work saved ~' + compactTok(localSaved) + ' tok');
-      else if (isGenExpand) bits.push('generated output (deliverable) — little context to trim');
-      var usd = localSaved > 0 ? (localSaved / 1000000) * s.rate : s.usdSaved;
-      bits.push('est. ' + formatUsdEstimate(usd) + ' saved');
-      if (s.model) bits.push('model ' + s.model); else if (s.provider) bits.push(s.provider);
-      if (s.dial != null) bits.push('dial ' + s.dial + '/5');
-      var toolLine = buildToolBreakdownLine(meta);
-      savingsStrip.innerHTML =
-        '<span class="big' + headClass + '">' + big + '</span>' +
-        '<span class="muted">' + bits.join(' · ') + '</span>' +
-        (toolLine ? '<span class="muted tool-breakdown" style="display:block;margin-top:2px;opacity:.85">' + escapeHtml(toolLine) + '</span>' : ''); savingsStrip.classList.add('show'); }
+      // meta arg kept for call-compatibility; the strip now shows the whole session.
+      var sum = computeSessionSummary();
+      if (!sum.msgs) { savingsStrip.classList.remove('show'); savingsStrip.innerHTML = ''; return; }
+      // Simple, session-scoped: Session Stats · Messages · Tokens · Saved · Est $ · Framing
+      function stat(label, val, cls) { return '<span class="sess-stat">' + label + ' <b' + (cls ? ' class="' + cls + '"' : '') + '>' + val + '</b></span>'; }
+      var savedCls = sum.saved > 0 ? 'ok' : '';
+      var html = '<span class="big-label">Session Stats</span>' +
+        stat('Messages', sum.msgs) +
+        stat('Total Tokens', compactTok(sum.orig) + ' → ' + compactTok(sum.opt)) +
+        stat('Saved Tokens', compactTok(sum.saved), savedCls) +
+        stat('Est $ Saved', formatUsdEstimate(sum.usd), savedCls) +
+        (sum.framing > 0 ? stat('Framing', compactTok(sum.framing)) : '');
+      savingsStrip.innerHTML = html;
+      savingsStrip.classList.add('show'); }
 
     // ---- 0.30 Background jobs: keep chatting while a long turn runs elsewhere ----
     var bgJobs = {};            // jobId -> { chatId, prompt, timer }
@@ -2758,7 +2768,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const idx = loadIndex(); const row = idx.find(function (c) { return c.id === id; }); if (chatTitleEl) {
         chatTitleEl.textContent = (row && row.title) || 'Chat'; chatTitleEl.title = 'Click to rename chat'; }
       if (currentMessages.length) {
-        renderStoredMessages(currentMessages); } else {
+        renderStoredMessages(currentMessages); try { updateSavingsStrip(); } catch (e) {} } else {
         clearChatPane(); skipHistorySave = true; addMsg('sys', WELCOME_MSG); skipHistorySave = false; currentMessages = []; }
       renderHistoryList(); scheduleSideStatsRefresh(); inputEl.focus(); }
     function startNewChat(opts) {
