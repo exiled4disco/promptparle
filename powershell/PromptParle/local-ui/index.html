@@ -409,9 +409,10 @@
       margin-top: .5rem; padding-top: .4rem; border-top: 1px solid var(--border); font-size: .74rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .4rem .7rem; }
     .meta .ok { color: var(--success); font-weight: 600; }
     .meta .warn { color: var(--warn); }
-    /* Compact per-message savings; readable labels, green when saving */
+    /* Compact per-message savings; readable labels, green when saving.
+       Full chat-window width (0.31.1): span the pane, not just the bubble. */
     .meta.meta-savings {
-      margin-top: .35rem; padding: .32rem .5rem; border: 1px solid rgba(52, 211, 153, 0.28); border-radius: 8px; background: rgba(52, 211, 153, 0.07); gap: .2rem .45rem; font-size: .72rem; line-height: 1.35; color: var(--text); align-items: center; }
+      margin-top: .35rem; padding: .32rem .5rem; border: 1px solid rgba(52, 211, 153, 0.28); border-radius: 8px; background: rgba(52, 211, 153, 0.07); gap: .2rem .45rem; font-size: .72rem; line-height: 1.35; color: var(--text); align-items: center; box-sizing: border-box; width: 100%; }
     .meta.meta-savings.flat-save {
       border-color: var(--border); background: rgba(10, 14, 22, 0.55); }
     .meta.meta-savings .sep { opacity: .4; margin: 0 .05rem; color: var(--dim); }
@@ -486,6 +487,10 @@
       font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
     body.chat-style-term .savings-strip {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; }
+    /* Per-message savings line spans the full chat window in BOTH modes (0.31.1).
+       Terminal mode messages are already full-width; in card mode the bubble is
+       capped, so the savings line's own container is what we widen. */
+    body.chat-style-term .msg .meta.meta-savings { width: 100%; }
 
     /* Live composer estimate; model + rough tokens/$ before send */
     .composer-est {
@@ -497,6 +502,8 @@
     .composer-est .est-cost {
       color: #34d399; font-weight: 700; }
     .composer-est .est-dim { color: var(--dim); font-weight: 500; }
+    .composer-est .est-bgjob { color: #34d399; font-weight: 600; }
+    .composer-est .est-bgjob[hidden] { display: none; }
     .composer-est .est-sep { opacity: .35; }
     .composer-est.empty .est-tok,
     .composer-est.empty .est-cost { color: var(--dim); font-weight: 500; }
@@ -654,7 +661,7 @@
     .modal.usage-modal .usage-recent-scroll {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: .1rem;
     }
-    .savings-alerts { display: flex; flex-direction: column; gap: .3rem; margin: .1rem 0 .2rem; }
+    .savings-alerts { display: flex; flex-direction: row; flex-wrap: wrap; gap: 1.2rem; margin: .1rem 0 .2rem; }
     .savings-alerts label {
       display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: var(--text); cursor: pointer;
     }
@@ -1337,6 +1344,7 @@
           <span class="est-sep">·</span>
           <span class="est-cost" id="composerEstCost">est. $0</span>
           <span class="est-dim" id="composerEstHint">as typed</span>
+          <span class="est-bgjob" id="bgJobPill" hidden title="Background turns running / results ready — click to view"></span>
         </div>
       </form>
       <div class="composer-foot">
@@ -1951,23 +1959,23 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     var bgJobs = {};            // jobId -> { chatId, prompt, timer }
     var bgReady = [];           // finished-but-not-yet-viewed results (for badge)
 
+    var bgPillBound = false;
     function updateBgBadge() {
-      var el = document.getElementById('knowBadge'); // reuse the header badge slot if present
-      var n = 0; for (var k in bgJobs) { if (bgJobs.hasOwnProperty(k)) n++; }
+      // Inline in the composer status row (0.31.1) — one row, no floating element.
       var pill = document.getElementById('bgJobPill');
-      if (!pill) {
-        var host = document.querySelector('.savings-strip') ? document.querySelector('.savings-strip').parentNode : document.body;
-        pill = document.createElement('div'); pill.id = 'bgJobPill';
-        pill.style.cssText = 'display:none;margin:4px 0;font-size:12px;color:var(--text-dim);cursor:pointer';
-        if (host) host.insertBefore(pill, host.firstChild);
+      if (!pill) return;
+      if (!bgPillBound) {
+        bgPillBound = true;
+        pill.style.cursor = 'pointer';
         pill.addEventListener('click', function () { if (bgReady.length) { var r = bgReady[0]; if (r && r.chatId) switchChat(r.chatId); } });
       }
+      var n = 0; for (var k in bgJobs) { if (bgJobs.hasOwnProperty(k)) n++; }
       var running = n, ready = bgReady.length;
-      if (running === 0 && ready === 0) { pill.style.display = 'none'; return; }
+      if (running === 0 && ready === 0) { pill.hidden = true; pill.textContent = ''; return; }
       var msg = [];
-      if (running) msg.push('⏳ ' + running + ' running in background');
-      if (ready) msg.push('✓ ' + ready + ' result' + (ready > 1 ? 's' : '') + ' ready — click to view');
-      pill.textContent = msg.join(' · '); pill.style.display = 'block';
+      if (running) msg.push('⏳ ' + running + ' running');
+      if (ready) msg.push('✓ ' + ready + ' ready — click to view');
+      pill.textContent = '· ' + msg.join(' · '); pill.hidden = false;
     }
 
     function beginBackgroundJob(jobId, chatId, promptText) {
@@ -4527,9 +4535,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return '<div class="usage-local-h">Savings alerts (this PC)</div>' +
         '<div class="savings-alerts">' +
         '<label><input type="checkbox" id="ppSavingsSoundChk"' + (isSavingsSoundOn() ? ' checked' : '') +
-        '> Play cha-ching sound on new savings</label>' +
+        '> Play Sound</label>' +
         '<label><input type="checkbox" id="ppSavingsVisualChk"' + (isSavingsVisualOn() ? ' checked' : '') +
-        '> Animate the “Est. value saved” number</label>' +
+        '> Animate Stats</label>' +
         '</div>';
     }
 
