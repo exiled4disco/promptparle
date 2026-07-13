@@ -9,6 +9,21 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.30] - 2026-07-13
+
+### Added
+- **Live progress feedback during long turns.** A slow turn was a black box — you
+  couldn't tell it was doing anything. Now a background turn writes its REAL stage to
+  the job file as it works (local tools & memory → routing → model working → agent
+  round N/M → quality-gate verifying), and the browser's pending bubble shows that
+  stage plus a live elapsed counter, polling every 2s. Not a wall-clock guess — the
+  actual phase. The stage writer is null-safe (no-op on inline turns, can never break
+  the turn; it only writes a status field, no extra API call).
+- **Total work time.** Each answer shows "took Xs" (send → answer), and Running Stats
+  shows a cumulative "Total time" across the session.
+- **Cumulative output spend** stays surfaced in Running Stats ("Output spend": total
+  output tokens · $ at each model's output rate) — the costly side, session-wide.
+
 ## [0.32.29] - 2026-07-13
 
 ### Added

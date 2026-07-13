@@ -1912,7 +1912,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         // Real provider token counts (model's own usage). OUTPUT is the costly side (5-8x input).
         provider_input_tokens: Number(metaGet(raw, 'provider_input_tokens') ?? metaGet(raw, 'providerInputTokens') ?? 0),
         provider_output_tokens: Number(metaGet(raw, 'provider_output_tokens') ?? metaGet(raw, 'providerOutputTokens') ?? 0),
-        route_cell: metaGet(raw, 'route_cell') || null
+        route_cell: metaGet(raw, 'route_cell') || null,
+        elapsed_ms: Number(metaGet(raw, 'elapsed_ms') ?? metaGet(raw, 'elapsedMs') ?? 0)
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -2607,12 +2608,43 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       pending.className = 'msg bot bg-pending';
       pending.setAttribute('data-bg-job', jobId);
       pending.style.whiteSpace = 'pre-wrap';
-      pending.innerHTML = '<span class="think-dots">⏳ Working in the background</span>' +
+      pending.innerHTML = '<div class="think-title"><span class="think-dots">⏳ Working</span> <span class="bg-elapsed" data-started="' + Date.now() + '">0s</span></div>' +
+        '<div class="bg-stage think-stage" style="margin-top:4px">Starting…</div>' +
         '<div class="think-note" style="margin-top:4px">You can keep chatting — this answer lands here when it’s ready.</div>';
       chat.appendChild(pending); scrollChatToBottom();
-      bgJobs[jobId] = { chatId: chatId, prompt: promptText, el: pending };
+      bgJobs[jobId] = { chatId: chatId, prompt: promptText, el: pending, started: Date.now() };
       updateBgBadge();
       pollBackgroundJob(jobId);
+    }
+
+    // Human labels for the real stages the turn writes to its job file.
+    var BG_STAGE_LABELS = {
+      prep: 'Local tools & memory (compressing context)',
+      route: 'Routing to model',
+      classify: 'Reading the ask',
+      model: 'Model working',
+      'round': 'Agent round',
+      tools: 'Running tools',
+      web: 'Web lookup',
+      gate: 'Quality-gate (verifying claims, 0 AI tokens)',
+      finalize: 'Finalizing'
+    };
+    function renderBgStage(job, j) {
+      if (!job || !job.el) return;
+      var stageEl = job.el.querySelector('.bg-stage');
+      var elapsedEl = job.el.querySelector('.bg-elapsed');
+      if (elapsedEl) { var s = Math.round((Date.now() - (job.started || Date.now())) / 1000); elapsedEl.textContent = s + 's'; }
+      if (!stageEl) return;
+      // Real stage from the job file (psm1 writes it per phase); fall back gracefully.
+      var stage = j && (j.stage || j.Stage);
+      var detail = j && (j.stage_detail || j.stageDetail || '');
+      if (stage) {
+        var base = BG_STAGE_LABELS[String(stage).toLowerCase()] || String(stage);
+        var round = j && (j.round || j.Round);
+        var maxRound = j && (j.max_round || j.maxRound);
+        var label = base + (round ? ' ' + round + (maxRound ? '/' + maxRound : '') : '') + (detail ? ' — ' + String(detail).slice(0, 80) : '');
+        stageEl.textContent = label + '…';
+      }
     }
 
     async function pollBackgroundJob(jobId) {
@@ -2622,6 +2654,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (res.ok) {
           var j = await res.json();
           var status = String(j.status || 'running');
+          renderBgStage(job, j);   // live: show the real stage + elapsed each poll
           if (status === 'done' || status === 'error') {
             delete bgJobs[jobId];
             finishBackgroundJob(job, j);
@@ -2630,8 +2663,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           }
         }
       } catch (e) { /* offline / transient — keep polling */ }
-      // Poll every 3s; the turn may run minutes.
-      bgJobs[jobId] && (bgJobs[jobId].timer = setTimeout(function () { pollBackgroundJob(jobId); }, 3000));
+      // Poll every 2s while running so the stage/elapsed feels live; turn may run minutes.
+      bgJobs[jobId] && (bgJobs[jobId].timer = setTimeout(function () { pollBackgroundJob(jobId); }, 2000));
     }
 
     function finishBackgroundJob(job, j) {
@@ -2689,20 +2722,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // headline totals are the cumulative truth the user watches).
     var RUN_STATS_CUM_KEY = 'pp_run_stats_cum_v1';
     var RUN_STATS_SEEN_KEY = 'pp_run_stats_seen_v1';
-    var CUM_SCHEMA = 4;   // bump when accrual math changes → old (stale-math) store is discarded
+    var CUM_SCHEMA = 5;   // bump when accrual math changes → old (stale-math) store is discarded
     function loadCumStats() {
       var d = lsGet(RUN_STATS_CUM_KEY, null);
       // Discard a store written under older accrual math (schema mismatch) so stale
       // numbers from a previous version can't linger in the sidebar forever.
       if (!d || typeof d !== 'object' || d.schema !== CUM_SCHEMA) {
-        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0 };
+        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0 };
         lsSet(RUN_STATS_SEEN_KEY, {});   // forget seen-ids too, so this session re-accrues cleanly
       }
       return d;
     }
     function loadSeenTurns() { var s = lsGet(RUN_STATS_SEEN_KEY, null); return (s && typeof s === 'object') ? s : {}; }
     function resetCumStats() {
-      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0 });
+      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0 });
       lsSet(RUN_STATS_SEEN_KEY, {});
     }
     // Record one completed turn into the cumulative store (idempotent by id).
@@ -2726,6 +2759,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         cum.baseUsd = (cum.baseUsd || 0) + sp.baseUsd;
         cum.actualUsd = (cum.actualUsd || 0) + sp.actualUsd;
         cum.spreadUsd = (cum.spreadUsd || 0) + sp.spreadUsd;
+        cum.elapsedMs = (cum.elapsedMs || 0) + (Number(nmeta.elapsed_ms) || 0);
       }
       // Bound the seen-map so it can't grow forever.
       var keys = Object.keys(seen);
@@ -2828,6 +2862,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           (String(base.model || 'base').replace(/</g, '')) + '), it would have cost ' + formatUsdEstimate(t.baseUsd || 0) +
           '. Spreading turns across models cost ' + formatUsdEstimate(t.actualUsd || 0) + '. Real tokens, output-weighted. Not a bill.">' +
           '<div class="lbl">Model-spread saved</div><div class="val ok">' + formatUsdEstimate(t.spreadUsd) + '</div></div>';
+      }
+      // Total work time across the session (sum of per-turn elapsed).
+      if ((t.elapsedMs || 0) > 0) {
+        var totSec = (t.elapsedMs || 0) / 1000;
+        var tLabel = totSec < 60 ? totSec.toFixed(0) + 's' : (totSec < 3600 ? Math.floor(totSec / 60) + 'm ' + Math.round(totSec % 60) + 's' : (totSec / 3600).toFixed(1) + 'h');
+        html += '<div class="stat-cell" title="Total time spent working across all turns this session (send → answer).">' +
+          '<div class="lbl">Total time</div><div class="val">' + tLabel + '</div></div>';
       }
       html += '</div>';
       body.innerHTML = html;
@@ -3354,6 +3395,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             String(s.provider) + '</span></span>'); }
         if (s.dial != null) {
           parts.push('<span><span class="lbl">dial</span> <span class="val">' + s.dial + '/5</span></span>'); }
+        if (nmeta.elapsed_ms > 0) {
+          var secs = nmeta.elapsed_ms / 1000;
+          var tstr = secs < 1 ? Math.round(nmeta.elapsed_ms) + 'ms' : (secs < 60 ? secs.toFixed(1) + 's' : Math.floor(secs / 60) + 'm ' + Math.round(secs % 60) + 's');
+          parts.push('<span title="Total work time for this turn (send → answer)."><span class="lbl">took</span> <span class="val">' + tstr + '</span></span>'); }
         if (nmeta.image_count) {
           parts.push('<span><span class="lbl">images</span> <span class="val">' + nmeta.image_count + '</span></span>'); }
         // One savings row only — the detail line (m) already leads with the % and $.
@@ -6432,6 +6477,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       // The server's own deadline returns a best-so-far answer well before this fires.
       var actLike = /\b(implement|build|ship|create|make|fix|add|write|refactor|generate|apply|deploy|scaffold|set up|wire)\b/i.test(String(prompt || ''));
       var abortMs = optOnly ? 120000 : (actLike || images.length || (context && context.length > 4000) ? 600000 : 240000);
+      var __turnStart = Date.now();   // total work time for this turn (shown + logged)
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null; const timer = controller ? setTimeout(function () { controller.abort(); }, abortMs) : null; try {
         // Carried-context: credit the doc re-ingestion PP avoids this turn vs a stateless
         // API (which would re-send every prior doc body). Computed here because only the
@@ -6561,6 +6607,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             });
           }
         } catch (e) { /* ignore */ }
+        // Total work time for this turn (client wall-clock, incl. background poll wait).
+        try { if (meta && typeof meta === 'object') { meta.elapsed_ms = Date.now() - __turnStart; } } catch (e) { /* ignore */ }
         // OUTCOME MEASUREMENT: stamp this answer's routing cell + count the turn, and run
         // the pre-emptive signals. Refusal → own category, NEVER auto-escalated. Non-attempt
         // → flagged (the live auto-escalate redo that acts on this is a separate verified

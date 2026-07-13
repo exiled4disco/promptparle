@@ -480,6 +480,16 @@ try {
     return [pscustomobject]@{ job_id = $id; status = $job.status }
 }
 
+function Write-PromptParleProgress {
+    <# Null-safe live-progress emitter. No-op unless a background turn set the writer.
+       Phases call this so the browser poller shows REAL stages. Never throws. #>
+    param([string]$Stage, [int]$Round = 0, [int]$MaxRound = 0, [string]$Detail = '')
+    try {
+        $w = $script:PromptParleProgressWriter
+        if ($w) { & $w $Stage $Round $MaxRound $Detail }
+    } catch { }
+}
+
 function Invoke-PromptParleRunChatJob {
     <#
     .SYNOPSIS
@@ -493,7 +503,26 @@ function Invoke-PromptParleRunChatJob {
     )
     $job = Get-Content -LiteralPath $JobPath -Raw | ConvertFrom-Json
     $payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+    # Live progress: a best-effort writer the turn calls at each phase so the browser's
+    # background poller can show REAL stages (prep → route → model → round N → gate),
+    # not a wall-clock guess. Writes stage fields into the job file in place; failure is
+    # swallowed so progress reporting can never break the turn. Set on script scope so
+    # ChatTurnCore + the agent loop can reach it without threading a param through.
+    $script:PromptParleProgressWriter = {
+        param([string]$Stage, [int]$Round = 0, [int]$MaxRound = 0, [string]$Detail = '')
+        try {
+            $j = Get-Content -LiteralPath $JobPath -Raw | ConvertFrom-Json
+            $j.status = 'running'
+            $j | Add-Member -NotePropertyName stage -NotePropertyValue $Stage -Force
+            if ($Round -gt 0) { $j | Add-Member -NotePropertyName round -NotePropertyValue $Round -Force }
+            if ($MaxRound -gt 0) { $j | Add-Member -NotePropertyName max_round -NotePropertyValue $MaxRound -Force }
+            $j | Add-Member -NotePropertyName stage_detail -NotePropertyValue $Detail -Force
+            $j | Add-Member -NotePropertyName updated_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+            Set-Content -LiteralPath $JobPath -Value ($j | ConvertTo-Json -Depth 12) -Encoding UTF8
+        } catch { }
+    }
     try {
+        & $script:PromptParleProgressWriter 'prep' 0 0 ''
         $res = Invoke-PromptParleChatTurnCore -Body $payload
         $job.status = 'done'
         $job.response = [string](Get-PromptParleProp $res 'response' '')
@@ -503,6 +532,7 @@ function Invoke-PromptParleRunChatJob {
         $job.status = 'error'
         $job.error = "$_"
     }
+    $script:PromptParleProgressWriter = $null   # done — don't leak into any later turn
     $job.updated_at = (Get-Date).ToUniversalTime().ToString('o')
     $json = $job | ConvertTo-Json -Depth 12
     Set-Content -LiteralPath $JobPath -Value $json -Encoding UTF8
@@ -2047,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.29'
+    $ver = '0.32.30'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -5734,6 +5764,7 @@ function Invoke-PromptParleNativeAgentTurn {
     for ($round = 1; $round -le $MaxRounds; $round++) {
         $roundsUsed = $round
         Write-Host ("  agent-native: round {0}/{1} provider={2}" -f $round, $MaxRounds, $Provider) -ForegroundColor DarkCyan
+        Write-PromptParleProgress 'round' $round $MaxRounds ([string]$Provider)
 
         $body = [ordered]@{
             provider     = [string]$Provider
@@ -16197,8 +16228,10 @@ function Invoke-PromptParleChatTurnCore {
                 if ($params.ContainsKey($dropK)) { $params.Remove($dropK) | Out-Null }
             }
             Write-Host ("  chat: single completion (evidence={0} hands={1})" -f $evidenceMode, $handsAllowed) -ForegroundColor Green
+            Write-PromptParleProgress 'model' 0 0 ([string]$modelChat)
             $result = Invoke-PromptParle @params
         } else {
+            Write-PromptParleProgress 'model' 0 0 'agent'
             try {
                 $result = Invoke-PromptParleAgentTurn @params
             } catch {
@@ -16548,6 +16581,7 @@ function Invoke-PromptParleChatTurnCore {
                     claims = @(); supported = 0; partial = 0; unsupported = 0; score_pct = $null; corrected = $false
                 }
             } else {
+                Write-PromptParleProgress 'gate' 0 0 'verifying claims'
                 $qg = Invoke-PromptParleQualityGate -ResponseText $respText -Context $gctx
             }
             if ($qg.applied) {
