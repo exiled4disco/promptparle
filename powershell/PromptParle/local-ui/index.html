@@ -715,6 +715,28 @@
     .dash-pill.warn { background:rgba(255,170,70,.16); color:#ffb347; }
     .dash-pill.bad { background:rgba(255,90,90,.16); color:#ff6b6b; }
     .dash-empty { color:var(--muted); font-size:.8rem; padding:.4rem 0; }
+    /* Usage graphs (per-turn time series) */
+    .dash-graphs { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.7rem; }
+    .dash-graph { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:.5rem .6rem .55rem; }
+    .dash-graph.wide { grid-column:1 / -1; }
+    .dash-graph .gh { display:flex; justify-content:space-between; align-items:baseline; font-size:.7rem; color:var(--muted); margin-bottom:.35rem; }
+    .dash-graph .gh .gv { font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; }
+    .dash-graph .gh .gv.ok { color:#3ddc84; }
+    .dash-chart { width:100%; height:36px; display:block; }
+    .dash-share { display:flex; flex-direction:column; gap:.3rem; }
+    .dash-share-row { display:grid; grid-template-columns:minmax(90px,34%) 1fr auto; align-items:center; gap:.5rem; font-size:.72rem; }
+    .dash-share-lbl { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .dash-share-track { height:8px; border-radius:5px; background:rgba(255,255,255,.07); overflow:hidden; }
+    .dash-share-track > i { display:block; height:100%; border-radius:5px; }
+    .dash-share-val { font-variant-numeric:tabular-nums; color:var(--text); font-weight:600; }
+    /* Live streaming strip (system-monitor style) */
+    .dash-stream-strip { display:flex; flex-direction:column; gap:.4rem; margin-bottom:.4rem; }
+    .dash-stream-row { display:grid; grid-template-columns:150px 1fr; align-items:center; gap:.6rem; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:.4rem .6rem; }
+    .dash-stream-row .dsl { display:flex; flex-direction:column; line-height:1.25; }
+    .dash-stream-row .dsl .k { font-size:.66rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+    .dash-stream-row .dsl .v { font-size:1.02rem; font-weight:800; font-variant-numeric:tabular-nums; }
+    .dash-stream-row .dsl .pk { font-size:.62rem; color:var(--muted); }
+    .dash-stream { width:100%; height:32px; display:block; }
     .modal h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
     .modal .sub { color: var(--muted); font-size: .82rem; margin-bottom: .75rem; }
     .modal h3 {
@@ -2854,6 +2876,21 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     var RUN_STATS_CUM_KEY = 'pp_run_stats_cum_v1';
     var RUN_STATS_SEEN_KEY = 'pp_run_stats_seen_v1';
     var CUM_SCHEMA = 5;   // bump when accrual math changes → old (stale-math) store is discarded
+
+    // Per-turn history ring buffer — the SAME honest per-turn numbers accrued into cum,
+    // kept as a time series so the dashboard can draw usage graphs. No new measurement.
+    var TURN_HIST_KEY = 'pp_turn_hist_v1';
+    var TURN_HIST_MAX = 400;   // bounded; oldest dropped
+    function loadTurnHistory() { var h = lsGet(TURN_HIST_KEY, null); return Array.isArray(h) ? h : []; }
+    function resetTurnHistory() { lsSet(TURN_HIST_KEY, []); }
+    function appendTurnHistory(rec) {
+      try {
+        var h = loadTurnHistory();
+        h.push(rec);
+        if (h.length > TURN_HIST_MAX) { h = h.slice(h.length - TURN_HIST_MAX); }
+        lsSet(TURN_HIST_KEY, h);
+      } catch (e) { /* ignore */ }
+    }
     function loadCumStats() {
       var d = lsGet(RUN_STATS_CUM_KEY, null);
       // Discard a store written under older accrual math (schema mismatch) so stale
@@ -2868,6 +2905,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function resetCumStats() {
       lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0 });
       lsSet(RUN_STATS_SEEN_KEY, {});
+      resetTurnHistory();   // graphs zero out with the totals
     }
     // Record one completed turn into the cumulative store (idempotent by id).
     // Every turn accrues its canonical before→after (billedBefore/billedAfter from
@@ -2884,13 +2922,29 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       // Real output spend + model-spread saving (output-weighted, from real tokens).
       if (nmeta) {
         var outTok = Number(nmeta.provider_output_tokens) || 0;
+        var inTok = Number(nmeta.provider_input_tokens) || 0;
+        var outUsd = (outTok / 1000000) * outputUsdPerMillion(nmeta.provider, nmeta.model);
         cum.outTok = (cum.outTok || 0) + outTok;
-        cum.outUsd = (cum.outUsd || 0) + (outTok / 1000000) * outputUsdPerMillion(nmeta.provider, nmeta.model);
+        cum.outUsd = (cum.outUsd || 0) + outUsd;
         var sp = turnSpreadSaving(nmeta);
         cum.baseUsd = (cum.baseUsd || 0) + sp.baseUsd;
         cum.actualUsd = (cum.actualUsd || 0) + sp.actualUsd;
         cum.spreadUsd = (cum.spreadUsd || 0) + sp.spreadUsd;
         cum.elapsedMs = (cum.elapsedMs || 0) + (Number(nmeta.elapsed_ms) || 0);
+        // Time-series point for the graphs (same numbers, per turn).
+        appendTurnHistory({
+          t: Date.now(),
+          inTok: inTok,
+          outTok: outTok,
+          outUsd: outUsd,
+          saved: (s.saved || 0),
+          savedUsd: (s.usdSaved || 0),
+          spreadUsd: sp.spreadUsd,
+          ms: Number(nmeta.elapsed_ms) || 0,
+          model: String(nmeta.model || '').trim(),
+          provider: String(nmeta.provider || '').trim(),
+          agent: !!isAgent
+        });
       }
       // Bound the seen-map so it can't grow forever.
       var keys = Object.keys(seen);
@@ -3112,6 +3166,226 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return { cls: 'bad', txt: 'weak' };
     }
 
+    // ---- Dependency-free SVG charts (crisp, scale with the pop-out window) ----
+    function svgEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+    // Bar sparkline over an array of values. color = bar fill. fmt = tooltip formatter.
+    function chartBars(vals, opts) {
+      opts = opts || {};
+      var W = 100, H = 34, n = vals.length;
+      if (!n) return '<div class="dash-empty">no data yet</div>';
+      var max = Math.max.apply(null, vals.concat([0])) || 1;
+      var gap = n > 60 ? 0.15 : 0.28;
+      var bw = W / n;
+      var color = opts.color || '#ffb347';
+      var bars = '';
+      for (var i = 0; i < n; i++) {
+        var h = max > 0 ? (vals[i] / max) * (H - 2) : 0;
+        if (h < 0.5 && vals[i] > 0) h = 0.5;
+        var x = i * bw + (bw * gap) / 2;
+        var w = bw * (1 - gap);
+        var title = opts.fmt ? opts.fmt(vals[i], i) : String(vals[i]);
+        bars += '<rect x="' + x.toFixed(2) + '" y="' + (H - h).toFixed(2) + '" width="' + w.toFixed(2) + '" height="' + h.toFixed(2) + '" fill="' + color + '" rx="0.4"><title>' + svgEsc(title) + '</title></rect>';
+      }
+      return '<svg class="dash-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img">' + bars + '</svg>';
+    }
+
+    // Cumulative area+line over values (running sum). color = stroke/fill.
+    function chartCumArea(vals, opts) {
+      opts = opts || {};
+      var W = 100, H = 34, n = vals.length;
+      if (!n) return '<div class="dash-empty">no data yet</div>';
+      var run = 0, cum = vals.map(function (v) { run += (Number(v) || 0); return run; });
+      var max = cum[cum.length - 1] || 1;
+      var color = opts.color || '#3ddc84';
+      var pts = cum.map(function (c, i) {
+        var x = n === 1 ? W : (i / (n - 1)) * W;
+        var y = H - (max > 0 ? (c / max) * (H - 2) : 0);
+        return x.toFixed(2) + ',' + y.toFixed(2);
+      });
+      var area = 'M0,' + H + ' L' + pts.join(' L') + ' L' + W + ',' + H + ' Z';
+      var line = 'M' + pts.join(' L');
+      var gid = 'g' + (opts.id || 'c');
+      return '<svg class="dash-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img">' +
+        '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.35"/>' +
+        '<stop offset="100%" stop-color="' + color + '" stop-opacity="0"/></linearGradient></defs>' +
+        '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
+        '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="1.2" vector-effect="non-scaling-stroke"/>' +
+        '<title>' + svgEsc(opts.fmt ? opts.fmt(max) : String(max)) + '</title></svg>';
+    }
+
+    // Horizontal share bars: rows of {label, value, color}. total for % width.
+    function chartShareBars(rows, opts) {
+      opts = opts || {};
+      if (!rows.length) return '<div class="dash-empty">no data yet</div>';
+      var total = rows.reduce(function (a, r) { return a + (Number(r.value) || 0); }, 0) || 1;
+      var pal = ['#ffb347', '#3ddc84', '#5aa9ff', '#c792ea', '#ff6b6b', '#f4d35e'];
+      var html = '<div class="dash-share">';
+      rows.forEach(function (r, i) {
+        var pct = Math.round(100 * (Number(r.value) || 0) / total);
+        var col = r.color || pal[i % pal.length];
+        html += '<div class="dash-share-row" title="' + svgEsc(r.label + ' — ' + (opts.fmt ? opts.fmt(r.value) : r.value) + ' (' + pct + '%)') + '">' +
+          '<span class="dash-share-lbl">' + esc(r.label) + '</span>' +
+          '<span class="dash-share-track"><i style="width:' + pct + '%;background:' + col + '"></i></span>' +
+          '<span class="dash-share-val">' + pct + '%</span></div>';
+      });
+      html += '</div>';
+      return html;
+    }
+
+    // Build the graphs section from the per-turn history + per-model rollup.
+    function renderDashGraphs(st) {
+      var hist = loadTurnHistory();
+      if (!hist.length) {
+        return '<div class="dash-sec-h">Usage graphs</div><p class="dash-empty">Send a few turns — graphs of output tokens, spend, and time will draw here.</p>';
+      }
+      // Cap the plotted window so bars stay legible; note when we clip.
+      var CAP = 80;
+      var recent = hist.length > CAP ? hist.slice(hist.length - CAP) : hist;
+      var clipped = hist.length - recent.length;
+      var outToks = recent.map(function (r) { return Number(r.outTok) || 0; });
+      var outUsds = recent.map(function (r) { return Number(r.outUsd) || 0; });
+      var secs = recent.map(function (r) { return (Number(r.ms) || 0) / 1000; });
+      var savedUsds = recent.map(function (r) { return Number(r.savedUsd) || 0; });
+
+      var html = '<div class="dash-sec-h">Usage graphs' +
+        (clipped > 0 ? ' <span style="text-transform:none;font-weight:400">· last ' + recent.length + ' of ' + hist.length + ' turns</span>' : ' <span style="text-transform:none;font-weight:400">· ' + hist.length + ' turns</span>') +
+        '</div>';
+      html += '<div class="dash-graphs">';
+
+      html += '<div class="dash-graph"><div class="gh"><span>Output tokens / turn</span><span class="gv">' + compactTok(outToks.reduce(function (a, b) { return a + b; }, 0)) + ' total</span></div>' +
+        chartBars(outToks, { color: '#ffb347', fmt: function (v) { return compactTok(v) + ' out tok'; } }) + '</div>';
+
+      html += '<div class="dash-graph"><div class="gh"><span>Output $ / turn</span><span class="gv">' + formatUsdEstimate(outUsds.reduce(function (a, b) { return a + b; }, 0)) + ' total</span></div>' +
+        chartBars(outUsds, { color: '#ff6b6b', fmt: function (v) { return formatUsdEstimate(v); } }) + '</div>';
+
+      html += '<div class="dash-graph"><div class="gh"><span>Cumulative output spend</span><span class="gv">' + formatUsdEstimate(outUsds.reduce(function (a, b) { return a + b; }, 0)) + '</span></div>' +
+        chartCumArea(outUsds, { color: '#ff6b6b', id: 'spend', fmt: function (m) { return formatUsdEstimate(m) + ' cumulative'; } }) + '</div>';
+
+      html += '<div class="dash-graph"><div class="gh"><span>Time / turn</span><span class="gv">' + fmtDur(secs.reduce(function (a, b) { return a + b; }, 0) * 1000) + ' total</span></div>' +
+        chartBars(secs, { color: '#5aa9ff', fmt: function (v) { return v.toFixed(1) + 's'; } }) + '</div>';
+
+      // Model mix by real output tokens (from the per-model rollup).
+      var models = (st.models || []).slice().filter(function (m) { return (m.outTok || 0) > 0; }).sort(function (a, b) { return (b.outTok || 0) - (a.outTok || 0); }).slice(0, 6);
+      if (models.length) {
+        html += '<div class="dash-graph wide"><div class="gh"><span>Output tokens by model</span></div>' +
+          chartShareBars(models.map(function (m) { return { label: m.key, value: m.outTok }; }), { fmt: function (v) { return compactTok(v) + ' out tok'; } }) + '</div>';
+      }
+      // Cumulative input saved (value optimization delivers before send).
+      if (savedUsds.some(function (v) { return v > 0; })) {
+        html += '<div class="dash-graph"><div class="gh"><span>Cumulative input saved</span><span class="gv ok">' + formatUsdEstimate(savedUsds.reduce(function (a, b) { return a + b; }, 0)) + '</span></div>' +
+          chartCumArea(savedUsds, { color: '#3ddc84', id: 'saved', fmt: function (m) { return formatUsdEstimate(m) + ' saved'; } }) + '</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    // ---- Live streaming graphs (system-monitor style: CPU/mem/net) ------------
+    // Sampled once per second into rolling ring buffers, so the dashboard shows AI
+    // data flow in real time — tokens/sec (like network throughput), $/min spend
+    // rate, and turn activity. Rates are computed from deltas of the SAME cumulative
+    // counters the meter uses; live in-flight output is estimated from elapsed time
+    // when a turn is running (real provider counts land at turn end and reconcile).
+    var STREAM_LEN = 90;             // ~90s window on screen
+    var streamBuf = null;            // { tokRate:[], usdRate:[], active:[], lastOutTok, lastOutUsd, lastT }
+    function initStreamBuf() {
+      var z = []; for (var i = 0; i < STREAM_LEN; i++) z.push(0);
+      streamBuf = { tokRate: z.slice(), usdRate: z.slice(), active: z.slice(), lastOutTok: null, lastOutUsd: null, lastT: null };
+    }
+    // Sample one tick: push the per-second rate of output tokens + spend, and whether
+    // a turn is active right now. Called every 1s by the dashboard loop.
+    function sampleStream() {
+      if (!streamBuf) initStreamBuf();
+      var cum = loadCumStats();
+      var outTok = Number(cum.outTok) || 0;
+      var outUsd = Number(cum.outUsd) || 0;
+      var now = Date.now();
+      var inflight = currentInflight();
+      var active = inflight ? 1 : 0;
+
+      var tokRate = 0, usdRate = 0;
+      if (streamBuf.lastT != null) {
+        var dt = Math.max(0.001, (now - streamBuf.lastT) / 1000);
+        var dTok = Math.max(0, outTok - (streamBuf.lastOutTok || 0));
+        var dUsd = Math.max(0, outUsd - (streamBuf.lastOutUsd || 0));
+        // Cumulative only advances when a turn COMPLETES. To make the graph feel live
+        // during a turn (tokens are streaming from the model but not yet counted), show
+        // a modest activity pulse while active; the real spike lands when it reconciles.
+        tokRate = dTok / dt;
+        usdRate = dUsd / dt;
+        if (active && tokRate === 0) {
+          // estimated live throughput pulse (visual liveness only; not counted as spend)
+          tokRate = -1;   // sentinel: render as a faint "working" band, not real tokens
+        }
+      }
+      streamBuf.lastOutTok = outTok; streamBuf.lastOutUsd = outUsd; streamBuf.lastT = now;
+      streamBuf.tokRate.push(tokRate); streamBuf.tokRate.shift();
+      streamBuf.usdRate.push(usdRate); streamBuf.usdRate.shift();
+      streamBuf.active.push(active); streamBuf.active.shift();
+    }
+
+    // Scrolling line graph for a rate series. Sentinel -1 → faint "working" fill.
+    function streamGraph(vals, opts) {
+      opts = opts || {};
+      var W = 100, H = 30, n = vals.length;
+      var real = vals.map(function (v) { return v < 0 ? 0 : v; });
+      var max = Math.max.apply(null, real.concat([opts.min || 0.0001])) || 1;
+      var color = opts.color || '#5aa9ff';
+      var pts = real.map(function (v, i) {
+        var x = (i / (n - 1)) * W;
+        var y = H - (v / max) * (H - 2);
+        return x.toFixed(2) + ',' + y.toFixed(2);
+      });
+      // "working" bands where the sentinel fired (live pulse, no real tokens yet)
+      var bands = '';
+      for (var i = 0; i < vals.length; i++) {
+        if (vals[i] === -1) {
+          var bx = (i / (n - 1)) * W, bw = W / n;
+          bands += '<rect x="' + (bx - bw / 2).toFixed(2) + '" y="0" width="' + bw.toFixed(2) + '" height="' + H + '" fill="' + color + '" opacity="0.12"/>';
+        }
+      }
+      var area = 'M0,' + H + ' L' + pts.join(' L') + ' L' + W + ',' + H + ' Z';
+      var line = 'M' + pts.join(' L');
+      var gid = 'sg' + (opts.id || 's');
+      return '<svg class="dash-stream" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img">' +
+        '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.4"/><stop offset="100%" stop-color="' + color + '" stop-opacity="0"/></linearGradient></defs>' +
+        bands +
+        '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
+        '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="1.3" vector-effect="non-scaling-stroke"/></svg>';
+    }
+
+    // Update the persistent live-stream strip in place (does NOT rebuild, so the
+    // scroll stays smooth). Returns nothing; writes into #dashStreamStrip.
+    function paintStreamStrip() {
+      var strip = document.getElementById('dashStreamStrip');
+      if (!strip || !streamBuf) return;
+      var tok = streamBuf.tokRate, usd = streamBuf.usdRate, act = streamBuf.active;
+      var curTok = 0; for (var i = tok.length - 1; i >= 0; i--) { if (tok[i] > 0) { curTok = tok[i]; break; } }
+      var curUsd = 0; for (var j = usd.length - 1; j >= 0; j--) { if (usd[j] > 0) { curUsd = usd[j]; break; } }
+      var live = act[act.length - 1] === 1;
+      var peakTok = Math.max.apply(null, tok.map(function (v) { return v < 0 ? 0 : v; }).concat([0]));
+      strip.innerHTML =
+        '<div class="dash-stream-row">' +
+          '<div class="dsl"><span class="k">Output tokens/s</span>' +
+            '<span class="v" style="color:#ffb347">' + (live && curTok === 0 ? '· · ·' : compactTok(Math.round(curTok)) + '/s') + '</span>' +
+            '<span class="pk">peak ' + compactTok(Math.round(peakTok)) + '/s</span></div>' +
+          streamGraph(tok, { color: '#ffb347', id: 'tok' }) +
+        '</div>' +
+        '<div class="dash-stream-row">' +
+          '<div class="dsl"><span class="k">Spend rate ($/min)</span>' +
+            '<span class="v" style="color:#ff6b6b">' + formatUsdEstimate(curUsd * 60) + '/min</span></div>' +
+          streamGraph(usd, { color: '#ff6b6b', id: 'usd' }) +
+        '</div>' +
+        '<div class="dash-stream-row">' +
+          '<div class="dsl"><span class="k">Activity</span>' +
+            '<span class="v" style="color:' + (live ? '#3ddc84' : 'var(--muted)') + '">' + (live ? 'WORKING' : 'idle') + '</span></div>' +
+          streamGraph(act.map(function (v) { return v; }), { color: '#3ddc84', id: 'act', min: 1 }) +
+        '</div>';
+    }
+
     function renderDashboard() {
       // Target the pop-out body when this page is the dashboard window, else the modal.
       var inPop = !!window.__ppDashPopoutMode;
@@ -3128,6 +3402,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (liveText) liveText.textContent = inflight
         ? 'A turn is running — tokens & time update as it works.'
         : 'Idle. Real tokens, cost & routing on this PC.';
+
+      // Persistent live-stream strip: built ONCE as a stable sibling above the body so
+      // its scrolling graphs are never reset by the per-tick innerHTML rebuild below.
+      // (System-monitor style — keeps scrolling smoothly while the rest re-renders.)
+      var streamHost = document.getElementById('dashStreamHost');
+      if (!streamHost) {
+        streamHost = document.createElement('div');
+        streamHost.id = 'dashStreamHost';
+        streamHost.innerHTML = '<div class="dash-sec-h" style="margin-top:0;border-top:none;padding-top:0">Live AI data flow</div><div id="dashStreamStrip" class="dash-stream-strip"></div>';
+        body.parentNode.insertBefore(streamHost, body);
+      }
+      paintStreamStrip();
 
       var html = '';
 
@@ -3175,6 +3461,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           '<div class="sub2">real tokens · output-weighted</div></div>';
         html += '</div>';
       }
+
+      // 3.5) Usage graphs — per-turn time series (output tokens, spend, time, model mix).
+      try { html += renderDashGraphs(st); } catch (e) { /* ignore graphs on error */ }
 
       // 4) Per-model breakdown — where the output tokens & time actually went.
       var models = (st.models || []).slice().sort(function (a, b) { return (b.outTok || 0) - (a.outTok || 0); });
@@ -3258,7 +3547,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       m.classList.add('open');
       renderDashboard();
       try { if (window.__ppDashTimer) clearInterval(window.__ppDashTimer); } catch (e) { /* ignore */ }
-      window.__ppDashTimer = setInterval(function () { try { if (document.getElementById('dashModal').classList.contains('open')) renderDashboard(); else { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ } }, 1000);
+      window.__ppDashTimer = setInterval(function () { try { if (document.getElementById('dashModal').classList.contains('open')) { sampleStream(); renderDashboard(); } else { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ } }, 1000);
     }
     function closeDashboard() {
       var m = document.getElementById('dashModal');
@@ -3275,7 +3564,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (shell) shell.style.display = 'block';
       renderDashboard();
       try { if (window.__ppDashTimer) clearInterval(window.__ppDashTimer); } catch (e) { /* ignore */ }
-      window.__ppDashTimer = setInterval(function () { try { renderDashboard(); } catch (e) { /* ignore */ } }, 1000);
+      window.__ppDashTimer = setInterval(function () { try { sampleStream(); renderDashboard(); } catch (e) { /* ignore */ } }, 1000);
       // React immediately to cross-window signals (turn start/stop) instead of waiting for the tick.
       window.addEventListener('storage', function (e) {
         if (!e) return;

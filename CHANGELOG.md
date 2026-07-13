@@ -9,6 +9,28 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.37] - 2026-07-13
+
+### Added
+- **Usage graphs + live streaming graphs on the dashboard.** Two layers, both drawn from
+  the same honest per-turn numbers (dependency-free inline SVG — no chart library):
+  - **Live AI data flow (system-monitor style)** — a scrolling strip like CPU/mem/net
+    graphs, sampled once per second: **output tokens/s** (throughput), **spend rate
+    ($/min)**, and **activity** (working vs idle). Rates are computed from deltas of the
+    cumulative counters the meter already keeps; while a turn is mid-flight (tokens
+    streaming but not yet counted by the provider) the graph shows a faint "working"
+    band, and the real spike lands when the turn reconciles at completion — honest, not
+    faked per-token counts. The strip is a persistent element that keeps scrolling
+    smoothly even as the rest of the dashboard re-renders each tick.
+  - **Usage graphs (per turn)** — output tokens/turn, output $/turn, cumulative output
+    spend, time/turn, output tokens **by model** (share bars), and cumulative input
+    saved. Backed by a new bounded per-turn history ring buffer (`pp_turn_hist_v1`, 400
+    turns) appended in the same idempotent path that accrues the totals, so graphs and
+    headline numbers always agree. Reset with the dashboard's Reset button.
+  - Works in the pop-out window too (reads the same localStorage stores). Driven green:
+    history append, all chart builders, rate-from-delta math, working-pulse sentinel,
+    strip paint, and the fixed-length scrolling buffer.
+
 ## [0.32.36] - 2026-07-13
 
 ### Changed
