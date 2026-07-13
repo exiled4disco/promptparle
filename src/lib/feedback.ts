@@ -6,6 +6,7 @@ import {
 } from "./mail";
 import { resolveAdminRecipients } from "./admin-recipients";
 import { lookupGeo } from "./geoip";
+import { createGithubIssueForFeedback } from "./github-issues";
 
 export type FeedbackKind = "bug" | "suggest" | "contact";
 export type FeedbackSource = "portal" | "desktop";
@@ -79,6 +80,31 @@ export async function createFeedback(opts: {
     }
   }
 
+  // Route to the GitHub repo (source of truth for bugs). Best-effort: a GitHub failure
+  // never fails the submission — the DB row above is the durable record. No-op if the
+  // GITHUB_TOKEN env isn't set. On success, stamp the issue number/url back on the row.
+  try {
+    const issue = await createGithubIssueForFeedback({
+      id: row.id,
+      kind,
+      title,
+      body,
+      source,
+      email: opts.email,
+      name: opts.name,
+    });
+    if (issue) {
+      await prisma.feedbackSubmission.update({
+        where: { id: row.id },
+        data: { githubIssue: issue.number, githubUrl: issue.url },
+      });
+      row.githubIssue = issue.number;
+      row.githubUrl = issue.url;
+    }
+  } catch (err) {
+    console.error("feedback → github routing failed (submission kept)", err);
+  }
+
   return row;
 }
 
@@ -102,6 +128,7 @@ export async function listUserFeedback(
       status: true,
       adminNote: true,
       createdAt: true,
+      githubIssue: true,
     },
   });
 }

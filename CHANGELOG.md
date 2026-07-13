@@ -9,6 +9,20 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.42] - 2026-07-13
+
+### Added
+- **Bug/Suggest submissions now route to GitHub Issues (source of truth for bugs).** When a
+  user submits a bug or idea (client or portal), the portal opens a GitHub issue on the SoT
+  repo (labeled `from-portal` + kind) and stores the issue number back on the record.
+  Best-effort: a GitHub outage never fails a submission (the DB row + email remain); no-op
+  until `GITHUB_TOKEN` / `GITHUB_ISSUES_REPO` are set. New `github_issue` / `github_url`
+  columns on `feedback_submissions` (migration included; run `prisma migrate deploy`).
+- **Bug/Suggest UI redone as two panes.** LEFT: a compact submit form with a working
+  Bug/Suggestion toggle. RIGHT: a scrollable list of your own submissions (kind · status ·
+  title · date, and the GitHub issue number once routed). The list loads **once per open**
+  (fixes the over-fetching) and refreshes after you submit.
+
 ## [0.32.41] - 2026-07-13
 
 ### Fixed

@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.41'
+    $ver = '0.32.42'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -17010,6 +17010,39 @@ function Invoke-PromptParleChatTurnCore {
                 $respText = $respText + "`n`n**Implement pipeline failed:** $_"
             }
         }
+        # DECISION LOG (0.32.42) — one structured record of WHY this turn did what it did.
+        # Metadata only (no prompt bodies); the client renders it into the Activity log at the
+        # chosen log level so troubleshooting reads the app's own reasoning instead of guessing.
+        try {
+            $oblKind = ''
+            try { $oblKind = [string](Get-PromptParleProp $oblForRt 'mode' '') } catch { $oblKind = '' }
+            $oblSticky = $false
+            try { $oblSticky = [bool](Get-PromptParleProp $oblForRt 'sticky' $false) } catch { $oblSticky = $false }
+            $pipeFired = [bool]$pipeTrigger
+            $applyChan = ''
+            try { if ($applyInfo) { $applyChan = [string]$applyInfo.channel } } catch { }
+            $ocName = ''
+            foreach ($n in @($metaOut.notes)) { if ([string]$n -match '^out-contract:(.+)$') { $ocName = $Matches[1]; break } }
+            $metaOut.decision = [ordered]@{
+                turn_kind      = [string]$turnForRt
+                obligation     = $oblKind
+                obligation_sticky = $oblSticky
+                evidence_mode  = [string]$evidenceMode
+                evidence_reason = [string]$evidenceReason
+                hands_allowed  = [bool]$handsAllowed
+                profile        = [string]$profile
+                model          = [string]$modelChat
+                output_contract = $ocName
+                pipeline_fired = $pipeFired
+                apply_channel  = $applyChan
+                fail_closed    = [bool](Get-PromptParleProp $metaOut 'fail_closed' $false)
+            }
+            # One human line for the base level + server console (always).
+            Write-Host ("  DECIDE kind={0} obl={1}{2} evidence={3}({4}) hands={5} model={6} contract={7} pipeline={8}{9}" -f `
+                $turnForRt, $(if($oblKind){$oblKind}else{'none'}), $(if($oblSticky){'/sticky'}else{''}), `
+                $evidenceMode, $evidenceReason, $handsAllowed, $(if($modelChat){$modelChat}else{'default'}), `
+                $(if($ocName){$ocName}else{'none'}), $pipeFired, $(if($applyChan){" channel=$applyChan"}else{''})) -ForegroundColor DarkCyan
+        } catch { }
         # 0.17/0.18: document deliverables — ```file name=Report.docx``` → real file + download URL
         $deliverInfo = $null
         if ($respText -and ($respText -match '(?m)```(?:file|deliver)\s+')) {

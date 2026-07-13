@@ -794,11 +794,33 @@
       border-color: rgba(91, 140, 255, 0.55); background: var(--accent-soft); color: #93b4ff; font-weight: 600;
     }
     .feedback-modal .modal {
-      width: min(28rem, 100%); max-height: min(92vh, 640px); display: flex; flex-direction: column; padding: 0;
+      width: min(52rem, 100%); max-height: min(92vh, 660px); display: flex; flex-direction: column; padding: 0;
     }
     .feedback-modal .modal-inner {
-      display: flex; flex-direction: column; min-height: 0; max-height: min(92vh, 640px);
+      display: flex; flex-direction: column; min-height: 0; max-height: min(92vh, 660px);
     }
+    /* Two-pane: LEFT form · RIGHT scrollable submissions list (#14) */
+    .fb-two-pane { display: grid !important; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 0 !important; padding: 0 !important; }
+    .fb-form { display: grid; gap: .7rem; padding: .9rem 1rem 1rem; border-right: 1px solid var(--border); min-width: 0; }
+    .fb-kind-row { display: flex; gap: .5rem; }
+    .fb-kind-btn { flex: 1 1 0; padding: .5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--muted); cursor: pointer; font-size: .85rem; }
+    .fb-kind-btn:hover { border-color: var(--accent); }
+    .fb-kind-btn.active { border-color: var(--accent); background: rgba(90,169,255,.12); color: var(--text); font-weight: 700; }
+    .fb-list-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .fb-list-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: .6rem .8rem; border-bottom: 1px solid var(--border); font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+    .fb-list-scroll { flex: 1 1 auto; overflow-y: auto; padding: .4rem .5rem; display: flex; flex-direction: column; gap: .4rem; }
+    .fb-list-empty { color: var(--muted); font-size: .8rem; padding: .5rem; }
+    .fb-item { border: 1px solid var(--border); border-radius: 8px; padding: .45rem .55rem; background: var(--bg); }
+    .fb-item .fb-item-top { display: flex; align-items: center; gap: .4rem; margin-bottom: .2rem; }
+    .fb-item .fb-badge { font-size: .62rem; text-transform: uppercase; font-weight: 700; padding: .05rem .35rem; border-radius: 5px; }
+    .fb-item .fb-badge.bug { background: rgba(215,58,73,.16); color: #ff6b6b; }
+    .fb-item .fb-badge.suggest { background: rgba(14,138,22,.16); color: #3ddc84; }
+    .fb-item .fb-status { font-size: .62rem; color: var(--muted); margin-left: auto; }
+    .fb-item .fb-status.new { color: #ffb347; }
+    .fb-item .fb-title { font-size: .82rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fb-item .fb-when { font-size: .66rem; color: var(--muted); margin-top: .15rem; }
+    .fb-item .fb-gh { font-size: .66rem; color: var(--accent); }
+    @media (max-width: 640px) { .fb-two-pane { grid-template-columns: 1fr; } .fb-list-pane { display: none; } }
     .feedback-modal .modal-head {
       flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between;
       gap: .75rem; padding: .9rem 1rem .75rem; border-bottom: 1px solid var(--border);
@@ -2021,7 +2043,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         // CAR (cost per accepted resolution) — stamped at send time, carried through the walk.
         car_task: Boolean(metaGet(raw, 'car_task') ?? false),
         car_total_usd: Number(metaGet(raw, 'car_total_usd') ?? metaGet(raw, 'carTotalUsd') ?? 0),
-        car_accepted: (function () { var v = metaGet(raw, 'car_accepted'); return (v === undefined || v === null) ? null : Boolean(v); })()
+        car_accepted: (function () { var v = metaGet(raw, 'car_accepted'); return (v === undefined || v === null) ? null : Boolean(v); })(),
+        decision: metaGet(raw, 'decision') || null   // per-turn decision record for the Activity log
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -3981,6 +4004,43 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           setOpsUnread(getOpsUnread() + 1); }
       }
       return entry; }
+    // ---- Log level (base | detailed | verbose) + per-turn decision log -------
+    // base    = outcomes only (existing ops lines)
+    // detailed= + a [DECIDE] line per turn: why it did what it did (metadata only)
+    // verbose = + token/timing/tool internals
+    var PP_LOG_LEVEL_KEY = 'pp_log_level';
+    function getLogLevel() { try { var v = localStorage.getItem(PP_LOG_LEVEL_KEY); return (v === 'detailed' || v === 'verbose') ? v : 'base'; } catch (e) { return 'base'; } }
+    function setLogLevel(v) { try { if (v === 'base' || v === 'detailed' || v === 'verbose') localStorage.setItem(PP_LOG_LEVEL_KEY, v); } catch (e) { /* ignore */ } }
+    // Emit the per-turn decision chain to the Activity log, gated by level. nmeta is the
+    // normalized answer meta; d = its .decision record from the server. Metadata only.
+    function logDecision(nmeta) {
+      try {
+        var lvl = getLogLevel();
+        if (lvl === 'base') return;                 // base: no decision lines
+        var d = nmeta && nmeta.decision;
+        if (!d) return;
+        var parts = [];
+        parts.push('kind=' + (d.turn_kind || '?'));
+        parts.push('obl=' + (d.obligation ? d.obligation + (d.obligation_sticky ? '/sticky' : '') : 'none'));
+        parts.push('evidence=' + (d.evidence_mode || '?') + (d.evidence_reason ? '(' + d.evidence_reason + ')' : ''));
+        parts.push('hands=' + (d.hands_allowed ? 'on' : 'off'));
+        parts.push('model=' + (d.model || 'default'));
+        if (d.output_contract) parts.push('contract=' + d.output_contract);
+        if (d.pipeline_fired) parts.push('pipeline=on' + (d.apply_channel ? '/' + d.apply_channel : ''));
+        if (d.fail_closed) parts.push('FAIL-CLOSED');
+        logOps('[DECIDE] ' + parts.join(' · '), { level: 'info', source: 'decide' });
+        if (lvl === 'verbose') {
+          var v = [];
+          var inT = Number(nmeta.provider_input_tokens) || 0, outT = Number(nmeta.provider_output_tokens) || 0;
+          if (inT || outT) v.push('tokens in=' + inT + ' out=' + outT);
+          if (nmeta.elapsed_ms) v.push('elapsed=' + Math.round(nmeta.elapsed_ms) + 'ms');
+          if (nmeta.agent_rounds) v.push('rounds=' + nmeta.agent_rounds);
+          if (nmeta.route_cell) v.push('cell=' + nmeta.route_cell);
+          if (Array.isArray(nmeta.notes) && nmeta.notes.length) v.push('notes=[' + nmeta.notes.slice(0, 8).join(', ') + ']');
+          if (v.length) logOps('[DECIDE+] ' + v.join(' · '), { level: 'info', source: 'decide' });
+        }
+      } catch (e) { /* ignore */ }
+    }
     function clearOpsLog() {
       saveOpsLog([]); setOpsUnread(0); try {
         if (opsLogChannel) opsLogChannel.postMessage({ type: 'clear' }); } catch (e) { /* ignore */ }
@@ -7567,6 +7627,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var st = document.getElementById('fbStatus');
       if (st) st.textContent = '';
       setFbKind(fbKind || 'suggest');
+      loadFeedbackList();   // load the right-pane list ONCE per open (fixes #11 over-fetching)
       try {
         var t = document.getElementById('fbTitle');
         if (t) setTimeout(function () { t.focus(); }, 30);
@@ -7585,6 +7646,42 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (a) a.classList.toggle('active', fbKind === 'suggest');
       if (b) b.classList.toggle('active', fbKind === 'bug');
     }
+    // Right pane: fetch the user's own submissions ONCE (per open / refresh) and render a
+    // compact scrollable list. Load-once fixes the over-fetching (#11). Shows GitHub issue #
+    // when the portal routed it to the repo.
+    var fbListLoading = false;
+    async function loadFeedbackList() {
+      var list = document.getElementById('fbList');
+      if (!list || fbListLoading) return;
+      fbListLoading = true;
+      try {
+        var res = await fetch('/api/feedback', { headers: { 'Accept': 'application/json' } });
+        var data = {}; try { data = await res.json(); } catch (e) { data = {}; }
+        var rows = (data && Array.isArray(data.feedback)) ? data.feedback : [];
+        if (!rows.length) { list.innerHTML = '<p class="fb-list-empty">No submissions yet. Your bugs & ideas will appear here.</p>'; return; }
+        var html = '';
+        rows.forEach(function (r) {
+          var kind = String(r.kind || 'suggest');
+          var status = String(r.status || 'new');
+          var when = ''; try { when = new Date(r.createdAt).toLocaleString(); } catch (e) { when = ''; }
+          var gh = r.githubIssue ? ('<span class="fb-gh">#' + r.githubIssue + '</span>') : '';
+          html += '<div class="fb-item">' +
+            '<div class="fb-item-top">' +
+              '<span class="fb-badge ' + (kind === 'bug' ? 'bug' : 'suggest') + '">' + (kind === 'bug' ? 'Bug' : 'Idea') + '</span>' +
+              gh +
+              '<span class="fb-status ' + (status === 'new' ? 'new' : '') + '">' + esc(status) + '</span>' +
+            '</div>' +
+            '<div class="fb-title" title="' + esc(String(r.title || '')) + '">' + esc(String(r.title || '')) + '</div>' +
+            '<div class="fb-when">' + esc(when) + '</div>' +
+          '</div>';
+        });
+        list.innerHTML = html;
+      } catch (e) {
+        list.innerHTML = '<p class="fb-list-empty">Could not load your submissions.</p>';
+      } finally {
+        fbListLoading = false;
+      }
+    }
     function bindFeedbackOnce() {
       if (feedbackBound) return;
       var feedbackModal = getFeedbackModal();
@@ -7601,6 +7698,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var kb = document.getElementById('fbKindBug');
       if (ks) ks.addEventListener('click', function () { setFbKind('suggest'); });
       if (kb) kb.addEventListener('click', function () { setFbKind('bug'); });
+      var fbRefresh = document.getElementById('fbListRefresh');
+      if (fbRefresh) fbRefresh.addEventListener('click', function () { loadFeedbackList(); });
       var fbSubmit = document.getElementById('fbSubmit');
       if (fbSubmit) fbSubmit.addEventListener('click', async function () {
         var title = (document.getElementById('fbTitle') || {}).value || '';
@@ -7621,6 +7720,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           if (st) st.textContent = data.message || 'Thanks — sent.';
           if (document.getElementById('fbTitle')) document.getElementById('fbTitle').value = '';
           if (document.getElementById('fbBody')) document.getElementById('fbBody').value = '';
+          loadFeedbackList();   // reflect the new submission in the right pane immediately
         } catch (e) {
           if (st) st.textContent = e.message || String(e);
         } finally { fbSubmit.disabled = false; }
@@ -7659,21 +7759,29 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           </div>
           <button type="button" class="icon-btn" id="feedbackClose" aria-label="Close">×</button>
         </div>
-        <div class="modal-body">
-          <div class="fb-kind-row">
-            <button type="button" class="icon-btn" id="fbKindSuggest" data-kind="suggest">Suggestion</button>
-            <button type="button" class="icon-btn" id="fbKindBug" data-kind="bug">Bug</button>
+        <div class="modal-body fb-two-pane">
+          <!-- LEFT: compact submit form -->
+          <div class="fb-form">
+            <div class="fb-kind-row">
+              <button type="button" class="fb-kind-btn" id="fbKindSuggest" data-kind="suggest">💡 Suggestion</button>
+              <button type="button" class="fb-kind-btn" id="fbKindBug" data-kind="bug">🐞 Bug</button>
+            </div>
+            <label class="field"><span>Title</span>
+              <input type="text" id="fbTitle" maxlength="200" placeholder="Short summary" autocomplete="off" />
+            </label>
+            <label class="field"><span>Details</span>
+              <textarea id="fbBody" rows="5" maxlength="8000" placeholder="What happened or what you want"></textarea>
+            </label>
+            <p id="fbStatus" class="hint" style="min-height:1.2em"></p>
+            <div class="modal-actions">
+              <button type="button" class="secondary" id="fbCancel">Cancel</button>
+              <button type="button" class="primary" id="fbSubmit">Submit</button>
+            </div>
           </div>
-          <label class="field"><span>Title</span>
-            <input type="text" id="fbTitle" maxlength="200" placeholder="Short summary" autocomplete="off" />
-          </label>
-          <label class="field"><span>Details</span>
-            <textarea id="fbBody" rows="5" maxlength="8000" placeholder="What happened or what you want"></textarea>
-          </label>
-          <p id="fbStatus" class="hint" style="min-height:1.2em"></p>
-          <div class="modal-actions">
-            <button type="button" class="secondary" id="fbCancel">Cancel</button>
-            <button type="button" class="primary" id="fbSubmit">Submit</button>
+          <!-- RIGHT: scrollable list of this user's submissions -->
+          <div class="fb-list-pane">
+            <div class="fb-list-head"><span>Your submissions</span><button type="button" class="secondary" id="fbListRefresh" title="Reload">↻</button></div>
+            <div class="fb-list-scroll" id="fbList"><p class="fb-list-empty">Loading…</p></div>
           </div>
         </div>
       </div>

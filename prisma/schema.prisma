@@ -91,6 +91,8 @@ model FeedbackSubmission {
   userAgent String?  @map("user_agent")
   status    String   @default("new")
   adminNote String?  @map("admin_note") @db.Text
+  githubIssue Int?    @map("github_issue")
+  githubUrl   String? @map("github_url")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
