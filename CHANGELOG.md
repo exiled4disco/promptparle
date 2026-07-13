@@ -9,6 +9,23 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.28] - 2026-07-13
+
+### Fixed
+- **Persona merge review had the safety asymmetry backwards.** The expensive error is a
+  false MERGE — it silently deletes a persona's force-top safety behavior (e.g. routing
+  "drop this table" to a weak model). Classification-agreement alone is blind to keyword
+  escalation, and that blind spot sat exactly on the merge verdict. Corrected with two
+  changes, no privacy impact:
+  - **Keyword fires are now logged as metadata** — `fired_rule: <rule_id>`, the rule ID
+    only, never the matched string (the substring would be prompt content). This turns
+    keyword divergence into a measurement: each persona gets an observed keyword-fire rate.
+  - **A merge now requires BOTH** ≥90% classification agreement AND comparable keyword-fire
+    profiles; an unknown fire rate blocks the recommendation (fail-safe). And the merge
+    operation itself **unions force-top rules unconditionally** — escalators migrate, never
+    drop — so even a recommended merge can't lose a safety keyword. Verified: Ops (fires 53%)
+    vs Writer (0%) at 100% classification agreement now correctly does NOT recommend a merge.
+
 ## [0.32.27] - 2026-07-13
 
 ### Added

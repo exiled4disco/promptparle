@@ -2040,31 +2040,51 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // that pins to top tier even on a trivial-looking C1 ask (only persona context knows
     // "how do I drop this table" is dangerous). Writer is a mergeable prior (folds into
     // general if its mid-default earns nothing).
+    // Force-top rules are ID'd (rule fires log the ID, NEVER the matched string — the
+    // substring is prompt content). Kept as first-class DATA so a persona merge can UNION
+    // keyword lists (migrate escalators, never drop them) — the invariant that makes a
+    // classification-level merge safe.
+    var FORCE_TOP_RULES = {
+      dev_fidelity:    /\b(security|auth|authentication|crypto|encrypt|migration|production|prod\b|secret|credential|token\b|payment|billing|race condition|deadlock|concurrency|memory leak|vuln)\b/i,
+      destructive_cmds:/\b(delete|drop\s+(table|database|schema)|rm\s+-rf|rm\s+-|truncate|iptables|revoke|firewall|kill|shutdown|reboot|rotate\s+key|decommission|wipe|format)\b/i,
+      ops_prod:        /\b(prod\b|production|incident|breach|credential|secret)\b/i,
+      claims_legal:    /\b(claim|legal|compliance|regulat|guarantee|medical|financial advice|press release|earnings|SLA|contract|liabilit)\b/i,
+      high_stakes_life:/\b(legal|medical|diagnos|lawsuit|contract|tax\b|financial advice|suicide|self-harm)\b/i
+    };
     var PERSONAS = {
       developer: {
         label: 'Developer',
         // inverts the global prior: code goes TOP unless proven simple
         defaultTier: 2,
         codeDefaultTier: 2,
-        forceTop: /\b(security|auth|authentication|crypto|encrypt|migration|production|prod\b|secret|credential|token\b|payment|billing|race condition|deadlock|concurrency|memory leak|vuln)\b/i
+        forceTopRules: ['dev_fidelity']
       },
       ops: {
         label: 'Ops / SecOps',
         defaultTier: 1,
         // non-negotiable: destructive / creds / incident force top even on C1
-        forceTop: /\b(delete|drop\s+(table|database|schema)|rm\s+-rf|rm\s+-|truncate|iptables|revoke|prod\b|production|incident|breach|firewall|kill|shutdown|reboot|credential|secret|rotate\s+key|decommission|wipe|format)\b/i
+        forceTopRules: ['destructive_cmds', 'ops_prod']
       },
       writer: {
         label: 'Writer / Marketing',
         defaultTier: 1,   // prose → mid by default (mergeable into general if thin)
-        forceTop: /\b(claim|legal|compliance|regulat|guarantee|medical|financial advice|press release|earnings|SLA|contract|liabilit)\b/i
+        forceTopRules: ['claims_legal']
       },
       general: {
         label: 'General',
         defaultTier: 0,   // cheap unless proven hard — the cost-recovery floor
-        forceTop: /\b(legal|medical|diagnos|lawsuit|contract|tax\b|financial advice|suicide|self-harm)\b/i
+        forceTopRules: ['high_stakes_life']
       }
     };
+    /** Which force-top rule (if any) fires for a prompt under a persona — returns rule ID or null. */
+    function firedForceTopRule(personaKey, prompt) {
+      var persona = PERSONAS[personaKey]; if (!persona || !persona.forceTopRules) return null;
+      for (var i = 0; i < persona.forceTopRules.length; i++) {
+        var id = persona.forceTopRules[i]; var rx = FORCE_TOP_RULES[id];
+        if (rx && rx.test(prompt || '')) return id;   // return the ID, never the match
+      }
+      return null;
+    }
 
     function getPersona() { var p = lsGet(PP_PERSONA_KEY, 'general'); return PERSONAS[p] ? p : 'general'; }
     function setPersona(p) { if (PERSONAS[p]) lsSet(PP_PERSONA_KEY, p); }
@@ -2153,8 +2173,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (cls.highStakes) { tier = Math.max(tier, cls.category === 'ADVICE' ? 1 : 2); reasons.push('high-stakes bump'); }
       // Low confidence bumps a tier (don't route down when unsure).
       if (cls.confidence < 0.65) { tier = Math.min(2, tier + 1); reasons.push('low-confidence bump'); }
-      // Persona force-top vocabulary — fires even on a trivial-looking ask.
-      if (persona.forceTop && persona.forceTop.test(prompt)) { tier = 2; reasons.push('force-top keyword'); }
+      // Persona force-top vocabulary — fires even on a trivial-looking ask. Records the
+      // rule ID (never the matched string) so keyword divergence is measurable.
+      var firedRule = firedForceTopRule(personaKey, prompt);
+      if (firedRule) { tier = 2; reasons.push('force-top:' + firedRule); }
       // Quality-bias dial nudges the whole thing (0=savings, 100=quality).
       if (dials.qualityBias >= 80 && tier < 2) { tier = tier + 1; reasons.push('quality-bias high'); }
       else if (dials.qualityBias <= 20 && tier > 0 && !cls.highStakes) { tier = tier - 1; reasons.push('savings-bias low'); }
@@ -2162,7 +2184,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (tier < dials.floorTier) { tier = dials.floorTier; reasons.push('model floor'); }
       tier = Math.max(0, Math.min(2, tier));
       var tiers = MODEL_TIERS[String(provider || '').toLowerCase()] || MODEL_TIERS.anthropic;
-      return { tier: tier, model: tiers[tier], reasons: reasons, _cls: cls };
+      return { tier: tier, model: tiers[tier], reasons: reasons, _cls: cls, firedRule: firedRule };
     }
 
     // Shadow log: record what the router WOULD do, without changing the model.
@@ -2176,42 +2198,80 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
 
     /**
-     * STANDING MERGE REVIEW — the personas should shrink/grow by LOGGED DIVERGENCE, not
-     * upfront theory (guards against N-routers-for-one-behavior). Replays every persona
-     * against each logged turn's stored classification and reports pairwise agreement.
-     * If two personas route identically on real traffic, they're merge candidates.
-     * Note: force-top KEYWORD hits can't be replayed (we keep no prompt body — privacy),
-     * so this compares the classification-driven tier; keyword divergence is under-counted,
-     * which is the SAFE direction (won't falsely recommend a merge). Needs a couple weeks
-     * of logs to be meaningful.
+     * STANDING MERGE REVIEW — personas shrink/grow by LOGGED DIVERGENCE, not upfront theory.
+     * The false-MERGE error is the expensive one: it silently deletes force-top safety
+     * behavior (routes "drop this table" to a weak model). Classification agreement alone
+     * is blind to keyword escalation, and that blind spot sits exactly on the merge verdict.
+     * So a merge recommendation requires BOTH:
+     *   (1) classification-level tier agreement ≥90%, AND
+     *   (2) comparable keyword-fire profiles — the persona being folded in must not keyword-
+     *       escalate meaningfully more traffic than the one it merges into.
+     * We measure (2) from the logged `fired_rule` IDs (metadata, no prompt content).
+     * And the MERGE OPERATION itself unions keyword rules unconditionally (see mergePersonas),
+     * so even a recommended merge can never drop an escalator.
      */
     function personaMergeReview() {
       var log = loadShadowLog();
       var keys = Object.keys(PERSONAS);
-      var dist = {}; keys.forEach(function (k) { dist[k] = [0, 0, 0]; });        // tier histogram per persona
-      var agree = {};                                                            // pairwise agreement counts
+      var dist = {}; var fireCount = {}; keys.forEach(function (k) { dist[k] = [0, 0, 0]; fireCount[k] = 0; });
+      var agree = {};
       for (var i = 0; i < keys.length; i++) for (var j = i + 1; j < keys.length; j++) agree[keys[i] + '|' + keys[j]] = { same: 0, total: 0 };
-      var n = 0;
+      var n = 0, firedTurns = {};
+      // Keyword-fire rate per persona = how often ITS force-top rules would fire on this
+      // traffic. Measured from the ACTUAL logged fire on the active persona plus a replay
+      // of each persona's rule set against... we can't (no prompt). So we use the logged
+      // fired_rule for the persona that actually ran, and for OTHER personas we can only
+      // know their fire rate on turns where THEY were active. Aggregate observed fire rate
+      // per persona across all turns where that persona was the active one.
       log.forEach(function (e) {
         if (!e || !e.cls) return; n++;
         var tierByPersona = {};
         keys.forEach(function (k) {
-          var r = resolveRoute(e.cls, e.provider || 'anthropic', k, '');          // '' prompt → keyword override can't fire (safe under-count)
+          var r = resolveRoute(e.cls, e.provider || 'anthropic', k, '');   // classification-only tier (keyword can't fire w/o prompt)
           tierByPersona[k] = r.tier; dist[k][r.tier]++;
         });
+        // Observed keyword fire (metadata) for whichever persona actually ran this turn.
+        var ap = e.persona; if (ap && PERSONAS[ap]) { firedTurns[ap] = (firedTurns[ap] || 0) + 1; if (e.fired_rule) fireCount[ap]++; }
         for (var a = 0; a < keys.length; a++) for (var b = a + 1; b < keys.length; b++) {
           var pk = keys[a] + '|' + keys[b]; agree[pk].total++;
           if (tierByPersona[keys[a]] === tierByPersona[keys[b]]) agree[pk].same++;
         }
       });
+      // Fire RATE per persona (observed on its own active turns). null = never observed.
+      var fireRate = {}; keys.forEach(function (k) { fireRate[k] = (firedTurns[k] > 0) ? (fireCount[k] / firedTurns[k]) : null; });
       var mergeCandidates = [];
       Object.keys(agree).forEach(function (pk) {
-        var a = agree[pk]; if (a.total >= 20) {                                   // enough samples to mean something
-          var pct = Math.round(100 * a.same / a.total);
-          if (pct >= 90) mergeCandidates.push({ pair: pk.split('|'), agreePct: pct, samples: a.total });
-        }
+        var a = agree[pk]; if (a.total < 20) return;                        // enough samples
+        var pct = Math.round(100 * a.same / a.total);
+        if (pct < 90) return;                                              // condition (1): classification agreement
+        var pair = pk.split('|');
+        // Condition (2): comparable keyword-fire profiles. If either persona's fire rate is
+        // unknown (never observed), we CANNOT clear it for merge — the blind spot is exactly
+        // here, so absence of data blocks the recommendation (fail safe, not fail merge).
+        var frA = fireRate[pair[0]], frB = fireRate[pair[1]];
+        var comparable = (frA != null && frB != null && Math.abs(frA - frB) <= 0.03);
+        mergeCandidates.push({
+          pair: pair, agreePct: pct, samples: a.total,
+          fireRate: [frA, frB], keywordComparable: comparable,
+          recommend: comparable   // merge recommended ONLY if BOTH conditions hold
+        });
       });
-      return { turns: n, dist: dist, agree: agree, mergeCandidates: mergeCandidates };
+      return { turns: n, dist: dist, agree: agree, fireRate: fireRate, mergeCandidates: mergeCandidates };
+    }
+
+    /**
+     * Merge persona B into persona A — UNIONS force-top rules unconditionally (never drops
+     * an escalator; this invariant is what makes a classification-level merge safe). Returns
+     * the merged persona config. Does not delete B from PERSONAS automatically — that's a
+     * deliberate step — but guarantees A gains all of B's escalators first.
+     */
+    function mergePersonas(intoKey, fromKey) {
+      var into = PERSONAS[intoKey], from = PERSONAS[fromKey];
+      if (!into || !from) return null;
+      var union = {};
+      (into.forceTopRules || []).concat(from.forceTopRules || []).forEach(function (id) { union[id] = true; });
+      into.forceTopRules = Object.keys(union);   // escalators migrate, never lost
+      return into;
     }
 
     function formatUsdEstimate(usd) {
@@ -5372,13 +5432,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         lines.push('<div style="color:var(--muted)">' + (PERSONAS[k] ? PERSONAS[k].label : k) +
           ': cheap ' + d[0] + ' · mid ' + d[1] + ' · top ' + d[2] + '</div>');
       });
-      if (rv.mergeCandidates.length) {
-        rv.mergeCandidates.forEach(function (mc) {
-          lines.push('<div class="warn" style="margin-top:.25rem">⚠ ' + (PERSONAS[mc.pair[0]] ? PERSONAS[mc.pair[0]].label : mc.pair[0]) +
-            ' and ' + (PERSONAS[mc.pair[1]] ? PERSONAS[mc.pair[1]].label : mc.pair[1]) +
-            ' route the same on ' + mc.agreePct + '% of ' + mc.samples + ' turns — merge candidate.</div>');
-        });
-      } else {
+      function pct(x) { return (x == null) ? 'n/a' : Math.round(x * 100) + '%'; }
+      var recommended = rv.mergeCandidates.filter(function (m) { return m.recommend; });
+      var blocked = rv.mergeCandidates.filter(function (m) { return !m.recommend; });
+      recommended.forEach(function (mc) {
+        lines.push('<div class="warn" style="margin-top:.25rem">⚠ ' + PERSONAS[mc.pair[0]].label + ' + ' + PERSONAS[mc.pair[1]].label +
+          ': ' + mc.agreePct + '% same routing over ' + mc.samples + ' turns AND comparable keyword-fire (' +
+          pct(mc.fireRate[0]) + ' vs ' + pct(mc.fireRate[1]) + ') — safe to merge (escalators are unioned, never dropped).</div>');
+      });
+      blocked.forEach(function (mc) {
+        lines.push('<div class="lbl" style="margin-top:.25rem">• ' + PERSONAS[mc.pair[0]].label + ' + ' + PERSONAS[mc.pair[1]].label +
+          ': ' + mc.agreePct + '% same classification routing, but keyword-fire profiles differ or unknown (' +
+          pct(mc.fireRate[0]) + ' vs ' + pct(mc.fireRate[1]) + ') — NOT a merge (would risk losing an escalator).</div>');
+      });
+      if (!rv.mergeCandidates.length) {
         lines.push('<div class="ok" style="margin-top:.25rem">All personas diverge enough to earn their slot.</div>');
       }
       lines.push('</div>');
@@ -6303,6 +6370,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
               in_tok: inT, out_tok: outT,
               would_usd: wouldUsd, actual_usd: actualUsd2,
               would_save_usd: Math.max(0, actualUsd2 - wouldUsd),
+              // Keyword escalation as METADATA — rule ID only, never the matched string
+              // (that would reintroduce prompt content). Makes keyword divergence measurable.
+              fired_rule: __route.firedRule || null,
               reasons: __route.reasons
             });
           }
