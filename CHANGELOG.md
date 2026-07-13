@@ -9,6 +9,25 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.31] - 2026-07-13
+
+### Added
+- **Live auto-escalate redo** — routing now self-heals. When a routed (cheaper) model
+  returns a genuine non-attempt (empty/garbled), the turn is automatically re-run ONCE
+  on one tier stronger, and the escalation outcome is logged (did the stronger answer
+  stick? → feeds the per-cell tuning readout). Hard guards, all verified in logic:
+  one retry only (a redo can never trigger another — no loop, no runaway spend);
+  fires only when routing mode = Live AND the auto-escalate dial is on; NEVER on a
+  refusal (no self-built jailbreak loop) and never on calibrated hedging; steps exactly
+  one tier up (no-op if already top). Manual "↑ stronger" remains for user-triggered redo.
+
+### Needs your verification
+- The redo makes a SECOND provider call, which can only be truly tested on the running
+  client with a real key. All guards + the tier-step + the one-retry invariant are driven
+  green in logic, but before trusting it: set routing to **Live**, force a weak-model miss,
+  and confirm it retries exactly once on a stronger model and logs the escalation (no loop,
+  no double answer). Until you've done that, treat the redo path as unverified.
+
 ## [0.32.30] - 2026-07-13
 
 ### Added
