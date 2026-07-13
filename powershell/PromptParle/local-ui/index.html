@@ -683,6 +683,38 @@
       width: min(560px, 100%); max-height: min(80vh, 720px); overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1.1rem 1.1rem; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
     .modal.help-modal {
       width: min(860px, 100%); max-height: min(88vh, 920px); }
+    /* Live dashboard — a real-time surface over the SAME trusted numbers the sidebar reads
+       (real provider in/out tokens, model, spread, time). No new measurement; honest by source. */
+    .modal.dash-modal { width: min(900px, 100%); max-height: min(90vh, 960px); }
+    .dash-live { display:flex; align-items:center; gap:.5rem; font-size:.74rem; color:var(--muted); margin:-.2rem 0 .7rem; }
+    .dash-live .dot { width:8px; height:8px; border-radius:50%; background:#3ddc84; box-shadow:0 0 6px #3ddc84; animation:dashPulse 1.6s ease-in-out infinite; }
+    .dash-live.idle .dot { background:var(--muted); box-shadow:none; animation:none; }
+    @keyframes dashPulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    .dash-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.55rem; margin-bottom:.9rem; }
+    .dash-card { background:var(--bg); border:1px solid var(--border); border-radius:11px; padding:.6rem .7rem; }
+    .dash-card .lbl { font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+    .dash-card .val { font-size:1.35rem; font-weight:800; margin-top:.15rem; line-height:1.1; }
+    .dash-card .val .u { font-size:.72rem; font-weight:600; color:var(--muted); margin-left:.2rem; }
+    .dash-card .sub2 { font-size:.7rem; color:var(--muted); margin-top:.2rem; }
+    .dash-card.hot { border-color:rgba(255,170,70,.5); background:linear-gradient(180deg,rgba(255,170,70,.08),transparent); }
+    .dash-card.hot .val { color:#ffb347; }
+    .dash-card.ok .val { color:#3ddc84; }
+    .dash-sec-h { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:1rem 0 .4rem; border-top:1px solid var(--border); padding-top:.7rem; }
+    .dash-now { background:var(--bg); border:1px solid rgba(61,220,132,.4); border-radius:11px; padding:.65rem .75rem; margin-bottom:.4rem; }
+    .dash-now .stage { font-size:.86rem; font-weight:700; }
+    .dash-now .meta2 { font-size:.72rem; color:var(--muted); margin-top:.25rem; }
+    .dash-table { width:100%; border-collapse:collapse; font-size:.78rem; }
+    .dash-table th { text-align:left; color:var(--muted); font-weight:600; font-size:.68rem; text-transform:uppercase; padding:.3rem .5rem; border-bottom:1px solid var(--border); }
+    .dash-table td { padding:.34rem .5rem; border-bottom:1px solid rgba(255,255,255,.04); }
+    .dash-table td.num { text-align:right; font-variant-numeric:tabular-nums; }
+    .dash-table tr:last-child td { border-bottom:none; }
+    .dash-bar { height:5px; border-radius:3px; background:rgba(255,255,255,.08); overflow:hidden; margin-top:.2rem; }
+    .dash-bar > i { display:block; height:100%; background:#ffb347; }
+    .dash-pill { display:inline-block; padding:.05rem .4rem; border-radius:6px; font-size:.68rem; font-weight:700; }
+    .dash-pill.good { background:rgba(61,220,132,.16); color:#3ddc84; }
+    .dash-pill.warn { background:rgba(255,170,70,.16); color:#ffb347; }
+    .dash-pill.bad { background:rgba(255,90,90,.16); color:#ff6b6b; }
+    .dash-empty { color:var(--muted); font-size:.8rem; padding:.4rem 0; }
     .modal h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
     .modal .sub { color: var(--muted); font-size: .82rem; margin-bottom: .75rem; }
     .modal h3 {
@@ -1338,12 +1370,14 @@
           <span class="hint attach-hint" id="attachHint"></span>
           <span class="badge" id="versionBadge" title="Client version">…</span>
           <button type="button" class="update-btn secondary-look" id="updateBtn" title="Update client">Update</button>
+          <button type="button" class="icon-btn" id="dashBtn" title="Live dashboard — real-time tokens, cost &amp; routing">📊 Dashboard</button>
           <button type="button" class="icon-btn" id="helpBtn" title="Help &amp; commands">Help</button>
           <button type="button" class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">⋯</button>
           <div class="menu" id="appMenu" role="menu">
             <button type="button" id="menuNewChat">New chat</button>
             <button type="button" id="menuTermChat" title="Toggle terminal-style AI chat">Terminal chat</button>
             <button type="button" id="menuHelp">Help &amp; slash commands</button>
+            <button type="button" id="menuDashboard" title="Live dashboard — real-time tokens, cost &amp; routing">Live dashboard</button>
             <button type="button" id="menuActivityLog" title="Operational messages (updates, SSH, workspace), not chat">Activity log</button>
             <button type="button" id="menuProviders" data-info="providers">AI Provider API</button>
             <button type="button" id="menuUsage" data-info="usage">Usage / savings</button>
@@ -1655,6 +1689,18 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
   </div>
 
   <!-- Cloud account glance (API JSON only; Edit opens portal when needed) -->
+  <div class="modal-backdrop" id="dashModal" role="dialog" aria-modal="true" aria-labelledby="dashTitle">
+    <div class="modal dash-modal">
+      <h2 id="dashTitle">Live dashboard</h2>
+      <div class="dash-live" id="dashLive"><span class="dot"></span><span id="dashLiveText">Real tokens, cost &amp; routing on this PC — updates live.</span></div>
+      <div id="dashBody">Loading…</div>
+      <div class="row-actions">
+        <button type="button" class="secondary" id="dashReset" title="Zero the on-this-PC running totals (does not delete chats)">Reset totals</button>
+        <button type="button" class="secondary" id="dashClose">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="infoModal" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
     <div class="modal">
       <h2 id="infoTitle">Account</h2>
@@ -2830,13 +2876,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         var prov = String(s.provider || '').trim();
         var key = (prov ? prov + ' · ' : '') + model;
         if (!byModel[key]) {
-          byModel[key] = { key: key, model: model, provider: prov, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
+          byModel[key] = { key: key, model: model, provider: prov, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, inTok: 0, outTok: 0, outUsd: 0, elapsedMs: 0 };
         }
         var row = byModel[key];
         row.msgs += 1;
         row.orig += s.billedBefore; row.opt += s.billedAfter;
         row.saved += s.saved;
         row.usd += s.usdSaved;
+        // Real per-model provider tokens + output spend + time (same trusted source as headline).
+        var rIn = Number(n.provider_input_tokens) || 0;
+        var rOut = Number(n.provider_output_tokens) || 0;
+        row.inTok += rIn;
+        row.outTok += rOut;
+        row.outUsd += (rOut / 1000000) * outputUsdPerMillion(n.provider, n.model);
+        row.elapsedMs += (Number(n.elapsed_ms) || 0);
         totals.msgs += 1;
         totals.orig += s.billedBefore; totals.opt += s.billedAfter;
         totals.saved += s.saved;
@@ -2943,6 +2996,174 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (isSoundEnabled() && isSavingsSoundOn()) { playChaChing(); }
       }
       window.__ppPrevUsdSaved = cur;
+      // Dashboard shares this after-turn trigger — repaint it too if it's open.
+      try { if (isDashOpen()) renderDashboard(); } catch (e) { /* ignore */ }
+    }
+
+    // ---- Live dashboard -------------------------------------------------------
+    // A real-time surface over the SAME numbers the sidebar reads: real provider
+    // in/out tokens, the model that ran, model-spread saving, per-turn time, and
+    // routing outcomes. No new measurement — one honest source, live cadence.
+    function isDashOpen() { var m = document.getElementById('dashModal'); return !!(m && m.classList.contains('open')); }
+
+    function fmtDur(ms) {
+      var s = (Number(ms) || 0) / 1000;
+      if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+      return (s / 3600).toFixed(1) + 'h';
+    }
+
+    // Is a turn in flight right now? Inline turn sets window.__ppTurnActive; background
+    // jobs live in bgJobs. Return the freshest with its start time + stage label.
+    function currentInflight() {
+      try {
+        var jobs = Object.keys(bgJobs || {}).map(function (k) { return bgJobs[k]; }).filter(Boolean);
+        if (jobs.length) {
+          var j = jobs[jobs.length - 1];
+          var stageTxt = '';
+          try { var el = j.el && j.el.querySelector('.bg-stage'); if (el) stageTxt = el.textContent || ''; } catch (e) {}
+          return { started: j.started || Date.now(), stage: stageTxt || 'Working…', kind: 'background', prompt: j.prompt || '' };
+        }
+      } catch (e) { /* ignore */ }
+      if (window.__ppTurnActive && window.__ppTurnStartTs) {
+        return { started: window.__ppTurnStartTs, stage: window.__ppTurnStage || 'Working…', kind: 'inline', prompt: window.__ppLastPrompt || '' };
+      }
+      return null;
+    }
+
+    // Weighted miss-rate → a plain-English health pill for a routing cell.
+    function cellHealth(c) {
+      var n = Number(c.n) || 0;
+      if (n < 3) return { cls: '', txt: 'learning' };           // not enough data to judge
+      var rate = (Number(c.miss) || 0) / n;
+      if (rate < 0.12) return { cls: 'good', txt: 'healthy' };
+      if (rate < 0.30) return { cls: 'warn', txt: 'watch' };
+      return { cls: 'bad', txt: 'weak' };
+    }
+
+    function renderDashboard() {
+      var body = document.getElementById('dashBody');
+      if (!body) return;
+      var liveWrap = document.getElementById('dashLive');
+      var liveText = document.getElementById('dashLiveText');
+      var st = computeRunningStats();
+      var t = st.totals;
+      var inflight = currentInflight();
+
+      // Live indicator reflects whether a turn is actually running right now.
+      if (liveWrap) liveWrap.classList.toggle('idle', !inflight);
+      if (liveText) liveText.textContent = inflight
+        ? 'A turn is running — tokens & time update as it works.'
+        : 'Idle. Real tokens, cost & routing on this PC.';
+
+      var html = '';
+
+      // 1) In-flight turn (only while working) — the "not a black box" panel.
+      if (inflight) {
+        var secs = fmtDur(Date.now() - (inflight.started || Date.now()));
+        html += '<div class="dash-now"><div class="stage">▸ ' + esc(inflight.stage) + '</div>' +
+          '<div class="meta2">' + esc(inflight.kind === 'background' ? 'Background turn' : 'Working') +
+          ' · ' + secs + ' elapsed' +
+          (inflight.prompt ? ' · “' + esc(String(inflight.prompt).slice(0, 60)) + (String(inflight.prompt).length > 60 ? '…' : '') + '”' : '') +
+          '</div></div>';
+      }
+
+      if (!t.msgs) {
+        html += '<p class="dash-empty">No turns yet on this PC. Send a chat — real tokens, cost, and routing will appear here live.</p>';
+        body.innerHTML = html;
+        return;
+      }
+
+      // 2) Headline cards — real provider tokens; OUTPUT flagged as the costly side.
+      html += '<div class="dash-grid">';
+      html += '<div class="dash-card"><div class="lbl">Messages</div><div class="val">' + t.msgs + '</div></div>';
+      var inTok = Number(t.orig) || 0; // billed-before proxy handled below; prefer real provider input if present
+      html += '<div class="dash-card hot" title="Output tokens generated by the model(s) — the costly side (5–8× input). Real provider counts.">' +
+        '<div class="lbl">Output tokens</div><div class="val">' + compactTok(t.outTok || 0) + '</div>' +
+        '<div class="sub2">' + formatUsdEstimate(t.outUsd || 0) + ' at published output rates</div></div>';
+      html += '<div class="dash-card"><div class="lbl">Total time</div><div class="val">' + fmtDur(t.elapsedMs || 0) + '</div>' +
+        '<div class="sub2">avg ' + fmtDur((t.elapsedMs || 0) / Math.max(1, t.msgs)) + '/turn</div></div>';
+      html += '<div class="dash-card ok" title="Input tokens saved by optimization before send, valued at input rates.">' +
+        '<div class="lbl">Input saved</div><div class="val">−' + st.pct + '%</div>' +
+        '<div class="sub2">' + compactTok(t.saved || 0) + ' tok · ' + formatUsdEstimate(t.usd || 0) + '</div></div>';
+      html += '</div>';
+
+      // 3) Model-spread saving — session cost on base model vs the actual mix (output-weighted, real tokens).
+      if ((t.spreadUsd || 0) > 0 || (t.actualUsd || 0) > 0) {
+        var base = getBaseModel();
+        var baseLbl = base.model ? ((base.provider ? base.provider + ' · ' : '') + base.model) : '(current)';
+        html += '<div class="dash-sec-h">Model-spread savings</div>';
+        html += '<div class="dash-grid">';
+        html += '<div class="dash-card"><div class="lbl">All on base</div><div class="val">' + formatUsdEstimate(t.baseUsd || 0) + '</div>' +
+          '<div class="sub2">if every turn ran on ' + esc(String(baseLbl).slice(0, 28)) + '</div></div>';
+        html += '<div class="dash-card"><div class="lbl">Actual mix</div><div class="val">' + formatUsdEstimate(t.actualUsd || 0) + '</div>' +
+          '<div class="sub2">what the routed models cost</div></div>';
+        html += '<div class="dash-card ok"><div class="lbl">Spread saved</div><div class="val">' + formatUsdEstimate(t.spreadUsd || 0) + '</div>' +
+          '<div class="sub2">real tokens · output-weighted</div></div>';
+        html += '</div>';
+      }
+
+      // 4) Per-model breakdown — where the output tokens & time actually went.
+      var models = (st.models || []).slice().sort(function (a, b) { return (b.outTok || 0) - (a.outTok || 0); });
+      if (models.length) {
+        var maxOut = models.reduce(function (m, r) { return Math.max(m, r.outTok || 0); }, 0) || 1;
+        html += '<div class="dash-sec-h">By model (real output tokens)</div>';
+        html += '<table class="dash-table"><thead><tr><th>Model</th><th class="num">Msgs</th><th class="num">Out tok</th><th class="num">Out $</th><th class="num">Time</th></tr></thead><tbody>';
+        models.forEach(function (r) {
+          var pctBar = Math.round(100 * (r.outTok || 0) / maxOut);
+          html += '<tr><td>' + esc(r.key) +
+            '<div class="dash-bar"><i style="width:' + pctBar + '%"></i></div></td>' +
+            '<td class="num">' + (r.msgs || 0) + '</td>' +
+            '<td class="num">' + compactTok(r.outTok || 0) + '</td>' +
+            '<td class="num">' + formatUsdEstimate(r.outUsd || 0) + '</td>' +
+            '<td class="num">' + fmtDur(r.elapsedMs || 0) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+
+      // 5) Routing outcomes — per-cell health (only meaningful when routing has data).
+      try {
+        var mode = getRoutingMode();
+        var cells = loadCells();
+        var cellKeys = Object.keys(cells).filter(function (k) { return (Number(cells[k].n) || 0) > 0; });
+        html += '<div class="dash-sec-h">Routing outcomes · mode: ' + esc(mode) + '</div>';
+        if (!cellKeys.length) {
+          html += '<p class="dash-empty">No routed turns logged yet' + (mode === 'off' ? ' (routing is off).' : '.') + '</p>';
+        } else {
+          cellKeys.sort(function (a, b) { return (Number(cells[b].n) || 0) - (Number(cells[a].n) || 0); });
+          html += '<table class="dash-table"><thead><tr><th>Cell (persona·category·tier)</th><th class="num">Turns</th><th class="num">Miss</th><th class="num">Esc</th><th class="num">Health</th></tr></thead><tbody>';
+          cellKeys.slice(0, 12).forEach(function (k) {
+            var c = cells[k];
+            var n = Number(c.n) || 0;
+            var missRate = n ? Math.round(100 * (Number(c.miss) || 0) / n) : 0;
+            var h = cellHealth(c);
+            html += '<tr><td>' + esc(k) + '</td>' +
+              '<td class="num">' + n + '</td>' +
+              '<td class="num">' + missRate + '%</td>' +
+              '<td class="num">' + (Number(c.esc) || 0) + '</td>' +
+              '<td class="num"><span class="dash-pill ' + h.cls + '">' + h.txt + '</span></td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+      } catch (e) { /* ignore routing panel on error */ }
+
+      body.innerHTML = html;
+    }
+
+    function openDashboard() {
+      var m = document.getElementById('dashModal');
+      if (!m) return;
+      try { closeMenu(); } catch (e) { /* ignore */ }
+      m.classList.add('open');
+      renderDashboard();
+      // 1s tick so elapsed time + the in-flight panel stay live even between turns.
+      try { if (window.__ppDashTimer) clearInterval(window.__ppDashTimer); } catch (e) { /* ignore */ }
+      window.__ppDashTimer = setInterval(function () { try { if (isDashOpen()) renderDashboard(); else { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ } }, 1000);
+    }
+    function closeDashboard() {
+      var m = document.getElementById('dashModal');
+      if (m) m.classList.remove('open');
+      try { if (window.__ppDashTimer) { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ }
     }
 
     /** Local running totals + per-model rows for the Usage modal. */
@@ -3370,7 +3591,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       }
       // Always-visible: what actually landed on the server (not buried in prose)
       if (nmeta && (nmeta.applied_count > 0 || (nmeta.applied_files && nmeta.applied_files.length))) {
-        const ab = document.createElement('div'); ab.className = 'meta'; ab.style.borderColor = 'rgba(52, 211, 153, 0.45)'; ab.style.background = 'rgba(16, 185, 129, 0.08)'; const files = nmeta.applied_files || []; const n = nmeta.applied_count || files.length; ab.innerHTML = '<span class="ok"><strong>Landed ' + n + ' file(s) on server</strong></span>' +
+        const ab = document.createElement('div'); ab.className = 'meta'; ab.style.borderColor = 'rgba(52, 211, 153, 0.45)'; ab.style.background = 'rgba(16, 185, 129, 0.08)'; const files = nmeta.applied_files || []; const n = nmeta.applied_count || files.length; const applyWhere = (String(nmeta.apply_channel || '') === 'local') ? 'this PC' : 'server'; ab.innerHTML = '<span class="ok"><strong>Landed ' + n + ' file(s) on ' + applyWhere + '</strong></span>' +
           (files.length
             ? '<span style="display:block;margin-top:.25rem;font-size:.78rem;color:var(--muted)">' +
               files.map(function (f) { return String(f); }).join('<br>') + '</span>'
@@ -6043,9 +6264,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       if (infoKind) loadInfo(infoKind); }); document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         closeFsModal(); closeSshModal(); closeGitModal(); closeInfo(); closeHelp(); closeMenu();
+        try { closeDashboard(); } catch (err) { /* ignore */ }
         try { closeFeedback(); } catch (err) { /* defined later; safe if missing */ }
       }
-    }); menuBtn.addEventListener('click', function (e) {
+    });
+    // Live dashboard wiring — header button + menu item, backdrop-click and Reset.
+    (function wireDashboard() {
+      var dashBtn = document.getElementById('dashBtn');
+      var menuDash = document.getElementById('menuDashboard');
+      var dashModal = document.getElementById('dashModal');
+      if (dashBtn) dashBtn.addEventListener('click', openDashboard);
+      if (menuDash) menuDash.addEventListener('click', function () { closeMenu(); openDashboard(); });
+      var dashCloseBtn = document.getElementById('dashClose');
+      if (dashCloseBtn) dashCloseBtn.addEventListener('click', closeDashboard);
+      if (dashModal) dashModal.addEventListener('click', function (e) { if (e.target === dashModal) closeDashboard(); });
+      var dashResetBtn = document.getElementById('dashReset');
+      if (dashResetBtn) dashResetBtn.addEventListener('click', function () {
+        if (confirm('Zero the on-this-PC running totals? This does not delete any chats.')) {
+          try { resetCumStats(); } catch (e) { /* ignore */ }
+          try { renderSideStats(); } catch (e) { /* ignore */ }
+          renderDashboard();
+        }
+      });
+    })();
+    menuBtn.addEventListener('click', function (e) {
       e.stopPropagation(); toggleMenu(); }); document.addEventListener('click', function (e) {
       if (!appMenu.contains(e.target) && e.target !== menuBtn) closeMenu(); }); document.getElementById('menuUpdate').addEventListener('click', function (ev) { runUpdate(ev); }); document.getElementById('helpUpdate').addEventListener('click', function (ev) { runUpdate(ev); }); document.getElementById('menuStop').addEventListener('click', function () { stopServer(); }); document.getElementById('helpStop').addEventListener('click', function () { stopServer(); }); // Menu + help: open API glance modals instead of navigating to portal pages
     document.querySelectorAll('[data-info]').forEach(function (el) {
@@ -6546,6 +6788,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var actLike = /\b(implement|build|ship|create|make|fix|add|write|refactor|generate|apply|deploy|scaffold|set up|wire)\b/i.test(String(prompt || ''));
       var abortMs = optOnly ? 120000 : (actLike || images.length || (context && context.length > 4000) ? 600000 : 240000);
       var __turnStart = Date.now();   // total work time for this turn (shown + logged)
+      // Feed the live dashboard's in-flight panel (a turn is a black box otherwise).
+      window.__ppTurnActive = true; window.__ppTurnStartTs = __turnStart; window.__ppTurnStage = 'Working…';
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null; const timer = controller ? setTimeout(function () { controller.abort(); }, abortMs) : null; try {
         // Carried-context: credit the doc re-ingestion PP avoids this turn vs a stateless
         // API (which would re-send every prior doc body). Computed here because only the
@@ -6766,9 +7010,10 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           addMsg('bot', tmsg, null, true); } else {
           addMsg('bot', 'Local server error: ' + (err.message || err), null, true); }
       } finally {
+        window.__ppTurnActive = false; window.__ppTurnStage = null;   // in-flight panel back to idle
         if (timer) clearTimeout(timer); for (var ci = 0; ci < thinkTimers.length; ci++) clearTimeout(thinkTimers[ci]); const w = document.getElementById('waiting'); if (w) w.remove(); // Belt-and-suspenders: never leave chips after a send attempt
         if (attachments.length > 0) clearComposerAttachments('post-send'); sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); scrollChatToBottom(); }
-    }); 
+    });
     // ---- Bug / Suggest (portal /api/v1/feedback via local proxy) ----
     // Re-query DOM on each open (HTML may load after bind; never cache null once)
     var fbKind = 'suggest';

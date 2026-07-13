@@ -9,6 +9,56 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.35] - 2026-07-13
+
+### Fixed
+- **PromptParle can now edit a LOCAL project.** The blocker: the file-write (apply) path
+  was **SSH-only** — on a "This PC" folder every write went to `/CHANGELOG.md` over a
+  non-existent SSH channel → `SSH write failed (1): NEW_FILE` / `Permission denied`, the
+  implement turn fail-closed, and the "downloadable" Report.md served a JSON envelope
+  (because no file was ever built). Root cause, not a permissions quirk: the client could
+  *read* a local folder (`local_list`) but had no local *write*/*read*/*run* channel.
+  - New `Test-PromptParleApplyTargetIsLocal` predicate decides local-vs-SSH from the
+    attached connection (`kind`/`ssh_target`), and `Set-PromptParleLocalFileContent` /
+    `Invoke-PromptParleLocalRunCommand` write and run **directly on disk**, confined to
+    the workspace root, with the **same guards as the SSH writer** (read-before-write,
+    timestamped backup, destructive-shrink refuse, stub/placeholder refuse, size bounds,
+    secrets denylist) — plus NEW_FILE allowed so a fresh file in a new dir is legitimate.
+  - The apply pipeline, the `read`/`run`/`ssh_list`/`ssh_read`/`ssh_run` hands tools, and
+    the prisma auto-follow-through now **auto-route** to local when the project is local;
+    the SSH path is byte-for-byte unchanged when an SSH target is attached.
+  - Because the file now actually gets built, the deliver/download serves the real file
+    body (verified: `Report.md` → `text/markdown`, markdown bytes, not JSON).
+  - Driven green end-to-end: NEW_FILE, overwrite+backup, idempotent skip, nested dir,
+    and every guard (traversal / shrink / stub / secrets) refused; full apply pipeline
+    lands a local file with `channel=local` and no fail-closed; SSH-target-only and
+    unbound both correctly stay non-local.
+
+### Changed (honest logging)
+- Logs now tell the truth about the channel and why a round did nothing — the console
+  said `hands: ssh_list (ok)` on a *local* folder and `round 2 … −0%` with no reason.
+  Now: `apply: channel=local (…reason…)`, hands report the tool that **actually ran**
+  (`local_read`/`local_run`/`local_list`), and each agent round logs *why* it ended
+  (final answer / no parseable tool block / re-requested deduped tools → forcing answer).
+  The "Landed N file(s)" chip now says **this PC** vs **server** correctly.
+
+### Added
+- **Live dashboard** — a 📊 Dashboard button in the header (also in the ⋯ menu) pops a
+  real-time view over the four things the client already measures honestly, no new
+  estimate anywhere:
+  - **Real provider tokens** — input and, front-and-center, **output** (the costly side,
+    5–8× input), priced at each model's published output rate.
+  - **Model-spread savings** — session cost if every turn ran on your base model vs. the
+    actual routed mix, output-weighted from real tokens.
+  - **By model** — where output tokens and time actually went, one row per model.
+  - **Routing outcomes** — per-cell turns / weighted miss-rate / escalations with a plain
+    health pill (healthy · watch · weak · learning), plus the current routing mode.
+  - **In-flight panel** — while a turn is running it shows the live stage and elapsed time,
+    so a long turn stops being a black box.
+  It reads the same trusted stores the sidebar uses (`computeRunningStats`, `loadCells`,
+  `getBaseModel`) and repaints off the existing after-turn trigger plus a 1s tick while
+  open — always in sync, never a second source of truth that could drift.
+
 ## [0.32.34] - 2026-07-13
 
 ### Added (dev)

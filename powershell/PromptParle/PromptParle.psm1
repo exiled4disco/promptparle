@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.34'
+    $ver = '0.32.35'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -2093,9 +2093,10 @@ function Get-PromptParleSelfCard {
     $lines = @(
         "[SELF] PromptParle desktop client v$ver on $os (this PC is the hands)",
         'Identity: multi-AI eng client — portal optimizes/routes; THIS machine runs tools and holds keys/paths.',
-        'Local (this PC): local_list any path (C:\, /home, …), workspace attach, git, file_index, tree_pack, terminal. Paths never leave the PC for listing.',
+        'Local (this PC): local_list any path (C:\, /home, …), read/cat a file, run allowlisted commands, workspace attach, git, file_index, tree_pack, terminal. Paths never leave the PC.',
         'Remote (only if SSH connected AND user means remote): ssh_list, ssh_read, ssh_run.',
-        'Web: web_search, web_page. Docs: ```file name=…``` deliverables. Mutate: ```apply path=``` under bound source only.',
+        'Read/run/apply auto-pick the channel: a LOCAL attached folder → local filesystem; an SSH target → remote. You do not choose ssh vs local — just use read/run/apply and the client routes it. On a local project, apply writes to disk directly (no SSH).',
+        'Web: web_search, web_page. Docs: ```file name=…``` deliverables. Mutate: ```apply path=``` under the attached project root (local folder OR bound source).',
         'Chat history (sessions): lives in THIS desktop UI — sidebar Chat history (browser localStorage on this PC). Rolling densify store: ' + $cfgHint + 'chat-memory/<id>.json. NOT inside project trees. There is NO .parle/sessions/ folder in repos — never invent one.',
         'Catch-up: "latest session / get caught up" on THIS chat → answer from [MEM]/[KNOW]/history. Other chats → user opens them in the sidebar. Project catch-up (path/repo) → git status, HANDOFF/AGENTS/README, recent commits — not a fictional sessions dir.',
         'Portal: https://promptparle.com — Providers, API keys, Usage (before/after context), Settings, plan.',
@@ -2114,8 +2115,8 @@ function Get-PromptParleChatSystemPrompt {
     return @(
         'You are PromptParle — a conversational assistant in a continuous chat (same feel as Grok / Claude / ChatGPT). Talk like a helpful person: clear prose, short lists when useful, natural follow-ups. No modes for the user.',
         'BRAIN + HANDS: You are the brain (this API call). PromptParle desktop on the user''s PC executes tools: local filesystem, optional SSH, web fetch, apply/run, document deliver. The user never sees tool protocol.',
-        'NATIVE TOOLS: web_search, web_page, local_list (THIS PC directories), ssh_list/ssh_read/ssh_run (remote only), workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Prefer tools over guessing — then answer in plain language.',
-        'HOST ROUTING: "on this PC" / Windows paths (C:\) / local folders → local_list or workspace tools. SSH/product host only when the user means remote or [CONN] shows an SSH target they asked about. Never substitute a hardcoded server path for a local request.',
+        'NATIVE TOOLS: web_search, web_page, local_list (THIS PC directories), read/cat + run (auto-route to local filesystem when the project is a local folder, else SSH), ssh_list/ssh_read/ssh_run (remote), workspace_find, relevant_slice, file_index, git_diff, git, connections, tree_pack. Prefer tools over guessing — then answer in plain language.',
+        'HOST ROUTING: "on this PC" / Windows paths (C:\) / local folders → local tools. The client auto-selects local vs SSH for read/run/apply based on the attached project — you do not need to say "ssh". On a LOCAL project, ```apply path=…``` writes straight to disk (no SSH); never claim you cannot write to a local folder.',
         'FORBIDDEN in the user-visible answer: toolcall/tool_call/function_call XML, HTML tool tags, markdown hands fences, [HANDS] packs, hands# logs, "Client ran tools", or any method homework. Only a final conversational answer (or a real ```file deliverable when owed).',
         'When evidence is enough: answer the question. NEVER answer with the method (no run-ls homework). NEVER Generating-now without a file fence body for user documents.',
         'MUTATE: apply path=rel full files under source_root when a product bind exists (client writes, backups). Never invent a product root. run allowlisted pipeline only.',
@@ -4715,40 +4716,79 @@ function Invoke-PromptParleLocalTool {
         }
         'ssh_list' {
             $path = if ($Arg) { $Arg } else { '' }
+            # LOCAL project → list the local folder, not SSH. (Was SSH-only: the model
+            # only had ssh_list vocabulary, so it ran ssh_list against a local repo.)
+            $__lt = Test-PromptParleApplyTargetIsLocal
+            if ($__lt.local) {
+                $lp = if ($path) { $path } else { [string]$__lt.root }
+                $r = Invoke-PromptParleLocalDirListing -LocalPath $lp -MaxChars 6000
+                return [pscustomobject]@{
+                    ok = [bool]$r.ok; tool = 'local_list'; local = $true
+                    text = $(if ($r.text) { $r.text } else { "local_list failed: $($r.notes -join ', ')" })
+                    notes = @($r.notes); path = $r.path
+                }
+            }
             $r = Invoke-PromptParleSshDirListing -RemotePath $path -MaxChars 6000
             return [pscustomobject]@{
-                ok = [bool]$r.ok; tool = 'ssh_list'; local = $true
+                ok = [bool]$r.ok; tool = 'ssh_list'; local = $false
                 text = $(if ($r.text) { $r.text } else { "ssh_list failed: $($r.notes -join ', ')" })
                 notes = @($r.notes); path = $r.path
             }
         }
-        { $_ -in @('ssh_read', 'read') } {
+        { $_ -in @('ssh_read', 'read', 'local_read', 'cat') } {
             $path = if ($Arg) { $Arg.Trim() } else { '' }
             if (-not $path) {
-                return [pscustomobject]@{ ok = $false; tool = 'ssh_read'; local = $true; text = 'ssh_read needs a path'; notes = @('no-path') }
+                return [pscustomobject]@{ ok = $false; tool = 'ssh_read'; local = $true; text = 'read needs a path'; notes = @('no-path') }
+            }
+            $__lt = Test-PromptParleApplyTargetIsLocal
+            if ($__lt.local) {
+                try {
+                    $txt = Get-PromptParleWorkspaceFile -RelativePath $path
+                    if ($null -ne $txt -and [string]$txt) {
+                        $clip = [string]$txt; if ($clip.Length -gt 14000) { $clip = $clip.Substring(0, 14000) + "`n…[read budget]" }
+                        return [pscustomobject]@{ ok = $true; tool = 'local_read'; local = $true; text = $clip; notes = @('local_read'); files = @($path) }
+                    }
+                    return [pscustomobject]@{ ok = $false; tool = 'local_read'; local = $true; text = "local_read miss (empty): $path"; notes = @('local_read-empty') }
+                } catch {
+                    return [pscustomobject]@{ ok = $false; tool = 'local_read'; local = $true; text = "local_read failed: $_"; notes = @('local_read-err') }
+                }
             }
             $ev = Get-PromptParleSshPromptEvidence -Prompt ("read $path") -MaxFiles 1 -MaxChars 14000
             if ($ev -and $ev.text) {
-                return [pscustomobject]@{ ok = $true; tool = 'ssh_read'; local = $true; text = $ev.text; notes = @($ev.notes); files = $ev.files }
+                return [pscustomobject]@{ ok = $true; tool = 'ssh_read'; local = $false; text = $ev.text; notes = @($ev.notes); files = $ev.files }
             }
-            return [pscustomobject]@{ ok = $false; tool = 'ssh_read'; local = $true; text = "ssh_read miss: $path"; notes = @($ev.notes) }
+            return [pscustomobject]@{ ok = $false; tool = 'ssh_read'; local = $false; text = "ssh_read miss: $path"; notes = @($ev.notes) }
         }
-        { $_ -in @('ssh_run', 'run_remote') } {
+        { $_ -in @('ssh_run', 'run_remote', 'local_run') } {
             $cmd = if ($Arg) { $Arg.Trim() } else { '' }
             if (-not $cmd) {
-                return [pscustomobject]@{ ok = $false; tool = 'ssh_run'; local = $true; text = 'ssh_run needs allowlisted command'; notes = @('no-cmd') }
+                return [pscustomobject]@{ ok = $false; tool = 'ssh_run'; local = $true; text = 'run needs allowlisted command'; notes = @('no-cmd') }
+            }
+            $__lt = Test-PromptParleApplyTargetIsLocal
+            if ($__lt.local) {
+                try {
+                    $rr = Invoke-PromptParleLocalRunCommand -Command $cmd -Root ([string]$__lt.root)
+                    $snip = [string]$rr.text; if ($snip.Length -gt 5000) { $snip = $snip.Substring(0, 5000) + "`n…[run budget]" }
+                    return [pscustomobject]@{
+                        ok = [bool]$rr.ok; tool = 'local_run'; local = $true
+                        text = ("CMD {0}`nEXIT {1}`n{2}" -f $rr.command, $rr.exit_code, $snip)
+                        notes = @('local_run'); exit_code = $rr.exit_code
+                    }
+                } catch {
+                    return [pscustomobject]@{ ok = $false; tool = 'local_run'; local = $true; text = "$_"; notes = @('local_run-deny') }
+                }
             }
             try {
                 $rr = Invoke-PromptParleSshRunCommand -Command $cmd
                 $snip = [string]$rr.text
                 if ($snip.Length -gt 5000) { $snip = $snip.Substring(0, 5000) + "`n…[run budget]" }
                 return [pscustomobject]@{
-                    ok = [bool]$rr.ok; tool = 'ssh_run'; local = $true
+                    ok = [bool]$rr.ok; tool = 'ssh_run'; local = $false
                     text = ("CMD {0}`nEXIT {1}`n{2}" -f $rr.command, $rr.exit_code, $snip)
                     notes = @('ssh_run'); exit_code = $rr.exit_code
                 }
             } catch {
-                return [pscustomobject]@{ ok = $false; tool = 'ssh_run'; local = $true; text = "$_"; notes = @('ssh_run-deny') }
+                return [pscustomobject]@{ ok = $false; tool = 'ssh_run'; local = $false; text = "$_"; notes = @('ssh_run-deny') }
             }
         }
         { $_ -in @('web_page', 'page', 'fetch_url') } {
@@ -5247,7 +5287,7 @@ function Invoke-PromptParleHandsRequest {
         'open_url' { $id = 'web_page' }
         'find' { $id = 'workspace_find' }
         'glob' { $id = 'workspace_find' }
-        'read' { $id = 'ssh_read' }
+        'read' { $id = 'ssh_read' }   # kind-neutral: the case picks local vs ssh
         'cat' { $id = 'ssh_read' }
         'run' { $id = 'ssh_run' }
         'slice' { $id = 'relevant_slice' }
@@ -5262,9 +5302,14 @@ function Invoke-PromptParleHandsRequest {
         }
         $ok = $true
         try { $ok = [bool](Get-PromptParleProp $r 'ok' $true) } catch { }
+        # Honest tool label: report what the dispatcher ACTUALLY ran (e.g. local_read
+        # when the project is local), not the pre-dispatch alias. Fixes "hands: ssh_list"
+        # showing on a local folder.
+        $actualTool = [string](Get-PromptParleProp $r 'tool' $id)
+        if (-not $actualTool) { $actualTool = $id }
         return [pscustomobject]@{
             ok = $ok
-            tool = $id
+            tool = $actualTool
             arg = $Arg
             text = $text
             notes = @(Get-PromptParleProp $r 'notes' @())
@@ -6114,11 +6159,15 @@ function Invoke-PromptParleLegacyTextHandsTurn {
         $lastResp = $resp
 
         if (-not (Test-PromptParleResponseNeedsHands -Text $resp)) {
+            Write-Host ("  agent: round {0} done — model produced a final answer (no hands requested)" -f $round) -ForegroundColor DarkGray
             break
         }
 
         $reqs = @(Parse-PromptParleHandsBlocks -Text $resp)
-        if ($reqs.Count -eq 0) { break }
+        if ($reqs.Count -eq 0) {
+            Write-Host ("  agent: round {0} ended — model asked for hands but no parseable tool block; answering with what we have" -f $round) -ForegroundColor DarkYellow
+            break
+        }
 
         $batch = New-Object System.Collections.Generic.List[object]
         foreach ($req in $reqs) {
@@ -6132,6 +6181,7 @@ function Invoke-PromptParleLegacyTextHandsTurn {
             Write-Host ("  hands: {0} ({1}) {2}c" -f $hr.tool, $(if ($hr.ok) { 'ok' } else { 'FAIL' }), $hr.text.Length) -ForegroundColor Cyan
         }
         if ($batch.Count -eq 0) {
+            Write-Host ("  agent: round {0} ran no new tools — model re-requested {1} tool(s) already run this turn (deduped); forcing final answer" -f $round, $reqs.Count) -ForegroundColor DarkYellow
             $roundPrompt = $Prompt + "`n`n[CLIENT] Hands already provided earlier this turn. Give the final answer now — no more hands requests."
             $packEmpty = Format-PromptParleHandsPack -Results @($allHands.ToArray()) -MaxChars 9000
             $roundContext = if ($evidenceSpine) {
@@ -11872,6 +11922,209 @@ exit 0
     }
 }
 
+function Test-PromptParleApplyTargetIsLocal {
+    <#
+    .SYNOPSIS
+      Is the active project a LOCAL "This PC" folder (vs an SSH remote)?
+      This is the seam the apply/hands paths were missing: they were SSH-only,
+      so a local project's writes went over SSH → /file → Permission denied.
+      Returns @{ local=$bool; root=<workspace path or ''>; reason=<why> }.
+    .DESCRIPTION
+      Local when: a workspace path is attached AND exists AND either there is no
+      active SSH target, or the active connection kind is 'local'/'git'. SSH wins
+      only when an ssh_target is set and no local folder is active — matching how
+      the rest of the client infers "has SSH" (ssh_target presence).
+    #>
+    [CmdletBinding()]
+    param()
+    $ws = $null
+    try { $ws = Get-PromptParleWorkspace } catch { $ws = $null }
+    $wsPath = if ($ws) { [string]$ws.path } else { '' }
+    $wsExists = [bool]($ws -and $ws.exists)
+    $sshTarget = if ($ws) { [string]$ws.ssh_target } else { '' }
+    $localConn = $null
+    try { $localConn = Get-PromptParleActiveLocalConnection } catch { $localConn = $null }
+
+    if ($wsPath -and $wsExists) {
+        # A real local folder is attached. It is the local target unless an SSH
+        # connection is BOTH set and the active/intended one (no active local conn).
+        if ($sshTarget -and -not $localConn) {
+            return [pscustomobject]@{ local = $false; root = ''; reason = "ssh_target set ($sshTarget), no active local connection" }
+        }
+        return [pscustomobject]@{ local = $true; root = $wsPath; reason = "local workspace ($wsPath)" }
+    }
+    if ($localConn -and [string]$localConn.path -and (Test-Path -LiteralPath ([string]$localConn.path) -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ local = $true; root = [string]$localConn.path; reason = "active local connection ($($localConn.path))" }
+    }
+    if ($sshTarget) {
+        return [pscustomobject]@{ local = $false; root = ''; reason = "ssh_target only ($sshTarget)" }
+    }
+    return [pscustomobject]@{ local = $false; root = ''; reason = 'no local workspace and no ssh_target' }
+}
+
+function Set-PromptParleLocalFileContent {
+    <#
+    .SYNOPSIS
+      Local-filesystem sibling of Set-PromptParleSshFileContent — writes under the
+      attached LOCAL workspace root only. Same safety guards (read-before-write,
+      backup, destructive-shrink refuse, stub refuse, size bounds, secrets denylist),
+      but NEW_FILE is allowed (a fresh CHANGELOG.md in a new dir is legitimate).
+      This is the branch the apply path was missing for local projects.
+    .DESCRIPTION
+      Path is resolved traversal-safe under the workspace root via
+      Resolve-PromptParleWorkspacePath (which confines to the root and handles
+      not-yet-existing files). No SSH, no shell — [System.IO.File] directly.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RelativePath,
+        [Parameter(Mandatory)][string]$Content,
+        [string]$Root,
+        [switch]$SkipReadBefore
+    )
+    if (-not $Root) {
+        $t = Test-PromptParleApplyTargetIsLocal
+        if (-not $t.local) { throw "No local workspace to apply into ($($t.reason))." }
+        $Root = [string]$t.root
+    }
+    $rel = ([string]$RelativePath).Trim().Trim('"').Trim("'")
+    if (-not $rel) { throw 'Empty local path' }
+
+    # Resolve + confine to workspace root (throws on traversal/escape). Works for
+    # files that do not yet exist (GetFullPath) → NEW_FILE supported.
+    $full = Resolve-PromptParleWorkspacePath -RelativePath $rel -Root $Root
+
+    # Secrets / system denylist (same spirit as the SSH writer)
+    if ($full -match '(?i)[\\/](?:\.env|id_rsa|id_ed25519|shadow|passwd)$' -or $full -match '(?i)[\\/]\.ssh[\\/]') {
+        throw "Refuse write to sensitive path: $full"
+    }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+    if ($bytes.Length -gt 1500000) { throw "File too large to apply ($($bytes.Length) bytes): $full" }
+    if ($bytes.Length -lt 8) { throw "Refuse empty/tiny apply for: $full" }
+
+    $bodyTrim = $Content.Trim()
+    if ($bodyTrim -match '(?i)\.\.\.\s*rest of|\.\.\.\s*existing|\.\.\.\s*other (fields|models|code)|//\s*\.\.\.|/\*\s*\.\.\.|TODO:\s*implement|placeholder') {
+        throw "Refuse stub apply (placeholder / ellipsis body): $full — emit the FULL file."
+    }
+    if ($full -match '(?i)schema\.prisma$' -and $bodyTrim -notmatch 'generator\s+client' -and $bodyTrim -notmatch 'datasource\s+') {
+        throw "Refuse incomplete prisma schema (missing generator/datasource): $full"
+    }
+
+    # Read-before-write: snapshot existing file; refuse destructive shrink; idempotent skip.
+    $priorBytes = 0
+    $priorExists = $false
+    if (-not $SkipReadBefore -and (Test-Path -LiteralPath $full -PathType Leaf)) {
+        $priorExists = $true
+        try {
+            $priorRaw = [System.IO.File]::ReadAllBytes($full)
+            $priorBytes = $priorRaw.Length
+            if ($priorBytes -gt 400 -and $bytes.Length -lt [int]($priorBytes * 0.35)) {
+                throw "Refuse destructive shrink of $full (old=$priorBytes new=$($bytes.Length)). Emit FULL file contents."
+            }
+            $priorText = [System.Text.Encoding]::UTF8.GetString($priorRaw)
+            if ($priorText -eq $Content) {
+                return [pscustomobject]@{
+                    ok = $true; path = $full; bytes = $bytes.Length; backup = $null
+                    prior = $priorBytes; exists = $true; skipped = $true; local = $true
+                    text = 'UNCHANGED (read-before-write)'
+                }
+            }
+        } catch {
+            if ("$_" -match 'Refuse destructive') { throw }
+            # Non-fatal read failure — size guard already applied
+        }
+    }
+
+    # Ensure parent dir exists (NEW_FILE in a new subdir is legitimate).
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    # Backup existing before overwrite (mirror the SSH writer's *.pp-bak-<utc>).
+    $bakPath = $null
+    if ($priorExists) {
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+        $bakPath = "$full.pp-bak-$stamp"
+        try { Copy-Item -LiteralPath $full -Destination $bakPath -Force } catch { $bakPath = $null }
+    }
+
+    [System.IO.File]::WriteAllBytes($full, $bytes)
+    $wroteLen = 0
+    try { $wroteLen = ([System.IO.FileInfo]::new($full)).Length } catch { $wroteLen = $bytes.Length }
+
+    return [pscustomobject]@{
+        ok      = $true
+        path    = $full
+        bytes   = $bytes.Length
+        backup  = $bakPath
+        prior   = $priorBytes
+        exists  = $priorExists
+        skipped = $false
+        local   = $true
+        text    = $(if ($priorExists) { "WROTE $full $wroteLen (backup $bakPath)" } else { "NEW_FILE $full $wroteLen" })
+    }
+}
+
+function Invoke-PromptParleLocalRunCommand {
+    <#
+    .SYNOPSIS
+      Local sibling of Invoke-PromptParleSshRunCommand — run one allowlisted command
+      in the LOCAL workspace root (no SSH). Same allowlist gate.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string]$Root,
+        [int]$TimeoutSec = 180
+    )
+    $check = Test-PromptParleRunCommandAllowed -Command $Command
+    if (-not $check.ok) {
+        throw "Refuse run: $($check.reason) — cmd: $Command"
+    }
+    if (-not $Root) {
+        $t = Test-PromptParleApplyTargetIsLocal
+        if (-not $t.local) { throw "No local workspace to run in ($($t.reason))." }
+        $Root = [string]$t.root
+    }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "Local workspace root not found: $Root"
+    }
+    $cmd = [string]$check.command
+    $out = ''
+    $exitCode = 1
+    $prevCwd = (Get-Location).Path
+    try {
+        Set-Location -LiteralPath $Root
+        # Cross-platform: bash where available (Git Bash / WSL / *nix), else cmd/pwsh.
+        if (Test-PromptParleCommandAvailable -Name 'bash') {
+            $out = (& bash -lc $cmd 2>&1 | Out-String)
+        } elseif ($IsWindows -or $env:OS -match 'Windows') {
+            $out = (& cmd.exe /c $cmd 2>&1 | Out-String)
+        } else {
+            $out = (& /bin/sh -c $cmd 2>&1 | Out-String)
+        }
+        $exitCode = [int]$LASTEXITCODE
+        if ($null -eq $exitCode) { $exitCode = 0 }
+    } catch {
+        $out = "$_"
+        $exitCode = 1
+    } finally {
+        try { Set-Location -LiteralPath $prevCwd } catch { }
+    }
+    $clip = [string]$out
+    if ($clip.Length -gt 8000) { $clip = '…(truncated)…' + $clip.Substring($clip.Length - 7800) }
+    return [pscustomobject]@{
+        ok        = ($exitCode -eq 0)
+        command   = $cmd
+        cwd       = $Root
+        exit_code = $exitCode
+        text      = $clip
+        local     = $true
+    }
+}
+
 function Set-PromptParleSshFileContent {
     <#
     .SYNOPSIS
@@ -12162,6 +12415,15 @@ function Invoke-PromptParleApplyResponseBlocks {
         $notes.Add("homework→run: $c")
     }
 
+    # Channel decision: LOCAL "This PC" folder → local filesystem; else SSH remote.
+    # This is the fix for the local-apply blocker — apply was SSH-only, so a local
+    # project's writes went to / and failed with Permission denied.
+    $tgt = Test-PromptParleApplyTargetIsLocal
+    $applyLocal = [bool]$tgt.local
+    $applyChannel = if ($applyLocal) { 'local' } else { 'ssh' }
+    Write-Host ("  apply: channel={0} ({1})" -f $applyChannel, $tgt.reason) -ForegroundColor DarkCyan
+    $notes.Add("apply-channel: $applyChannel ($($tgt.reason))")
+
     $ordered = @($steps | Sort-Object index)
     foreach ($step in $ordered) {
         if ($step.kind -eq 'apply') {
@@ -12169,7 +12431,11 @@ function Invoke-PromptParleApplyResponseBlocks {
             $body = [string]$step.body
             if ($body -notmatch '\r?\n$') { $body = $body + "`n" }
             try {
-                $w = Set-PromptParleSshFileContent -RemotePath $rel -Content $body
+                $w = if ($applyLocal) {
+                    Set-PromptParleLocalFileContent -RelativePath $rel -Content $body -Root ([string]$tgt.root)
+                } else {
+                    Set-PromptParleSshFileContent -RemotePath $rel -Content $body
+                }
                 if ($w.skipped) {
                     $skipped.Add([string]$w.path)
                 } else {
@@ -12183,7 +12449,11 @@ function Invoke-PromptParleApplyResponseBlocks {
         elseif ($step.kind -eq 'run') {
             $cmd = [string]$step.command
             try {
-                $rr = Invoke-PromptParleSshRunCommand -Command $cmd
+                $rr = if ($applyLocal) {
+                    Invoke-PromptParleLocalRunCommand -Command $cmd -Root ([string]$tgt.root)
+                } else {
+                    Invoke-PromptParleSshRunCommand -Command $cmd
+                }
                 $runs.Add($rr)
                 if (-not $rr.ok) {
                     $errors.Add(("run ``$cmd`` exit $($rr.exit_code)"))
@@ -12209,7 +12479,11 @@ function Invoke-PromptParleApplyResponseBlocks {
     if ($touchedSchema -and -not $ranPrisma) {
         foreach ($autoCmd in @('npx prisma generate', 'npx prisma migrate deploy')) {
             try {
-                $rr = Invoke-PromptParleSshRunCommand -Command $autoCmd
+                $rr = if ($applyLocal) {
+                    Invoke-PromptParleLocalRunCommand -Command $autoCmd -Root ([string]$tgt.root)
+                } else {
+                    Invoke-PromptParleSshRunCommand -Command $autoCmd
+                }
                 $runs.Add($rr)
                 $notes.Add("auto-follow: $autoCmd")
                 if (-not $rr.ok) { $errors.Add(("auto ``$autoCmd`` exit $($rr.exit_code)")) }
@@ -12232,7 +12506,7 @@ function Invoke-PromptParleApplyResponseBlocks {
 
     $headerLines = New-Object System.Collections.Generic.List[string]
     $headerLines.Add('## What changed')
-    $headerLines.Add('_Implement pipeline 0.16.1 · capability=obligation · read→apply→run→report (source_root only)._')
+    $headerLines.Add(('_Implement pipeline · capability=obligation · read→apply→run→report · channel={0} ({1})._' -f $applyChannel, $tgt.reason))
     $headerLines.Add('')
 
     if ($failClosed) {
@@ -12312,6 +12586,8 @@ function Invoke-PromptParleApplyResponseBlocks {
         run_count    = $runs.Count
         fail_closed  = $failClosed
         theater      = $theater
+        channel      = $applyChannel
+        channel_reason = [string]$tgt.reason
     }
 }
 
@@ -16549,10 +16825,12 @@ function Invoke-PromptParleChatTurnCore {
                 $applyInfo = Invoke-PromptParleApplyResponseBlocks -ResponseText $respText -TurnKind $turnForRt
                 if ($applyInfo -and $applyInfo.text) { $respText = [string]$applyInfo.text }
                 if ($applyInfo -and $applyInfo.count -gt 0) {
-                    Write-Host ("  chat: applied {0} file(s) via SSH" -f $applyInfo.count) -ForegroundColor Green
+                    $applyChanLabel = if ([string]$applyInfo.channel -eq 'local') { 'this PC (local)' } else { 'SSH remote' }
+                    Write-Host ("  chat: applied {0} file(s) to {1}" -f $applyInfo.count, $applyChanLabel) -ForegroundColor Green
                     if ($metaOut) {
                         $metaOut.applied_files = @($applyInfo.applied)
                         $metaOut.applied_count = [int]$applyInfo.count
+                        $metaOut.apply_channel = [string]$applyInfo.channel
                     }
                 }
                 if ($applyInfo -and $applyInfo.run_count -gt 0) {
