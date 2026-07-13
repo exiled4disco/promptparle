@@ -1911,7 +1911,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         docs_kept_tokens: Number(metaGet(raw, 'docs_kept_tokens') ?? metaGet(raw, 'docsKeptTokens') ?? 0),
         // Real provider token counts (model's own usage). OUTPUT is the costly side (5-8x input).
         provider_input_tokens: Number(metaGet(raw, 'provider_input_tokens') ?? metaGet(raw, 'providerInputTokens') ?? 0),
-        provider_output_tokens: Number(metaGet(raw, 'provider_output_tokens') ?? metaGet(raw, 'providerOutputTokens') ?? 0)
+        provider_output_tokens: Number(metaGet(raw, 'provider_output_tokens') ?? metaGet(raw, 'providerOutputTokens') ?? 0),
+        route_cell: metaGet(raw, 'route_cell') || null
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -2272,6 +2273,136 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       (into.forceTopRules || []).concat(from.forceTopRules || []).forEach(function (id) { union[id] = true; });
       into.forceTopRules = Object.keys(union);   // escalators migrate, never lost
       return into;
+    }
+
+    /* =============================================================================
+     * OUTCOME-MEASUREMENT LAYER — shadow validates the DECISION; this measures the
+     * OUTCOME (was the routed answer actually good enough?), the thing shadow is blind
+     * to. Per-cell = persona × category × tier → {miss rate by signal, escalations,
+     * escalation-success}. Miss signals differ on precision × timing and get different
+     * WEIGHTS. Auto-escalate is the recovery net AND the signal generator. Privacy:
+     * similarity is computed client-side; only booleans are stored — never texts.
+     * Full spec: memory promptparle-output-token-problem.
+     * ============================================================================= */
+    var PP_CELLS_KEY = 'pp_route_cells_v1';
+    var PP_REFUSALS_KEY = 'pp_refusals_v1';
+    var SIGNAL_WEIGHT = { manual: 1.0, thumbs_down: 1.0, regenerate: 0.7, retry: 0.4, hedge_empty: 0.8 };
+
+    function cellKey(persona, category, tier) { return (persona || 'general') + '|' + (category || 'INFO') + '|' + (tier == null ? 0 : tier); }
+    function loadCells() { var c = lsGet(PP_CELLS_KEY, null); return (c && typeof c === 'object') ? c : {}; }
+    function saveCells(c) { lsSet(PP_CELLS_KEY, c); }
+
+    /** Correction (real miss) vs Iteration (spec change on a GOOD answer). */
+    function isCorrectionNotIteration(text) {
+      var t = String(text || '').toLowerCase().trim();
+      // Iteration = refine a fine answer → NOT a miss.
+      if (/^(actually,?\s*)?(make it|now|also|and|can you|could you)\b.*\b(short|long|add|remove|change|more|less|instead|expand|concise|detail|another|too)\b/.test(t)) return false;
+      if (/\b(now (add|do|make|change|include)|also (add|include|do)|make it (short|long|conc|detail))/.test(t)) return false;
+      // Correction = the answer was wrong. Handle both "that's" and "that is".
+      return /\b(that.?s wrong|that is wrong|that.?s incorrect|that is incorrect|not right|not what i (asked|meant|wanted)|wrong answer|you.?re wrong|you are wrong|didn.?t (answer|work)|that.?s not|incorrect|nonsense|makes no sense|try again)\b/.test(t);
+    }
+    /** Empty/garbled/non-attempt → auto-escalate. NOT calibrated hedging (that's correct behavior). */
+    function isNonAttempt(text) {
+      var t = String(text || '').trim();
+      if (!t || t === '(empty response)') return true;
+      if (t.length < 12) return true;                                  // suspiciously short for any real ask
+      if (/^(i (can.?t|cannot|am unable to)\s+(help|answer|do that))\b/i.test(t) && t.length < 120) return true;
+      return false;
+    }
+    /** Refusal — logged as its OWN category, NEVER auto-escalated (no self-built jailbreak loop). */
+    function isRefusal(text) {
+      var t = String(text || '').toLowerCase();
+      return /\b(i (can.?t|cannot|won.?t|will not|am not able to|am unable to) (help|assist|provide|comply|do that|create|generate|write)|against (my|our) (policy|guidelines)|not able to help with (that|this)|i must decline|i.?m not going to)\b/.test(t);
+    }
+    /** Calibrated hedge (uncertain-but-honest) — do NOT escalate/penalize. */
+    function isCalibratedHedge(text) {
+      var t = String(text || '').toLowerCase();
+      // Hedge language + a substantive answer (not a one-line dodge). 60 chars is enough to
+      // distinguish "it depends" (non-attempt) from a real version-dependent explanation.
+      return /\b(it depends|depends on|without (more|knowing)|hard to say|may vary|could be|might be|generally|in most cases|assuming)\b/.test(t) && String(text || '').trim().length > 60;
+    }
+
+    // Record a quality signal for the cell of the turn that produced `answerId`. Dedupes
+    // per answer: one bad response fires at most ONE miss, at the STRONGEST signal seen.
+    function recordCellSignal(answerId, cell, signalKey) {
+      if (!cell) return;
+      try {
+        var cells = loadCells();
+        if (!cells[cell]) cells[cell] = { n: 0, miss: 0, missBySignal: {}, esc: 0, escStuck: 0, seenIds: {} };
+        var c = cells[cell];
+        var w = SIGNAL_WEIGHT[signalKey] || 0.5;
+        var prior = c.seenIds[answerId];             // {weight,signal} if this answer already logged a miss
+        if (prior) {
+          if (w > prior.weight) {                    // stronger signal supersedes — adjust, don't double-count
+            c.miss += (w - prior.weight);
+            c.missBySignal[prior.signal] = Math.max(0, (c.missBySignal[prior.signal] || 0) - 1);
+            c.missBySignal[signalKey] = (c.missBySignal[signalKey] || 0) + 1;
+            c.seenIds[answerId] = { weight: w, signal: signalKey };
+          }
+          // weaker/equal signal on an already-counted answer → ignore (dedupe)
+        } else {
+          c.n_missTurns = (c.n_missTurns || 0);
+          c.miss += w;
+          c.missBySignal[signalKey] = (c.missBySignal[signalKey] || 0) + 1;
+          c.seenIds[answerId] = { weight: w, signal: signalKey };
+        }
+        // bound seenIds
+        var ids = Object.keys(c.seenIds); if (ids.length > 400) { delete c.seenIds[ids[0]]; }
+        saveCells(cells);
+      } catch (e) { /* ignore */ }
+    }
+    // Count a turn into its cell's denominator (every routed answer, miss or not).
+    function recordCellTurn(cell) {
+      if (!cell) return;
+      try { var cells = loadCells(); if (!cells[cell]) cells[cell] = { n: 0, miss: 0, missBySignal: {}, esc: 0, escStuck: 0, pos: 0, seenIds: {} }; cells[cell].n += 1; saveCells(cells); } catch (e) { /* ignore */ }
+    }
+    // Explicit 👍 — a positive confirmation this tier was adequate (NOT a miss).
+    function recordCellPositive(cell) {
+      if (!cell) return;
+      try { var cells = loadCells(); if (!cells[cell]) cells[cell] = { n: 0, miss: 0, missBySignal: {}, esc: 0, escStuck: 0, pos: 0, seenIds: {} }; cells[cell].pos = (cells[cell].pos || 0) + 1; saveCells(cells); } catch (e) { /* ignore */ }
+    }
+    // Record an escalation and (later) whether the stronger answer STUCK (no further miss).
+    function recordEscalation(cell, stuck) {
+      if (!cell) return;
+      try { var cells = loadCells(); if (!cells[cell]) cells[cell] = { n: 0, miss: 0, missBySignal: {}, esc: 0, escStuck: 0, seenIds: {} }; cells[cell].esc += 1; if (stuck) cells[cell].escStuck += 1; saveCells(cells); } catch (e) { /* ignore */ }
+    }
+    function recordRefusal(cell) {
+      try { var r = lsGet(PP_REFUSALS_KEY, []); if (!Array.isArray(r)) r = []; r.push({ at: Date.now(), cell: cell }); if (r.length > 200) r = r.slice(-200); lsSet(PP_REFUSALS_KEY, r); } catch (e) { /* ignore */ }
+    }
+    /** Per-cell tuning readout: miss rate + escalation-success → raise/lower guidance.
+     *  Outcome, not decision — this is what shadow can't see. */
+    function cellsReview() {
+      var cells = loadCells(); var rows = [];
+      Object.keys(cells).forEach(function (k) {
+        var c = cells[k]; if (!c || !c.n) return;
+        var missRate = c.miss / c.n;                       // weighted misses / turns
+        var escRate = c.esc / c.n;
+        var escStuckRate = c.esc > 0 ? (c.escStuck / c.esc) : null;
+        // Guidance: escalations that STICK → default tier too low (raise). Escalations that
+        // also fail → category is just hard, raising only makes failure costlier (hold).
+        var guidance = 'ok';
+        if (missRate >= 0.25) {
+          if (escStuckRate != null && escStuckRate >= 0.6) guidance = 'raise';        // stronger fixes it
+          else if (escStuckRate != null && escStuckRate < 0.4) guidance = 'hard';     // stronger doesn't help
+          else guidance = 'watch';
+        }
+        rows.push({ cell: k, n: c.n, missRate: missRate, pos: c.pos || 0, esc: c.esc, escStuckRate: escStuckRate, guidance: guidance });
+      });
+      rows.sort(function (a, b) { return b.missRate - a.missRate; });
+      return rows;
+    }
+
+    /** Client-side prompt similarity (Jaccard on word sets) → boolean only. Prompt text
+     *  NEVER leaves the client; used to detect a retry/rephrase of the prior ask. */
+    function promptSimilar(a, b) {
+      function toks(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(function (w) { return w.length > 2; }); }
+      var A = toks(a), B = toks(b);
+      if (A.length < 2 || B.length < 2) return false;
+      var setA = {}; A.forEach(function (w) { setA[w] = 1; });
+      var inter = 0, seen = {}; B.forEach(function (w) { if (setA[w] && !seen[w]) { inter++; seen[w] = 1; } });
+      var uni = {}; A.concat(B).forEach(function (w) { uni[w] = 1; });
+      var jac = inter / Object.keys(uni).length;
+      return jac >= 0.55;   // high overlap = likely a rephrase of the same ask
     }
 
     function formatUsdEstimate(usd) {
@@ -3250,6 +3381,31 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         });
         div.appendChild(pin);
       }
+      // Routing feedback (👍👎 + escalate) — GROUND-TRUTH quality signal for the cell that
+      // produced this answer. Only on routed bot answers (meta carries route_cell). Records
+      // the signal locally, deduped by this message id. Escalate is a clean logged miss +
+      // (once the verified redo build lands) will re-run stronger; for now it logs the miss.
+      try {
+        if (!isError && (roleL === 'bot' || roleL === 'assistant') && nmeta && nmeta.route_cell) {
+          var cellForMsg = nmeta.route_cell;
+          var fb = document.createElement('span'); fb.className = 'route-fb'; fb.style.cssText = 'display:inline-flex;gap:.3rem;margin-left:.4rem';
+          function mkFb(label, title, signal, isMiss) {
+            var b = document.createElement('button'); b.type = 'button'; b.className = 'dl-link'; b.textContent = label; b.title = title;
+            b.addEventListener('click', function (e) {
+              e.preventDefault(); e.stopPropagation();
+              if (isMiss) { recordCellSignal('msg_' + msgId, cellForMsg, signal); }
+              else { recordCellPositive(cellForMsg); }   // 👍 is a positive, NOT a miss
+              b.classList.add('on'); b.disabled = true;
+              try { logOps('Routing feedback (' + signal + ') on ' + cellForMsg, { level: 'ok' }); } catch (e2) { /* ignore */ }
+            });
+            return b;
+          }
+          fb.appendChild(mkFb('👍', 'Good answer for this ask (this tier is working here)', 'thumbs_up', false));
+          fb.appendChild(mkFb('👎', 'Wrong / not good enough (routing will learn this tier misses here)', 'thumbs_down', true));
+          fb.appendChild(mkFb('↑ stronger', 'Redo with a stronger model (logged as a quality miss for this cell)', 'manual', true));
+          div.appendChild(fb);
+        }
+      } catch (e) { /* ignore */ }
       chat.appendChild(div); scrollChatToBottom(); if (!skipHistorySave) {
         const entry = {
           role: role,
@@ -5415,7 +5571,24 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         (mode === 'shadow' ? 'Nothing was changed — enable <b>Live</b> when these calls look right. ' : '') +
         '<button type="button" id="ppShadowClear" class="dl-link">Clear log</button>' +
         renderMergeReview() +
+        renderCellsReview() +
         '</div>';
+    }
+
+    /** Per-cell OUTCOME review — miss rate + escalation-success → raise/lower/hard guidance. */
+    function renderCellsReview() {
+      var rows = cellsReview();
+      if (!rows.length) return '<div style="margin-top:.5rem;color:var(--dim)">Quality-by-cell: no routed turns with feedback yet. As answers get 👍/👎/↑ or retries, each persona×ask×tier cell shows its miss rate and whether escalating actually helped.</div>';
+      var labelG = { raise: '↑ raise default tier (stronger model fixes it)', hard: '⚠ hard category (stronger doesn\'t help — holding tier)', watch: '· watch', ok: '✓ ok' };
+      var lines = ['<div style="margin-top:.5rem"><b>Quality by cell</b> (outcome — what shadow can\'t see)'];
+      rows.slice(0, 12).forEach(function (r) {
+        var esc = (r.escStuckRate == null) ? '' : (' · esc-stick ' + Math.round(r.escStuckRate * 100) + '%');
+        lines.push('<div style="color:var(--muted)">' + r.cell.replace(/</g, '') +
+          ': ' + r.n + ' turns · miss ' + Math.round(r.missRate * 100) + '% · 👍' + r.pos + esc +
+          ' <b>' + (labelG[r.guidance] || r.guidance) + '</b></div>');
+      });
+      lines.push('</div>');
+      return lines.join('');
     }
 
     /** Standing merge review — personas earn their slot by DIVERGING on real traffic. */
@@ -6271,6 +6444,17 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         var __route = null;
         try {
           if (getRoutingMode() !== 'off') {
+            // RETRY DETECTION (probable-miss, reduced weight): if this prompt closely
+            // resembles the immediately-prior one, the last answer likely didn't satisfy —
+            // log a retry miss against the PRIOR answer's cell. Similarity is computed
+            // CLIENT-SIDE; only the boolean signal is recorded, prompt text never leaves.
+            try {
+              var priorP = window.__ppPrevPromptText || '';
+              if (priorP && window.__ppLastAnswerCell && promptSimilar(priorP, prompt)) {
+                recordCellSignal('retry_' + Date.now(), window.__ppLastAnswerCell, 'retry');
+              }
+            } catch (e3) { /* ignore */ }
+            window.__ppPrevPromptText = prompt || '';
             window.__ppLastPrompt = prompt || '';
             var __cls = classifyAsk(prompt, context, images.length);
             __route = resolveRoute(__cls, providerEl.value);
@@ -6375,6 +6559,25 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
               fired_rule: __route.firedRule || null,
               reasons: __route.reasons
             });
+          }
+        } catch (e) { /* ignore */ }
+        // OUTCOME MEASUREMENT: stamp this answer's routing cell + count the turn, and run
+        // the pre-emptive signals. Refusal → own category, NEVER auto-escalated. Non-attempt
+        // → flagged (the live auto-escalate redo that acts on this is a separate verified
+        // build; here we only LOG). Calibrated hedge → left alone.
+        var __cellForAnswer = null;
+        try {
+          if (__route && res.ok) {
+            var nmc = normalizeMeta(meta);
+            __cellForAnswer = cellKey(getPersona(), (__route._cls && __route._cls.category) || 'INFO', __route.tier);
+            recordCellTurn(__cellForAnswer);
+            // Stamp the cell onto the meta so per-message feedback (👍👎/escalate/retry)
+            // can attribute to the right cell even after reload.
+            try { if (meta && typeof meta === 'object') { meta.route_cell = __cellForAnswer; } } catch (e2) { /* ignore */ }
+            var respForSig = String((data.response || data.Response) || '');
+            if (isRefusal(respForSig)) { recordRefusal(__cellForAnswer); }
+            else if (isNonAttempt(respForSig)) { recordCellSignal('turn_' + Date.now(), __cellForAnswer, 'hedge_empty'); window.__ppLastNonAttempt = true; }
+            window.__ppLastAnswerCell = __cellForAnswer;
           }
         } catch (e) { /* ignore */ }
         if (!res.ok) {

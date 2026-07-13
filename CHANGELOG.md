@@ -9,6 +9,32 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.29] - 2026-07-13
+
+### Added
+- **Routing outcome-measurement (the tuning layer).** Shadow mode validates the routing
+  DECISION; this measures the OUTCOME — was the routed answer actually good enough? —
+  which shadow structurally can't see. Per-cell (persona × ask-category × tier) quality
+  log fed by weighted signals: 👍/👎 and a "↑ stronger" button per answer (ground truth),
+  retry/rephrase detection (probable-miss, reduced weight), and non-attempt detection.
+  Distinctions that matter, all verified: **correction ≠ iteration** ("that's wrong" is a
+  miss; "make it shorter" / "now add error handling" is a spec change on a good answer, not
+  a miss); **calibrated hedging is not a failure** (only empty/garbled/non-attempt outputs
+  count); **refusals are never auto-escalated** (logged to their own human-reviewed
+  category — no self-built jailbreak loop) and **deduped per answer** (one bad response =
+  one miss at the strongest signal, not three).
+- **Per-cell tuning readout** in Settings: miss rate + escalation-stick rate → guidance.
+  Escalations that STICK ⇒ the cell's default tier is too low (raise it); escalations that
+  also fail ⇒ the category is just hard (raising only makes failure costlier — hold).
+- Privacy: retry similarity is computed client-side; only the boolean signal is stored —
+  prompt text never leaves the machine.
+
+### Notes
+- The LIVE auto-escalate redo (which fires a second provider call to a stronger model on a
+  non-attempt) is intentionally NOT in this release — it's an API-calling hot-path change
+  that must be built and verified on the running client together, not shipped from repo.
+  Everything here is client-side logging only. Routing remains SHADOW by default.
+
 ## [0.32.28] - 2026-07-13
 
 ### Fixed
