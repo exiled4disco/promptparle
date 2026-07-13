@@ -9,6 +9,34 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.40] - 2026-07-13
+
+### Fixed
+- **A stale "implement" obligation from prior code work hijacked unrelated later turns.**
+  Symptom: after doing code work, asking "find all the cities in Texas and display in chat"
+  triggered the **FAIL-CLOSED implement pipeline** (writing apply-channel notes to
+  `C:\Users\…\Downloads`) *and* kept interrogating instead of answering. Root cause: the
+  sticky open-obligation carried `kind=implement`, which forced `turnForRt=implement` even
+  though the turn's own classification was a plain question — and that bypassed the
+  general-knowledge "answer-first" path entirely (so the 0.32.38 muzzle fix never got to
+  run). Fix: the topic-pivot clear now also clears a sticky **implement** obligation when the
+  current turn is a plain question / data-lookup with no code, mutate, or act language (a
+  genuine "yes do it" or "fix auth.ts" correctly keeps it). Driven: data question clears it →
+  resolves to `general` + answer-first + structured-output contract; real act / code ask keep
+  it. This was the true cause behind the repeated Texas-cities failures.
+
+### Added
+- **CAR — Cost per Accepted Resolution (the BTUP objective) on the dashboard.** New headline:
+  total task cost (input + output, *including* any retry/escalation folded into the same
+  task) ÷ resolutions that landed accepted — the honest cost of a *good* answer, not per-call
+  spend. Always shown next to **acceptance coverage** (share of tasks that reached an accepted
+  resolution) so a system that fails or refuses a lot can never look artificially cheap
+  (§4.5). Acceptance is silence-accepted by default (an answer that isn't a non-attempt or
+  refusal); a 👎 / ↑stronger flips it back down (deduped per answer), which makes CAR *rise* —
+  cheap-but-rejected answers correctly cost more. Escalation cost folds into the one task, so
+  a retry never double-counts a task or an acceptance. Driven green: task/accept counting,
+  escalation fold, silence=accepted, miss-flip + dedupe, coverage.
+
 ## [0.32.39] - 2026-07-13
 
 ### Added

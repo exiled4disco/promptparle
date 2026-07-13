@@ -2017,7 +2017,11 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         provider_input_tokens: Number(metaGet(raw, 'provider_input_tokens') ?? metaGet(raw, 'providerInputTokens') ?? 0),
         provider_output_tokens: Number(metaGet(raw, 'provider_output_tokens') ?? metaGet(raw, 'providerOutputTokens') ?? 0),
         route_cell: metaGet(raw, 'route_cell') || null,
-        elapsed_ms: Number(metaGet(raw, 'elapsed_ms') ?? metaGet(raw, 'elapsedMs') ?? 0)
+        elapsed_ms: Number(metaGet(raw, 'elapsed_ms') ?? metaGet(raw, 'elapsedMs') ?? 0),
+        // CAR (cost per accepted resolution) — stamped at send time, carried through the walk.
+        car_task: Boolean(metaGet(raw, 'car_task') ?? false),
+        car_total_usd: Number(metaGet(raw, 'car_total_usd') ?? metaGet(raw, 'carTotalUsd') ?? 0),
+        car_accepted: (function () { var v = metaGet(raw, 'car_accepted'); return (v === undefined || v === null) ? null : Boolean(v); })()
       }; }
 
     /** Compact token counts: 4647 → 4.6k */
@@ -2875,7 +2879,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // headline totals are the cumulative truth the user watches).
     var RUN_STATS_CUM_KEY = 'pp_run_stats_cum_v1';
     var RUN_STATS_SEEN_KEY = 'pp_run_stats_seen_v1';
-    var CUM_SCHEMA = 5;   // bump when accrual math changes → old (stale-math) store is discarded
+    var CUM_SCHEMA = 6;   // bump when accrual math changes → old (stale-math) store is discarded
+    // CAR (cost per accepted resolution) fields carried in the cum store:
+    //   carCost = Σ total task $ (input + output), incl. escalation/retry cost of the same task
+    //   taskN   = # of top-level tasks (a user turn; an auto-escalation of it does NOT add a task)
+    //   acceptN = # of tasks that reached an accepted resolution (silence = accepted; a miss
+    //             signal flips it back down, deduped per answer)
+    var PP_CAR_ACCEPT_KEY = 'pp_car_accept_v1';   // answerId → 1 (this answer was counted accepted), so a later miss decrements once
 
     // Per-turn history ring buffer — the SAME honest per-turn numbers accrued into cum,
     // kept as a time series so the dashboard can draw usage graphs. No new measurement.
@@ -2896,16 +2906,69 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       // Discard a store written under older accrual math (schema mismatch) so stale
       // numbers from a previous version can't linger in the sidebar forever.
       if (!d || typeof d !== 'object' || d.schema !== CUM_SCHEMA) {
-        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0 };
+        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0, carCost: 0, taskN: 0, acceptN: 0 };
         lsSet(RUN_STATS_SEEN_KEY, {});   // forget seen-ids too, so this session re-accrues cleanly
+        try { localStorage.removeItem(PP_CAR_ACCEPT_KEY); } catch (e) { /* ignore */ }
       }
       return d;
     }
     function loadSeenTurns() { var s = lsGet(RUN_STATS_SEEN_KEY, null); return (s && typeof s === 'object') ? s : {}; }
     function resetCumStats() {
-      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0 });
+      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0, elapsedMs: 0, carCost: 0, taskN: 0, acceptN: 0 });
       lsSet(RUN_STATS_SEEN_KEY, {});
+      try { localStorage.removeItem(PP_CAR_ACCEPT_KEY); } catch (e) { /* ignore */ }
       resetTurnHistory();   // graphs zero out with the totals
+    }
+    // CAR acceptance ledger: which answerIds were counted accepted (so a later miss flips once).
+    function loadCarAccept() { var a = lsGet(PP_CAR_ACCEPT_KEY, null); return (a && typeof a === 'object') ? a : {}; }
+    function saveCarAccept(a) { lsSet(PP_CAR_ACCEPT_KEY, a); }
+    // A turn's total task $ (input priced + output priced), from real provider tokens.
+    function turnTotalUsd(nmeta) {
+      if (!nmeta) return 0;
+      var inTok = Number(nmeta.provider_input_tokens) || 0;
+      var outTok = Number(nmeta.provider_output_tokens) || 0;
+      var price = modelPrice(nmeta.provider, nmeta.model);
+      return (inTok / 1000000) * (price.input || 0) + (outTok / 1000000) * (price.output || 0);
+    }
+    // A landed answer is "accepted" by default (silence=accepted) unless it's a non-attempt
+    // or refusal — those never counted as a resolution.
+    function turnLandedAccepted(respText) {
+      var t = String(respText || '');
+      if (!t.trim()) return false;
+      if (typeof isNonAttempt === 'function' && isNonAttempt(t)) return false;
+      if (typeof isRefusal === 'function' && isRefusal(t)) return false;
+      return true;
+    }
+    // Stamp CAR fields onto a bot answer's meta at send time (when we have the response text
+    // and the real token cost). accrueTurnToCum reads these so the cumulative CAR is exact.
+    //   extraUsd = cost of a failed prior call folded into THIS task (e.g. the non-attempt
+    //   that triggered an escalation), so one task carries its full cost.
+    function stampCarMeta(meta, respText, extraUsd) {
+      if (!meta || typeof meta !== 'object') return;
+      try {
+        var total = turnTotalUsd(normalizeMeta(meta)) + (Number(extraUsd) || 0);
+        meta.car_task = true;                          // this is one top-level task
+        meta.car_total_usd = total;                    // full task $ (input+output, incl. folded retry)
+        meta.car_accepted = turnLandedAccepted(respText);  // silence=accepted unless non-attempt/refusal
+      } catch (e) { /* ignore */ }
+    }
+    // Flip a previously-accepted answer to not-accepted (user said it missed). Deduped per
+    // answerId so repeated thumbs-down / retry on the same answer decrement acceptN once.
+    function carMarkMiss(answerId) {
+      if (!answerId) return;
+      try {
+        var acc = loadCarAccept();
+        if (acc[answerId] === 1) {                 // was counted accepted → take it back, once
+          var cum = loadCumStats();
+          cum.acceptN = Math.max(0, (cum.acceptN || 0) - 1);
+          lsSet(RUN_STATS_CUM_KEY, cum);
+          acc[answerId] = 0;                        // mark flipped so it won't decrement again
+          saveCarAccept(acc);
+        } else if (acc[answerId] === undefined) {
+          acc[answerId] = 0;                        // miss arrived before/without an accept credit
+          saveCarAccept(acc);
+        }
+      } catch (e) { /* ignore */ }
     }
     // Record one completed turn into the cumulative store (idempotent by id).
     // Every turn accrues its canonical before→after (billedBefore/billedAfter from
@@ -2945,6 +3008,20 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           provider: String(nmeta.provider || '').trim(),
           agent: !!isAgent
         });
+        // CAR: one top-level task per stamped turn. Cost = the stamped task total (input+output,
+        // incl. any folded escalation). Accepted = stamped default (silence=accepted); a later
+        // miss signal flips acceptN via carMarkMiss (deduped by answerId). Falls back to the
+        // turn's own in+out $ if car_total_usd wasn't stamped (e.g. an old stored message).
+        if (nmeta.car_task) {
+          var taskUsd = Number(nmeta.car_total_usd) || turnTotalUsd(nmeta);
+          cum.carCost = (cum.carCost || 0) + taskUsd;
+          cum.taskN = (cum.taskN || 0) + 1;
+          var acceptedNow = (nmeta.car_accepted === null || nmeta.car_accepted === undefined) ? true : !!nmeta.car_accepted;
+          if (acceptedNow) {
+            cum.acceptN = (cum.acceptN || 0) + 1;
+            try { var acc = loadCarAccept(); if (acc[id] === undefined) { acc[id] = 1; saveCarAccept(acc); } } catch (e) { /* ignore */ }
+          }
+        }
       }
       // Bound the seen-map so it can't grow forever.
       var keys = Object.keys(seen);
@@ -3431,6 +3508,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         html += '<p class="dash-empty">No turns yet on this PC. Send a chat — real tokens, cost, and routing will appear here live.</p>';
         body.innerHTML = html;
         return;
+      }
+
+      // 1.5) CAR — cost per accepted resolution (the BTUP objective). The honest headline:
+      // total task cost (incl. retries/escalation) ÷ accepted resolutions, ALWAYS shown with
+      // acceptance coverage so a system that fails/refuses a lot can't look artificially cheap.
+      var taskN = Number(t.taskN) || 0;
+      var acceptN = Number(t.acceptN) || 0;
+      var carCost = Number(t.carCost) || 0;
+      if (taskN > 0) {
+        var car = acceptN > 0 ? (carCost / acceptN) : 0;
+        var coverage = Math.round(100 * acceptN / taskN);
+        var covClass = coverage >= 90 ? 'ok' : (coverage >= 70 ? '' : 'hot');
+        html += '<div class="dash-grid">';
+        html += '<div class="dash-card hot" title="Cost per Accepted Resolution: total task cost (input+output, including any retry/escalation of the same task) ÷ resolutions that landed accepted. The BTUP objective — the honest cost of a GOOD answer, not per-call spend.">' +
+          '<div class="lbl">Cost / accepted (CAR)</div><div class="val">' + (acceptN > 0 ? formatUsdEstimate(car) : '—') + '</div>' +
+          '<div class="sub2">' + formatUsdEstimate(carCost) + ' over ' + acceptN + ' accepted</div></div>';
+        html += '<div class="dash-card ' + covClass + '" title="Acceptance coverage: share of tasks that reached an accepted resolution (silence counts as accepted; a thumbs-down / retry flips it). Reported next to CAR so a low-acceptance system cannot look cheap.">' +
+          '<div class="lbl">Acceptance</div><div class="val">' + coverage + '%</div>' +
+          '<div class="sub2">' + acceptN + ' / ' + taskN + ' tasks</div></div>';
+        html += '</div>';
       }
 
       // 2) Headline cards — real provider tokens; OUTPUT flagged as the costly side.
@@ -4113,8 +4210,9 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             var b = document.createElement('button'); b.type = 'button'; b.className = 'dl-link'; b.textContent = label; b.title = title;
             b.addEventListener('click', function (e) {
               e.preventDefault(); e.stopPropagation();
-              if (isMiss) { recordCellSignal('msg_' + msgId, cellForMsg, signal); }
+              if (isMiss) { recordCellSignal('msg_' + msgId, cellForMsg, signal); carMarkMiss(msgId); }
               else { recordCellPositive(cellForMsg); }   // 👍 is a positive, NOT a miss
+              try { scheduleSideStatsRefresh(); } catch (e3) { /* CAR/coverage repaint */ }
               b.classList.add('on'); b.disabled = true;
               try { logOps('Routing feedback (' + signal + ') on ' + cellForMsg, { level: 'ok' }); } catch (e2) { /* ignore */ }
             });
@@ -7408,11 +7506,15 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           } catch (e) { __escalated = null; }
           if (__escalated && __escalated.stuck) {
             // Stronger model recovered it — show THAT answer, note the escalation.
+            // CAR: ONE task, cost = failed first call + successful escalation; accepted = true.
+            var __firstCallUsd = 0; try { __firstCallUsd = turnTotalUsd(normalizeMeta(meta)); } catch (e0) { __firstCallUsd = 0; }
             text = __escalated.response; meta = __escalated.meta || meta; __isEmpty = false;
             try { if (meta && typeof meta === 'object') { meta.route_cell = __cellForAnswer; meta.escalated_to = __escalated.model; } } catch (e2) { /* ignore */ }
+            try { stampCarMeta(meta, text, __firstCallUsd); } catch (e3) { /* ignore */ }
             addMsg('bot', text, meta, false);
             addMsg('sys', 'Escalated to ' + __escalated.model + ' — stronger model answered.', null, false);
           } else {
+          try { stampCarMeta(meta, text, 0); } catch (e3) { /* ignore */ }
           addMsg('bot', text, meta, __isEmpty ? true : false);
           if (__isEmpty) {
             // Empty from the local server most often means it restarted onto a different

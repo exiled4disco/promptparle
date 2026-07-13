@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.39'
+    $ver = '0.32.40'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -7334,6 +7334,19 @@ function Resolve-PromptParleTurnObligation {
             -or $p -match '(?i)\b(tell me|what is|who is|about|review|research|did you|you researched|insider|overview|capabilit)\b'
         )
         if ($pivotAway) {
+            try { Set-PromptParleOpenObligation -Clear } catch { }
+            $open = Get-PromptParleOpenObligation
+        }
+    }
+    # Topic pivot off a sticky IMPLEMENT obligation: a plain question / data-lookup on a NEW
+    # topic (no code/mutate/act language) must clear the stale implement obligation. Without
+    # this, prior code work leaves an 'implement' obligation that forces the apply pipeline on
+    # an unrelated "find all cities in Texas" turn → FAIL-CLOSED writing notes to the workspace.
+    if ($open.kind -eq 'implement') {
+        $codeish = [bool]($p -match '(?i)\b(implement|apply|patch|refactor|fix|add|build|ship|wire|deploy|migrate|rename|bump|the (file|function|code|bug|repo|test)|\.(?:ts|tsx|js|jsx|py|ps1|psm1|go|rs|java|cs|rb|php|sql))\b')
+        $actish  = [bool]($p -match '(?i)\b(do it|do this|do that|go ahead|continue|proceed|ship it|get it done|make (the )?change|land (it|the)|same|yes|yep|ok|okay|sure)\b')
+        $askish  = [bool]($p -match '(?i)^\s*(who|what|when|where|which|why|how|is|are|does|do|can|could|would|list|find|show|give|tell|name|sort|rank|explain|summarize)\b' -or $p -match '\?\s*$')
+        if (-not $codeish -and -not $actish -and $askish) {
             try { Set-PromptParleOpenObligation -Clear } catch { }
             $open = Get-PromptParleOpenObligation
         }
