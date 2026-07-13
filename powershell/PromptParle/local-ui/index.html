@@ -2211,7 +2211,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
      * Returns { escalated, model, response, meta } or null. The 2nd provider call means
      * this MUST be verified on the live client — cannot be driven from the repo.
      */
-    async function autoEscalateRedo(payload, prevModel, cell, respText, alreadyRetried) {
+    async function autoEscalateRedo(payload, prevModel, cell, respText, alreadyRetried, testMode) {
       try {
         if (alreadyRetried) return null;                       // one retry, ever — no loop
         if (getRoutingMode() !== 'live') return null;          // shadow/off: log only, never act
@@ -2230,8 +2230,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         var data = await res.json();
         var newResp = String((data.response || data.Response) || '');
         var stuck = !!newResp && !isNonAttempt(newResp) && !isRefusal(newResp);
-        recordEscalation(cell, stuck);                         // outcome: did stronger stick?
-        return { escalated: true, model: up, response: newResp, meta: (data.metadata || data.Metadata || null), stuck: stuck };
+        if (!testMode) { recordEscalation(cell, stuck); }      // outcome: did stronger stick? (skip synthetic)
+        return { escalated: true, model: up, response: newResp, meta: (data.metadata || data.Metadata || null), stuck: stuck, test: !!testMode };
       } catch (e) { return null; }
     }
 
@@ -6431,6 +6431,28 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           addMsg('sys', 'Usage: /mode terminal · /mode chat', null, true); }
         inputEl.focus(); return; }
 
+      // Dev tools gate (opt-in, per browser — not obscurity). /dev on|off|status.
+      if (/^\/dev(\s|$)/i.test(prompt)) {
+        inputEl.value = ''; addMsg('user', prompt);
+        var dArg = prompt.replace(/^\/dev\s*/i, '').trim().toLowerCase();
+        if (dArg === 'on') { lsSet('pp_dev_tools', 1); addMsg('sys', 'Dev tools ON (this browser). /test-escalate available. /dev off to disable.', null, false); }
+        else if (dArg === 'off') { try { localStorage.removeItem('pp_dev_tools'); } catch (e) {} addMsg('sys', 'Dev tools OFF.', null, false); }
+        else { addMsg('sys', 'Dev tools: ' + (lsGet('pp_dev_tools', 0) ? 'ON' : 'OFF') + '. Use /dev on | /dev off.', null, false); }
+        inputEl.focus(); return; }
+
+      // FAULT INJECTION (dev-gated): /test-escalate forces the NEXT turn's model response to
+      // be an empty non-attempt at the REAL boundary, so the genuine isNonAttempt detector +
+      // autoEscalateRedo fire end-to-end (verifies the wired path, not just unit logic).
+      // Tagged test=true so it's excluded from per-cell quality stats. Requires /dev on +
+      // routing Live. Not a shortcut — it substitutes the response, detection runs for real.
+      if (/^\/test-escalate(\s|$)/i.test(prompt)) {
+        inputEl.value = ''; addMsg('user', prompt);
+        if (!lsGet('pp_dev_tools', 0)) { addMsg('sys', 'Dev tools off. Run /dev on first.', null, true); inputEl.focus(); return; }
+        if (getRoutingMode() !== 'live') { addMsg('sys', 'Set routing to Live (Settings) first — auto-escalate only fires in Live.', null, true); inputEl.focus(); return; }
+        window.__ppInjectNonAttempt = true;
+        addMsg('sys', 'Fault injection armed: the NEXT message\'s model response will be forced empty to test auto-escalate. Send any normal question now.', null, false);
+        inputEl.focus(); return; }
+
       // Local /model [id]; set preferred model for current provider
       if (/^\/model(\s|$)/i.test(prompt)) {
         inputEl.value = ''; addMsg('user', prompt); var mArg = prompt.replace(/^\/model\s*/i, '').trim(); var pid = providerEl ? providerEl.value : ''; if (!mArg) {
@@ -6622,6 +6644,19 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         }); let data = {}; const raw = await res.text(); try { data = raw ? JSON.parse(raw) : {}; } catch (parseErr) {
           throw new Error('Bad JSON from local server: ' + raw.slice(0, 200)); }
 
+        // FAULT INJECTION (dev-gated, one-shot): force this turn's model response empty at
+        // the REAL boundary — the genuine isNonAttempt detector + autoEscalateRedo then run
+        // for real. Marked test=true so it's excluded from per-cell quality stats. The real
+        // provider call already happened; we only overwrite the response we classify on.
+        var __injectedTest = false;
+        try {
+          if (window.__ppInjectNonAttempt && res.ok && !payload.__auto_escalated) {
+            window.__ppInjectNonAttempt = false;   // one-shot
+            data.response = ''; data.Response = ''; __injectedTest = true;
+            addMsg('sys', '[test] Forced empty response — genuine non-attempt detector should now fire.', null, false);
+          }
+        } catch (e) { /* ignore */ }
+
         // Pull metadata from common shapes
         let meta = data.metadata || data.Metadata || null; if (!meta && data.original_tokens != null) meta = data;
         // Inject the carried-context credit into tool_breakdown so it flows through the
@@ -6675,13 +6710,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           if (__route && res.ok) {
             var nmc = normalizeMeta(meta);
             __cellForAnswer = cellKey(getPersona(), (__route._cls && __route._cls.category) || 'INFO', __route.tier);
-            recordCellTurn(__cellForAnswer);
+            // Synthetic (fault-injected) turns must NOT pollute per-cell quality stats.
+            if (!__injectedTest) { recordCellTurn(__cellForAnswer); }
             // Stamp the cell onto the meta so per-message feedback (👍👎/escalate/retry)
             // can attribute to the right cell even after reload.
-            try { if (meta && typeof meta === 'object') { meta.route_cell = __cellForAnswer; } } catch (e2) { /* ignore */ }
+            try { if (meta && typeof meta === 'object') { meta.route_cell = __cellForAnswer; if (__injectedTest) meta.test = true; } } catch (e2) { /* ignore */ }
             var respForSig = String((data.response || data.Response) || '');
-            if (isRefusal(respForSig)) { recordRefusal(__cellForAnswer); }
-            else if (isNonAttempt(respForSig)) { recordCellSignal('turn_' + Date.now(), __cellForAnswer, 'hedge_empty'); window.__ppLastNonAttempt = true; }
+            if (!__injectedTest) {
+              if (isRefusal(respForSig)) { recordRefusal(__cellForAnswer); }
+              else if (isNonAttempt(respForSig)) { recordCellSignal('turn_' + Date.now(), __cellForAnswer, 'hedge_empty'); window.__ppLastNonAttempt = true; }
+            }
             window.__ppLastAnswerCell = __cellForAnswer;
           }
         } catch (e) { /* ignore */ }
@@ -6698,7 +6736,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           try {
             if (!payload.__auto_escalated && __cellForAnswer && isNonAttempt(String(rawResp || '')) && !isRefusal(String(rawResp || ''))) {
               addMsg('sys', 'Answer came back thin — retrying once on a stronger model…', null, false);
-              __escalated = await autoEscalateRedo(payload, (payload && payload.model) || (__route && __route.model), __cellForAnswer, String(rawResp || ''), false);
+              __escalated = await autoEscalateRedo(payload, (payload && payload.model) || (__route && __route.model), __cellForAnswer, String(rawResp || ''), false, __injectedTest);
             }
           } catch (e) { __escalated = null; }
           if (__escalated && __escalated.stuck) {

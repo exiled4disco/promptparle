@@ -9,6 +9,25 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.34] - 2026-07-13
+
+### Added (dev)
+- **Fault-injection test hook for auto-escalate** — a permanent, gated way to verify the
+  rare escalation path without waiting for a real model miss. `/dev on` enables dev tools
+  (per browser, off by default); `/test-escalate` then arms a one-shot that forces the next
+  turn's model response empty **at the real boundary**, so the genuine non-attempt detector
+  and the auto-escalate redo fire end-to-end (not a shortcut that bypasses detection).
+  Synthetic turns are tagged `test=true` and excluded from per-cell quality stats so they
+  never pollute tuning data. Gated on an explicit opt-in, not obscurity — no magic string
+  in a default build can burn top-tier tokens. This stays in the build so the escalate path
+  remains re-verifiable after any future change to the dispatch/response plumbing.
+
+### How to verify auto-escalate (0.32.31)
+- Update, `/dev on`, set routing to **Live** (Settings → Smart routing), then `/test-escalate`
+  and send any question. Expect: "retrying once on a stronger model" → "Escalated to <model>"
+  with a real answer — exactly one retry, no loop. Bonus: thumbs-down the escalated answer
+  and confirm the cell logs one miss at the strongest signal (dedupe).
+
 ## [0.32.33] - 2026-07-13
 
 ### Fixed
