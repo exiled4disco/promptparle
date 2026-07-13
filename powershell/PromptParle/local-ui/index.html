@@ -6563,6 +6563,17 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         }; var chatModel = chatModelSend || getSelectedModelForChat(); if (chatModel) {
           payload.model = chatModel; // Keep sticky + session in lockstep with what we send
           setStickyModel(providerEl.value, chatModel); }
+        // LIVE ROUTING: actually APPLY the router's model choice (shadow only logged it).
+        // If Live mode routed this ask to a different tier than the selected model, send
+        // THAT model. This is the line that makes routing act, not just measure.
+        var __routedApplied = null;
+        try {
+          if (__route && __route.model && getRoutingMode() === 'live' && __route.model !== payload.model) {
+            __routedApplied = { from: payload.model, to: __route.model };
+            payload.model = __route.model;
+            addMsg('sys', 'Routed: ' + __routedApplied.from + ' → ' + __routedApplied.to + ' (' + (__route._cls ? __route._cls.category + ', C' + __route._cls.complexity : 'ask fit') + ') — smaller model for this ask.', null, false);
+          }
+        } catch (e) { /* ignore */ }
         if (hist.length) {
           payload.history = hist; }
         // Always send (even []) so unpin clears server-side [KNOW] for this session

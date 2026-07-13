@@ -9,6 +9,29 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.32] - 2026-07-13
+
+### Fixed
+- **Live routing now actually applies the routed model.** Bug: shadow mode logged "would
+  route to X" and the auto-escalate redo could change the model, but a normal **Live** turn
+  still ran on your selected model — the routing decision was computed and never applied.
+  Now in Live mode the turn runs on the router's chosen tier, with a visible "Routed:
+  gpt-5 → gpt-5-mini (SUMMARIZE, C1)" note so you can see it act. (This is why a summary
+  ask still ran on the big model even in Live.)
+
+### Added
+- **Hard round-cap tourniquet.** Every agent run is now capped at 15 rounds regardless of
+  classification — a dumb, generous ceiling that can't truncate legitimate multi-step work
+  (read → synthesize → generate → verify) but converts a runaway loop on an expensive model
+  from a silent cost event into a logged, capped incident (`round_cap_hit`). This is a
+  safety limit, NOT classification-based round control — ask complexity is not execution
+  shape, and capping rounds by classification would truncate real deliverables.
+
+### Note
+- A "create me a document" ask with attachments legitimately uses the multi-round agent
+  path (it produces a downloadable artifact); that's expected. With Live routing applied,
+  those rounds now run on the routed tier instead of your top model, so the cost drops.
+
 ## [0.32.31] - 2026-07-13
 
 ### Added

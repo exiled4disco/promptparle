@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.31'
+    $ver = '0.32.32'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -5761,6 +5761,20 @@ function Invoke-PromptParleNativeAgentTurn {
     $capturePaths = New-Object System.Collections.Generic.List[string]
     $modelOut = $Model
 
+    # DUMB, CLASSIFICATION-INDEPENDENT HARD CEILING (tourniquet, not a design decision).
+    # Applies to EVERY agent run regardless of what the router/classifier said. A runaway
+    # loop on the most expensive model is a silent cost event; this converts it into a
+    # logged, capped incident. Generous so it never truncates legitimate multi-step work
+    # (read files → synthesize → generate artifact → verify can be 6-7 rounds). Smarter
+    # round control belongs on EXECUTION signals (no-progress / repeated identical calls),
+    # never on classification — see memory promptparle-output-token-problem.
+    $PROMPTPARLE_HARD_MAX_ROUNDS = 15
+    if ($MaxRounds -gt $PROMPTPARLE_HARD_MAX_ROUNDS) {
+        Write-Host ("  agent: capping MaxRounds {0} -> {1} (hard ceiling)" -f $MaxRounds, $PROMPTPARLE_HARD_MAX_ROUNDS) -ForegroundColor Yellow
+        $MaxRounds = $PROMPTPARLE_HARD_MAX_ROUNDS
+    }
+    $roundCapHit = $false
+
     for ($round = 1; $round -le $MaxRounds; $round++) {
         $roundsUsed = $round
         Write-Host ("  agent-native: round {0}/{1} provider={2}" -f $round, $MaxRounds, $Provider) -ForegroundColor DarkCyan
@@ -5868,6 +5882,12 @@ function Invoke-PromptParleNativeAgentTurn {
         }
     }
 
+    # Loop exhausted all rounds without the model finishing → runaway; log it as an incident.
+    if ($roundsUsed -ge $MaxRounds) {
+        $roundCapHit = $true
+        Write-Host ("  agent: HIT ROUND CEILING ({0}) — turn stopped at cap, not by completion" -f $MaxRounds) -ForegroundColor Red
+    }
+
     if ((-not $lastContent -or (Test-PromptParleResponseIsToolTheaterOnly -Text $lastContent) -or (Test-PromptParleForeignToolTheater -Text $lastContent)) -and $allHands.Count -gt 0) {
         $synN = Invoke-PromptParleConversationalSynthesis `
             -Prompt $Prompt `
@@ -5945,9 +5965,10 @@ function Invoke-PromptParleNativeAgentTurn {
             ('local-prep-dial:' + $dialReport)
             ('rounds:' + $roundsUsed)
             ('tools:' + $allHands.Count)
-        )
+        ) + $(if ($roundCapHit) { @('round-cap-hit') } else { @() })
         signals                 = @{}
         image_count             = 0
+        round_cap_hit           = [bool]$roundCapHit
         # Real provider token counts summed across agent rounds — OUTPUT is the costly side.
         provider_input_tokens   = [int]$sumIn
         provider_output_tokens  = [int]$sumOut
