@@ -9,6 +9,35 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.27] - 2026-07-13
+
+### Added
+- **Smart routing (shadow mode) — the mechanism that generates output-token savings.**
+  A local classifier reads each ask on two independent axes (category + complexity
+  C1–C3) plus an INFERRED high-stakes flag (never a user self-declare lever), and
+  routes to the right model tier. Personas are PRIORS, not separate routers:
+  **Developer** (code→top, non-code→cheap), **Ops/SecOps** (force-top vocabulary —
+  drop/rm/revoke/prod/incident pin to top even on a trivial-looking ask),
+  **Writer** (mergeable), **General** (cheap-unless-hard). Global overrides apply on
+  top: C3→top, high-stakes bump, low-confidence bump, ADVICE never cheapest.
+- **Dials** (collapsed to the ones that aren't redundant): one *Prefer savings ↔
+  quality* slider, a *model floor* (hard constraint — never route below), a *concise ↔
+  thorough* verbosity slider (code/drafts always exempt), and an *auto-escalate*
+  toggle (retry stronger if the answer looks off).
+- **Shadow mode is the default:** the router classifies every turn and LOGS the model
+  it *would* pick + the $ it would save (real tokens, output-weighted), but changes
+  nothing. Review it in Settings; flip to **Live** only when the calls look right.
+- **Standing persona merge review:** replays every persona against logged
+  classifications and flags any pair routing ≥90% identically as a merge candidate —
+  so the persona set shrinks/grows by real divergence, not upfront theory. (Classification-
+  driven: keyword-override divergence isn't replayed since no prompt bodies are stored —
+  the safe direction; it under-counts divergence, never over-recommends a merge.)
+
+### Notes
+- Routing is client-side, local, and privacy-preserving (no prompt bodies stored; the
+  merge review replays on stored classifications only). Rule-based classifier — shadow
+  mode exists precisely to surface misroutes against real traffic before Live.
+
 ## [0.32.26] - 2026-07-12
 
 ### Added

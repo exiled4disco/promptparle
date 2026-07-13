@@ -2013,6 +2013,207 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       return { baseUsd: baseUsd, actualUsd: actualUsd, spreadUsd: spreadUsd, sameModel: sameModel };
     }
 
+    /* =============================================================================
+     * ROUTING MODULE — persona priors + dials + local classifier (SHADOW MODE)
+     * Reads each message on two independent axes (category + complexity C1-C3) plus an
+     * INFERRED high-stakes flag (never a user self-declare lever — that gets pulled
+     * permanently and savings evaporate). Persona = a PRIOR (default tier + force-top
+     * vocabulary), NOT a separate router; global complexity/stakes overrides apply on
+     * top. In shadow mode it LOGS the route it would pick and changes nothing.
+     * Design rationale + data sources: see memory promptparle-output-token-problem.
+     * ============================================================================= */
+    var PP_PERSONA_KEY = 'pp_persona_v1';
+    var PP_DIALS_KEY = 'pp_dials_v1';
+    var PP_ROUTING_MODE_KEY = 'pp_routing_mode_v1';   // 'off' | 'shadow' | 'live'
+    var PP_SHADOW_LOG_KEY = 'pp_shadow_routes_v1';
+
+    // Model tiers, cheapest→strongest, per provider. The router picks a tier; we map to
+    // a concrete model the user actually has. Tier index: 0=cheap 1=mid 2=top.
+    var MODEL_TIERS = {
+      anthropic: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-4-8'],
+      openai:    ['gpt-5-mini', 'gpt-5', 'gpt-5'],
+      gemini:    ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash'],
+      grok:      ['grok-4.5', 'grok-4.5', 'grok-4']
+    };
+
+    // Personas as PRIORS. defaultTier = the baseline before evidence; forceTop = vocab
+    // that pins to top tier even on a trivial-looking C1 ask (only persona context knows
+    // "how do I drop this table" is dangerous). Writer is a mergeable prior (folds into
+    // general if its mid-default earns nothing).
+    var PERSONAS = {
+      developer: {
+        label: 'Developer',
+        // inverts the global prior: code goes TOP unless proven simple
+        defaultTier: 2,
+        codeDefaultTier: 2,
+        forceTop: /\b(security|auth|authentication|crypto|encrypt|migration|production|prod\b|secret|credential|token\b|payment|billing|race condition|deadlock|concurrency|memory leak|vuln)\b/i
+      },
+      ops: {
+        label: 'Ops / SecOps',
+        defaultTier: 1,
+        // non-negotiable: destructive / creds / incident force top even on C1
+        forceTop: /\b(delete|drop\s+(table|database|schema)|rm\s+-rf|rm\s+-|truncate|iptables|revoke|prod\b|production|incident|breach|firewall|kill|shutdown|reboot|credential|secret|rotate\s+key|decommission|wipe|format)\b/i
+      },
+      writer: {
+        label: 'Writer / Marketing',
+        defaultTier: 1,   // prose → mid by default (mergeable into general if thin)
+        forceTop: /\b(claim|legal|compliance|regulat|guarantee|medical|financial advice|press release|earnings|SLA|contract|liabilit)\b/i
+      },
+      general: {
+        label: 'General',
+        defaultTier: 0,   // cheap unless proven hard — the cost-recovery floor
+        forceTop: /\b(legal|medical|diagnos|lawsuit|contract|tax\b|financial advice|suicide|self-harm)\b/i
+      }
+    };
+
+    function getPersona() { var p = lsGet(PP_PERSONA_KEY, 'general'); return PERSONAS[p] ? p : 'general'; }
+    function setPersona(p) { if (PERSONAS[p]) lsSet(PP_PERSONA_KEY, p); }
+    function getRoutingMode() { var m = lsGet(PP_ROUTING_MODE_KEY, 'shadow'); return (m === 'off' || m === 'shadow' || m === 'live') ? m : 'shadow'; }
+    function setRoutingMode(m) { if (m === 'off' || m === 'shadow' || m === 'live') lsSet(PP_ROUTING_MODE_KEY, m); }
+    // Dials: qualityBias 0..100 (0=prefer savings, 100=prefer quality), floorTier 0..2
+    // (never route below this), verbosity 0..100 (0=concise,100=thorough), autoEscalate bool.
+    function getDials() {
+      var d = lsGet(PP_DIALS_KEY, null);
+      if (!d || typeof d !== 'object') d = {};
+      return {
+        qualityBias: (typeof d.qualityBias === 'number') ? d.qualityBias : 50,
+        floorTier: (typeof d.floorTier === 'number') ? d.floorTier : 0,
+        verbosity: (typeof d.verbosity === 'number') ? d.verbosity : 60,
+        autoEscalate: (typeof d.autoEscalate === 'boolean') ? d.autoEscalate : true
+      };
+    }
+    function setDials(d) { lsSet(PP_DIALS_KEY, d); }
+
+    // Deterministic fast-path + signal-based classifier (no LLM call — local, instant).
+    // Returns { category, complexity(1-3), highStakes, confidence(0-1), signals[] }.
+    function classifyAsk(prompt, context, imageCount) {
+      var p = String(prompt || ''); var ctx = String(context || '');
+      var signals = [];
+      var lenChars = p.length + ctx.length;
+      var hasCode = /```|\bfunction\b|\bclass\b|=>|\bdef\b|;\s*$|\{[\s\S]*\}/.test(p) || /```/.test(ctx);
+      var fixDebug = /\b(fix|debug|error|stack ?trace|exception|failing|broken|refactor|why (is|does|isn.t)|not work)/i.test(p);
+      var multiDoc = /===== FILE:/.test(ctx) && (ctx.match(/===== FILE:/g) || []).length > 1;
+      var images = Number(imageCount) || 0;
+
+      // Category (coarse; complexity does the real routing work)
+      var category = 'INFO';
+      if (hasCode || /\b(code|function|refactor|implement|compile|api|regex|sql|query)\b/i.test(p)) category = 'CODE';
+      else if (/\b(summar|tl;?dr|highlights|key points|brief)\b/i.test(p)) category = 'SUMMARIZE';
+      else if (/\b(compare|diff|contrast|versus|vs\b)\b/i.test(p)) category = 'COMPARE';
+      else if (/\b(write|draft|compose|rewrite|edit|rephrase|email|blog|post|copy)\b/i.test(p)) category = 'WRITE';
+      else if (/\b(explain|how does|what is|teach|eli5|understand)\b/i.test(p)) category = 'EXPLAIN';
+      else if (/\b(advice|should i|feel|relationship|anxious|worried|stressed|personal)\b/i.test(p)) category = 'ADVICE';
+      else if (images > 0) category = 'VISION';
+      if (category) signals.push('cat:' + category);
+
+      // Complexity C1(trivial) C2(moderate) C3(hard) — from signals, not topic
+      var complexity = 1;
+      if (lenChars > 1500) { complexity = Math.max(complexity, 2); signals.push('len>1500'); }
+      if (lenChars > 8000) { complexity = 3; signals.push('len>8000'); }
+      if (hasCode && fixDebug) { complexity = Math.max(complexity, 3); signals.push('code+debug'); }
+      else if (hasCode) { complexity = Math.max(complexity, 2); signals.push('code'); }
+      if (multiDoc) { complexity = Math.max(complexity, 3); signals.push('multi-doc'); }
+      if (images > 1) { complexity = Math.max(complexity, 2); signals.push('multi-image'); }
+      if (/\b(and then|after that|step by step|multi-?step|plan|architect|design a|migrate)\b/i.test(p)) {
+        complexity = Math.max(complexity, 3); signals.push('multi-step'); }
+
+      // High-stakes — INFERRED from content (never user self-declared)
+      var highStakes = false;
+      if (category === 'ADVICE') { highStakes = true; signals.push('stakes:advice'); }
+      if (/\b(prod|production|incident|breach|delete|drop|revoke|legal|medical|financial|security|credential|secret|payment)\b/i.test(p)) {
+        highStakes = true; signals.push('stakes:content'); }
+
+      var confidence = 0.6 + Math.min(0.35, signals.length * 0.07);
+      return { category: category, complexity: complexity, highStakes: highStakes, confidence: confidence, signals: signals };
+    }
+
+    // Resolve which model tier this ask should route to, given persona + dials + classification.
+    // Returns { tier, model, reasons[] }. Pure policy — no side effects. personaOverride +
+    // promptOverride let the merge review replay ANY persona against a stored classification.
+    function resolveRoute(cls, provider, personaOverride, promptOverride) {
+      var personaKey = personaOverride || getPersona(); var persona = PERSONAS[personaKey] || PERSONAS.general; var dials = getDials();
+      var reasons = [];
+      var prompt = (promptOverride != null) ? promptOverride : (window.__ppLastPrompt || '');
+      // Persona prior. Developer INVERTS the global prior for CODE only (code→top unless
+      // proven simple); for non-code asks a developer still gets cheap-unless-hard, so a
+      // trivial "what is a closure" doesn't burn the top model. Other personas use their
+      // flat defaultTier.
+      var tier;
+      if (persona.codeDefaultTier != null) {
+        tier = (cls.category === 'CODE') ? persona.codeDefaultTier : 0;  // non-code → cheap prior
+        reasons.push('persona ' + persona.label + (cls.category === 'CODE' ? ' code→tier ' + tier : ' non-code→tier 0'));
+      } else {
+        tier = persona.defaultTier;
+        reasons.push('persona ' + persona.label + ' → tier ' + tier);
+      }
+      // Complexity raises the tier (C3 → top, C2 → at least mid).
+      if (cls.complexity >= 3) { tier = Math.max(tier, 2); reasons.push('C3 complexity → top'); }
+      else if (cls.complexity === 2) { tier = Math.max(tier, 1); reasons.push('C2 → ≥mid'); }
+      // High-stakes bumps a tier; ADVICE never goes to cheapest.
+      if (cls.highStakes) { tier = Math.max(tier, cls.category === 'ADVICE' ? 1 : 2); reasons.push('high-stakes bump'); }
+      // Low confidence bumps a tier (don't route down when unsure).
+      if (cls.confidence < 0.65) { tier = Math.min(2, tier + 1); reasons.push('low-confidence bump'); }
+      // Persona force-top vocabulary — fires even on a trivial-looking ask.
+      if (persona.forceTop && persona.forceTop.test(prompt)) { tier = 2; reasons.push('force-top keyword'); }
+      // Quality-bias dial nudges the whole thing (0=savings, 100=quality).
+      if (dials.qualityBias >= 80 && tier < 2) { tier = tier + 1; reasons.push('quality-bias high'); }
+      else if (dials.qualityBias <= 20 && tier > 0 && !cls.highStakes) { tier = tier - 1; reasons.push('savings-bias low'); }
+      // Model floor is a HARD constraint — wins over savings, but persona force-top already set tier=2 above.
+      if (tier < dials.floorTier) { tier = dials.floorTier; reasons.push('model floor'); }
+      tier = Math.max(0, Math.min(2, tier));
+      var tiers = MODEL_TIERS[String(provider || '').toLowerCase()] || MODEL_TIERS.anthropic;
+      return { tier: tier, model: tiers[tier], reasons: reasons, _cls: cls };
+    }
+
+    // Shadow log: record what the router WOULD do, without changing the model.
+    function loadShadowLog() { var l = lsGet(PP_SHADOW_LOG_KEY, null); return Array.isArray(l) ? l : []; }
+    function recordShadowRoute(entry) {
+      try {
+        var log = loadShadowLog(); log.push(entry);
+        if (log.length > 500) log = log.slice(-500);
+        lsSet(PP_SHADOW_LOG_KEY, log);
+      } catch (e) { /* ignore */ }
+    }
+
+    /**
+     * STANDING MERGE REVIEW — the personas should shrink/grow by LOGGED DIVERGENCE, not
+     * upfront theory (guards against N-routers-for-one-behavior). Replays every persona
+     * against each logged turn's stored classification and reports pairwise agreement.
+     * If two personas route identically on real traffic, they're merge candidates.
+     * Note: force-top KEYWORD hits can't be replayed (we keep no prompt body — privacy),
+     * so this compares the classification-driven tier; keyword divergence is under-counted,
+     * which is the SAFE direction (won't falsely recommend a merge). Needs a couple weeks
+     * of logs to be meaningful.
+     */
+    function personaMergeReview() {
+      var log = loadShadowLog();
+      var keys = Object.keys(PERSONAS);
+      var dist = {}; keys.forEach(function (k) { dist[k] = [0, 0, 0]; });        // tier histogram per persona
+      var agree = {};                                                            // pairwise agreement counts
+      for (var i = 0; i < keys.length; i++) for (var j = i + 1; j < keys.length; j++) agree[keys[i] + '|' + keys[j]] = { same: 0, total: 0 };
+      var n = 0;
+      log.forEach(function (e) {
+        if (!e || !e.cls) return; n++;
+        var tierByPersona = {};
+        keys.forEach(function (k) {
+          var r = resolveRoute(e.cls, e.provider || 'anthropic', k, '');          // '' prompt → keyword override can't fire (safe under-count)
+          tierByPersona[k] = r.tier; dist[k][r.tier]++;
+        });
+        for (var a = 0; a < keys.length; a++) for (var b = a + 1; b < keys.length; b++) {
+          var pk = keys[a] + '|' + keys[b]; agree[pk].total++;
+          if (tierByPersona[keys[a]] === tierByPersona[keys[b]]) agree[pk].same++;
+        }
+      });
+      var mergeCandidates = [];
+      Object.keys(agree).forEach(function (pk) {
+        var a = agree[pk]; if (a.total >= 20) {                                   // enough samples to mean something
+          var pct = Math.round(100 * a.same / a.total);
+          if (pct >= 90) mergeCandidates.push({ pair: pk.split('|'), agreePct: pct, samples: a.total });
+        }
+      });
+      return { turns: n, dist: dist, agree: agree, mergeCandidates: mergeCandidates };
+    }
+
     function formatUsdEstimate(usd) {
       if (!isFinite(usd) || usd <= 0) return '$0'; if (usd < 0.001) return '<$0.001'; if (usd < 0.01) return '$' + usd.toFixed(3); if (usd < 1) return '$' + usd.toFixed(3); if (usd < 10) return '$' + usd.toFixed(2); return '$' + usd.toFixed(2); }
 
@@ -5119,7 +5320,69 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         'Current base: <b id="ppBaseModelLabel">' + String(baseLabel).replace(/</g, '') + '</b> ' +
         '<button type="button" id="ppSetBaseModel" class="dl-link" style="margin-left:.4rem">Set to current model</button> ' +
         '<button type="button" id="ppClearBaseModel" class="dl-link">Clear</button>' +
+        '</div>' +
+        renderRoutingSection();
+    }
+
+    /** Smart routing: persona + dials + shadow-mode review. */
+    function renderRoutingSection() {
+      var persona = getPersona(); var dials = getDials(); var mode = getRoutingMode();
+      var log = loadShadowLog();
+      var wouldSave = 0, routed = 0;
+      log.forEach(function (e) { wouldSave += (e.would_save_usd || 0); if (e.would_model !== e.actual_model) routed++; });
+      var pOpts = Object.keys(PERSONAS).map(function (k) {
+        return '<option value="' + k + '"' + (k === persona ? ' selected' : '') + '>' + PERSONAS[k].label + '</option>'; }).join('');
+      var floorNames = ['cheapest allowed', 'mid or better', 'top only'];
+      return '<div class="usage-local-h">Smart routing (output-token savings)</div>' +
+        '<div class="routing-cfg" style="font-size:.8rem;color:var(--muted);line-height:1.7">' +
+        'Routes each ask to the right model for what it needs. <b>Output is 5–8× input</b>, so sending simple asks to a lesser model is where real money is saved. Persona sets the default; the ask\'s complexity &amp; stakes adjust it.<br>' +
+        '<label>Persona <select id="ppPersonaSel">' + pOpts + '</select></label><br>' +
+        '<label>Mode <select id="ppRoutingMode">' +
+          '<option value="off"' + (mode === 'off' ? ' selected' : '') + '>Off</option>' +
+          '<option value="shadow"' + (mode === 'shadow' ? ' selected' : '') + '>Shadow (log only, changes nothing)</option>' +
+          '<option value="live"' + (mode === 'live' ? ' selected' : '') + '>Live (route for real)</option>' +
+        '</select></label><br>' +
+        '<label>Prefer savings ↔ quality <input type="range" id="ppDialQuality" min="0" max="100" value="' + dials.qualityBias + '"></label><br>' +
+        '<label>Concise ↔ thorough <input type="range" id="ppDialVerbosity" min="0" max="100" value="' + dials.verbosity + '"> <span class="lbl">(code/drafts never capped)</span></label><br>' +
+        '<label>Model floor <select id="ppDialFloor">' +
+          [0, 1, 2].map(function (i) { return '<option value="' + i + '"' + (i === dials.floorTier ? ' selected' : '') + '>' + floorNames[i] + '</option>'; }).join('') +
+        '</select> <span class="lbl">never route below this</span></label><br>' +
+        '<label><input type="checkbox" id="ppDialAutoEsc"' + (dials.autoEscalate ? ' checked' : '') + '> Auto-escalate to a stronger model if the answer looks off</label>' +
+        '</div>' +
+        '<div class="routing-shadow" style="font-size:.8rem;margin-top:.5rem;padding:.5rem;border:1px solid var(--border);border-radius:8px">' +
+        '<b>Shadow review</b> — ' + log.length + ' turn(s) analyzed; router would have re-routed <b>' + routed + '</b> of them, ' +
+        'saving about <b class="ok">' + formatUsdEstimate(wouldSave) + '</b> (on real tokens, output-weighted). ' +
+        (mode === 'shadow' ? 'Nothing was changed — enable <b>Live</b> when these calls look right. ' : '') +
+        '<button type="button" id="ppShadowClear" class="dl-link">Clear log</button>' +
+        renderMergeReview() +
         '</div>';
+    }
+
+    /** Standing merge review — personas earn their slot by DIVERGING on real traffic. */
+    function renderMergeReview() {
+      var rv = personaMergeReview();
+      if (rv.turns < 20) {
+        return '<div style="margin-top:.5rem;color:var(--dim)">Persona merge review: needs ~20+ logged turns (have ' + rv.turns + '). ' +
+          'After a couple of weeks it compares how differently each persona actually routes, and flags any pair routing near-identically so the persona set stays honest.</div>';
+      }
+      var lines = ['<div style="margin-top:.5rem"><b>Persona merge review</b> (' + rv.turns + ' turns, classification-driven)'];
+      // Tier distribution per persona
+      Object.keys(rv.dist).forEach(function (k) {
+        var d = rv.dist[k];
+        lines.push('<div style="color:var(--muted)">' + (PERSONAS[k] ? PERSONAS[k].label : k) +
+          ': cheap ' + d[0] + ' · mid ' + d[1] + ' · top ' + d[2] + '</div>');
+      });
+      if (rv.mergeCandidates.length) {
+        rv.mergeCandidates.forEach(function (mc) {
+          lines.push('<div class="warn" style="margin-top:.25rem">⚠ ' + (PERSONAS[mc.pair[0]] ? PERSONAS[mc.pair[0]].label : mc.pair[0]) +
+            ' and ' + (PERSONAS[mc.pair[1]] ? PERSONAS[mc.pair[1]].label : mc.pair[1]) +
+            ' route the same on ' + mc.agreePct + '% of ' + mc.samples + ' turns — merge candidate.</div>');
+        });
+      } else {
+        lines.push('<div class="ok" style="margin-top:.25rem">All personas diverge enough to earn their slot.</div>');
+      }
+      lines.push('</div>');
+      return lines.join('');
     }
 
     /** Wire the Savings alerts checkboxes after the Usage modal renders. */
@@ -5149,6 +5412,32 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         try { localStorage.removeItem(PP_BASE_MODEL_KEY); } catch (e) { /* ignore */ }
         var lab = document.getElementById('ppBaseModelLabel'); if (lab) lab.textContent = '(current selection)';
         try { scheduleSideStatsRefresh(); } catch (e) { /* ignore */ }
+      });
+      // Smart-routing controls
+      function saveDialsFromUi() {
+        var q = document.getElementById('ppDialQuality'); var vb = document.getElementById('ppDialVerbosity');
+        var fl = document.getElementById('ppDialFloor'); var ae = document.getElementById('ppDialAutoEsc');
+        setDials({
+          qualityBias: q ? (parseInt(q.value, 10) || 0) : 50,
+          verbosity: vb ? (parseInt(vb.value, 10) || 0) : 60,
+          floorTier: fl ? (parseInt(fl.value, 10) || 0) : 0,
+          autoEscalate: ae ? !!ae.checked : true
+        });
+      }
+      var pSel = document.getElementById('ppPersonaSel');
+      if (pSel) pSel.addEventListener('change', function () { setPersona(pSel.value); });
+      var rMode = document.getElementById('ppRoutingMode');
+      if (rMode) rMode.addEventListener('change', function () {
+        setRoutingMode(rMode.value);
+        if (rMode.value === 'live') addMsg('sys', 'Smart routing is LIVE — turns may now run on a routed model. Review the shadow log any time in Settings.', null, false);
+      });
+      ['ppDialQuality', 'ppDialVerbosity', 'ppDialFloor', 'ppDialAutoEsc'].forEach(function (id) {
+        var el = document.getElementById(id); if (el) el.addEventListener('change', saveDialsFromUi);
+      });
+      var shClr = document.getElementById('ppShadowClear');
+      if (shClr) shClr.addEventListener('click', function () {
+        try { localStorage.removeItem(PP_SHADOW_LOG_KEY); } catch (e) { /* ignore */ }
+        addMsg('sys', 'Shadow routing log cleared.', null, false);
       });
     }
 
@@ -5909,6 +6198,17 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         // client knows each doc's true size (history is capped before it reaches the server).
         var __carried = { carriedTok: 0, carriedDocs: 0 };
         try { __carried = accrueCarriedContext(currentChatId, __docsThisTurn); } catch (e) { /* ignore */ }
+        // SHADOW ROUTING: classify this ask and record the model the router WOULD pick.
+        // Changes nothing this turn (shadow mode) — this is the validation log the user
+        // reviews before routing goes live. window.__ppLastPrompt feeds resolveRoute.
+        var __route = null;
+        try {
+          if (getRoutingMode() !== 'off') {
+            window.__ppLastPrompt = prompt || '';
+            var __cls = classifyAsk(prompt, context, images.length);
+            __route = resolveRoute(__cls, providerEl.value);
+          }
+        } catch (e) { __route = null; }
         const payload = {
           provider: providerEl.value,
           profile: 'general',
@@ -5977,6 +6277,34 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
             var mtb = meta.tool_breakdown || meta.toolBreakdown; if (!Array.isArray(mtb)) { mtb = []; }
             mtb.push({ tool: 'carried_context', kind: 'avoided-ingest', chars_without: __carried.carriedTok * 4, chars_with: 0, chars_saved: __carried.carriedTok * 4, docs: __carried.carriedDocs });
             meta.tool_breakdown = mtb;
+          }
+        } catch (e) { /* ignore */ }
+        // SHADOW ROUTING LOG: now that the turn ran, record what the router WOULD have
+        // picked vs what actually ran, with the real tokens, so the user can review the
+        // router's calls (and the $ it WOULD have saved) before enabling live routing.
+        try {
+          if (__route && meta && res.ok) {
+            var nm = normalizeMeta(meta);
+            var actModel = nm.model || (payload && payload.model) || '';
+            var inT = Number(nm.provider_input_tokens) || 0, outT = Number(nm.provider_output_tokens) || 0;
+            var wouldUsd = turnCostUsd(providerEl.value, __route.model, inT, outT);
+            var actualUsd2 = turnCostUsd(providerEl.value, actModel, inT, outT);
+            recordShadowRoute({
+              at: Date.now(),
+              persona: getPersona(),
+              provider: providerEl.value,
+              category: __route._cls ? __route._cls.category : undefined,
+              // Persona-INDEPENDENT classification, stored so a standing merge review can
+              // replay EVERY persona against the same real traffic (no prompt body kept —
+              // privacy). This is what lets us collapse a persona that stops diverging.
+              cls: __route._cls ? { category: __route._cls.category, complexity: __route._cls.complexity, highStakes: __route._cls.highStakes, confidence: __route._cls.confidence } : null,
+              would_model: __route.model, would_tier: __route.tier,
+              actual_model: actModel,
+              in_tok: inT, out_tok: outT,
+              would_usd: wouldUsd, actual_usd: actualUsd2,
+              would_save_usd: Math.max(0, actualUsd2 - wouldUsd),
+              reasons: __route.reasons
+            });
           }
         } catch (e) { /* ignore */ }
         if (!res.ok) {
