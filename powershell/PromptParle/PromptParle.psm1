@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.37'
+    $ver = '0.32.38'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -6704,13 +6704,38 @@ function Resolve-PromptParleEvidenceMode {
     # "answer from MEM/KNOW only, say refresh" — that produced "I don't have the capital of
     # Ohio stored in this session. Say refresh." (Same failure family as the doc-summary
     # 0.32.21 bug: session-mode gating a turn the model can just answer.)
-    # Session-mode is only right when the ask is ABOUT this session/project/prior turns.
-    $aboutSession = ($p -match '(?i)\b(we|you|earlier|before|last (time|turn|message)|so far|this (chat|session|project|conversation|thread)|our |my (project|code|repo|file|setup)|what did (you|we)|recap|caught up|continue|as (i|we) (said|mentioned|discussed))\b')
+    # Session-mode is only right when the ask is ABOUT this session/project/prior turns
+    # OR explicitly about the attached knowledge/docs. A world-knowledge question
+    # ("find all Texas cities by population", "what is a closure") is answerable from the
+    # model's own knowledge even when a Knowledge repo is attached — attaching KNOW must
+    # NOT disable world knowledge. (Bug: "★ Knowledge" attached → knowN>0 disqualified the
+    # guard → "find all cities in Texas" fell to session-mode → "I don't have it stored,
+    # say refresh." Same muzzle family as the capital-of-Ohio 0.32.33 fix.)
+    # About THIS session/prior turns — genuine recall, not an incidental pronoun. "Can you
+    # find all Texas cities" contains "you" but is NOT session recall, so we require
+    # recall-shaped phrases, not a bare "we"/"you"/"my".
+    $aboutSession = (
+        $p -match '(?i)\b(earlier|before|last (time|turn|message)|so far|previously|a moment ago)\b' -or
+        $p -match '(?i)\bthis (chat|session|conversation|thread)\b' -or
+        $p -match '(?i)\bwhat did (you|we)\b' -or
+        $p -match '(?i)\b(recap|caught up|catch me up|get caught up)\b' -or
+        $p -match '(?i)\bas (i|we) (said|mentioned|discussed|agreed|decided)\b' -or
+        $p -match '(?i)\b(we|you) (already|just) (said|did|decided|discussed|built|made|wrote)\b' -or
+        $p -match '(?i)\bmy (project|code|repo|codebase|file|files|setup|config)\b'
+    )
+    # Does the ask reference the attached knowledge/docs specifically? Only then should
+    # KNOW gate it. Generic world questions must not be captured by "knowledge attached".
+    $aboutKnowledge = ($p -match '(?i)\b(knowledge (base|repo|repository|docs?)|the (docs?|documentation|attached|repo|repository|codebase|files?)|in (the )?(repo|docs?|knowledge|codebase|project)|from (the )?(repo|docs?|knowledge|codebase))\b')
     # Question-word prefix. Allow an optional "s"/"''s" so contraction-less "whats"/"hows"
-    # and "what''s" both match, then require a boundary — avoids matching "whatever".
-    $looksGeneralQuestion = ($p -match "(?i)^\s*(what|who|when|where|which|how|why|is|are|does|do|can|define|name|list)('?s)?\b" -or $p -match '\?\s*$')
-    if ($looksGeneralQuestion -and -not $aboutSession -and $knowN -eq 0) {
+    # and "what''s" both match; also treat imperative discovery verbs ("find/list/show/give
+    # me/name all …") as questions — "find all the cities in Texas" is a world-knowledge ask.
+    $looksGeneralQuestion = (
+        $p -match "(?i)^\s*(what|who|when|where|which|how|why|is|are|does|do|can|could|would|define|name|list|find|show|give|tell|explain|summarize|compare|rank|sort)('?s)?\b" -or
+        $p -match '\?\s*$'
+    )
+    if ($looksGeneralQuestion -and -not $aboutSession -and -not $aboutKnowledge) {
         # Answer from the model's own knowledge; not a session-memory recall, no "refresh".
+        # Fires even with Knowledge attached, as long as the ask isn't about that content.
         return [pscustomobject]@{ mode = 'general'; hands_allowed = $false; reason = 'general-knowledge' }
     }
 
@@ -9186,9 +9211,16 @@ function Invoke-PromptParleAgentLocalPrep {
     if ($evidenceMode -eq 'general') {
         $genDir = @(
             '[CLIENT DIRECTIVE — evidence_mode=general]',
-            'This is a general-knowledge question. Answer it directly from your own knowledge.',
+            'This is a general-knowledge question. Answer it directly from your own knowledge, NOW.',
             'Do NOT say you lack it "in this session" and do NOT tell the user to say refresh —',
-            'that framing is only for session/project recall, not world knowledge. No hands/tools.'
+            'that framing is only for session/project recall, not world knowledge. No hands/tools.',
+            'ANSWER FIRST, ASK LATER: produce the best answer using sensible defaults immediately.',
+            'Do NOT open with clarifying questions or a menu of options before answering — that',
+            'stalls the user. If choices exist (format, scope, count), pick the obvious default,',
+            'give the answer, then offer refinements in ONE short line at the end ("Want it as CSV,',
+            'or the full list?"). For a "find/list/rank all X" ask, just produce the list (a',
+            'reasonable Top-N if it is huge) sorted as asked — do not demand the source/format first.',
+            'If your figures have a reference year, note it briefly; do not refuse for lack of a live feed.'
         ) -join ' '
         if ($pr -notmatch '\[CLIENT DIRECTIVE — evidence_mode=general') {
             $pr = $pr + "`n`n" + $genDir

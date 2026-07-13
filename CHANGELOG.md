@@ -9,6 +9,32 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.38] - 2026-07-13
+
+### Fixed
+- **"Say refresh" muzzle returned when a Knowledge repo was attached — and it interrogated
+  before answering.** "Can you find all the cities in Texas and sort them by population"
+  (with a ★ Knowledge repo attached) got "I don't have a list… stored in this session, say
+  refresh" plus four clarifying questions (source/scope/format/limit) before doing anything.
+  Two root causes, both fixed:
+  - The general-knowledge guard required `knowN == 0`, so **attaching a Knowledge repo
+    disabled the model's world knowledge** and dropped every factual question into
+    session-mode ("answer from KNOW only → say refresh"). The guard no longer keys off
+    "is Knowledge attached"; it keys off **whether the question is about that content**
+    (`aboutKnowledge`). World questions answer even with Knowledge attached; asks about the
+    repo/docs stay correctly gated.
+  - `aboutSession` was too greedy — a bare "you"/"we"/"my" matched "Can **you** find…" and
+    disqualified the guard. It now requires genuine recall phrasing (earlier / before /
+    this chat / what did you-we / recap / as we said / my project·code·repo), not incidental
+    pronouns. The guard also now recognizes imperative discovery asks (find/list/show/rank/
+    sort/compare/summarize…), so "find all X" is treated as the world-knowledge ask it is.
+  - **Answer-first, ask-later.** The general-mode directive now tells the model to produce
+    the best answer with sensible defaults immediately and offer refinements in one short
+    line at the end — never open with a menu of clarifying questions. For "find/list/rank
+    all X" it just produces the list (a reasonable Top-N if huge), sorted as asked.
+  - Driven 7/7 including the exact failing prompt → `mode=general`; asks genuinely about the
+    attached repo/session still stay gated.
+
 ## [0.32.37] - 2026-07-13
 
 ### Added
