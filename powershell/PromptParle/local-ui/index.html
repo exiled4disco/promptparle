@@ -1967,6 +1967,52 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     function outputUsdPerMillion(provider, model) {
       return modelPrice(provider, model).output; }
 
+    /* ---- Model-spread savings engine (honest, output-weighted) -------------------
+     * The user declares a BASE model (their "if I ran everything on my top model"
+     * world, e.g. Opus 4.8). That IS the without-PP counterfactual. For each turn we
+     * have the REAL token counts and the model that actually ran, so:
+     *   actualCost = in*actual.input + out*actual.output   (what the turn cost)
+     *   baseCost   = in*base.input   + out*base.output     (same tokens on the base)
+     *   spreadSaved = baseCost - actualCost                 (>=0; 0 if it ran on base)
+     * Output-weighted, real tokens, user-declared baseline — nothing guessed. If every
+     * turn runs on the base model, spreadSaved is honestly $0 (no fabricated number). */
+    var PP_BASE_MODEL_KEY = 'pp_base_model_v1';
+    function getBaseModel() {
+      // {provider, model}. Default: the user's current selection is treated as base
+      // until they pick one explicitly (so spread starts at $0, not a fake number).
+      var d = lsGet(PP_BASE_MODEL_KEY, null);
+      if (d && d.model) return d;
+      var prov = (providerEl && providerEl.value) || '';
+      var model = ''; try { model = getSelectedModelForChat() || ''; } catch (e) { model = ''; }
+      if (!model && modelEl && modelEl.value) model = modelEl.value;
+      return { provider: prov, model: model };
+    }
+    function setBaseModel(provider, model) {
+      lsSet(PP_BASE_MODEL_KEY, { provider: String(provider || ''), model: String(model || '') }); }
+    /** Full USD cost of a turn = input tokens @ input rate + output tokens @ output rate. */
+    function turnCostUsd(provider, model, inTok, outTok) {
+      var pr = modelPrice(provider, model);
+      return ((Number(inTok) || 0) / 1000000) * pr.input + ((Number(outTok) || 0) / 1000000) * pr.output;
+    }
+    /**
+     * Per-turn model-spread saving vs the declared base model, from REAL provider tokens.
+     * Returns { baseUsd, actualUsd, spreadUsd, sameModel } — spreadUsd is 0 when the turn
+     * ran on the base model (or we have no real token counts to compare).
+     */
+    function turnSpreadSaving(nmeta) {
+      var inTok = Number(nmeta.provider_input_tokens) || 0;
+      var outTok = Number(nmeta.provider_output_tokens) || 0;
+      if (inTok <= 0 && outTok <= 0) return { baseUsd: 0, actualUsd: 0, spreadUsd: 0, sameModel: true };
+      var actProv = nmeta.provider || '', actModel = nmeta.model || '';
+      var base = getBaseModel();
+      var sameModel = String(base.model || '').toLowerCase() === String(actModel || '').toLowerCase();
+      var actualUsd = turnCostUsd(actProv, actModel, inTok, outTok);
+      // No base set / base == actual → base cost equals actual → spread 0 (honest).
+      var baseUsd = base.model ? turnCostUsd(base.provider, base.model, inTok, outTok) : actualUsd;
+      var spreadUsd = Math.max(0, baseUsd - actualUsd);
+      return { baseUsd: baseUsd, actualUsd: actualUsd, spreadUsd: spreadUsd, sameModel: sameModel };
+    }
+
     function formatUsdEstimate(usd) {
       if (!isFinite(usd) || usd <= 0) return '$0'; if (usd < 0.001) return '<$0.001'; if (usd < 0.01) return '$' + usd.toFixed(3); if (usd < 1) return '$' + usd.toFixed(3); if (usd < 10) return '$' + usd.toFixed(2); return '$' + usd.toFixed(2); }
 
@@ -2251,26 +2297,26 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // headline totals are the cumulative truth the user watches).
     var RUN_STATS_CUM_KEY = 'pp_run_stats_cum_v1';
     var RUN_STATS_SEEN_KEY = 'pp_run_stats_seen_v1';
-    var CUM_SCHEMA = 3;   // bump when accrual math changes → old (stale-math) store is discarded
+    var CUM_SCHEMA = 4;   // bump when accrual math changes → old (stale-math) store is discarded
     function loadCumStats() {
       var d = lsGet(RUN_STATS_CUM_KEY, null);
       // Discard a store written under older accrual math (schema mismatch) so stale
       // numbers from a previous version can't linger in the sidebar forever.
       if (!d || typeof d !== 'object' || d.schema !== CUM_SCHEMA) {
-        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 };
+        d = { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0 };
         lsSet(RUN_STATS_SEEN_KEY, {});   // forget seen-ids too, so this session re-accrues cleanly
       }
       return d;
     }
     function loadSeenTurns() { var s = lsGet(RUN_STATS_SEEN_KEY, null); return (s && typeof s === 'object') ? s : {}; }
     function resetCumStats() {
-      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0 });
+      lsSet(RUN_STATS_CUM_KEY, { schema: CUM_SCHEMA, msgs: 0, orig: 0, opt: 0, saved: 0, usd: 0, outTok: 0, outUsd: 0, baseUsd: 0, actualUsd: 0, spreadUsd: 0 });
       lsSet(RUN_STATS_SEEN_KEY, {});
     }
     // Record one completed turn into the cumulative store (idempotent by id).
     // Every turn accrues its canonical before→after (billedBefore/billedAfter from
     // buildSavingsExplain) so cum.orig/opt/saved stay coherent with the session strip.
-    function accrueTurnToCum(id, s, isAgent) {
+    function accrueTurnToCum(id, s, isAgent, nmeta) {
       if (!id) return;
       var seen = loadSeenTurns();
       if (seen[id]) return;               // already counted — re-render safe
@@ -2279,6 +2325,16 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       cum.msgs += 1;
       cum.orig += (s.billedBefore || 0); cum.opt += (s.billedAfter || 0);
       cum.saved += (s.saved || 0); cum.usd += (s.usdSaved || 0);
+      // Real output spend + model-spread saving (output-weighted, from real tokens).
+      if (nmeta) {
+        var outTok = Number(nmeta.provider_output_tokens) || 0;
+        cum.outTok = (cum.outTok || 0) + outTok;
+        cum.outUsd = (cum.outUsd || 0) + (outTok / 1000000) * outputUsdPerMillion(nmeta.provider, nmeta.model);
+        var sp = turnSpreadSaving(nmeta);
+        cum.baseUsd = (cum.baseUsd || 0) + sp.baseUsd;
+        cum.actualUsd = (cum.actualUsd || 0) + sp.actualUsd;
+        cum.spreadUsd = (cum.spreadUsd || 0) + sp.spreadUsd;
+      }
       // Bound the seen-map so it can't grow forever.
       var keys = Object.keys(seen);
       if (keys.length > 5000) { var trimmed = {}; keys.slice(-3000).forEach(function (k) { trimmed[k] = 1; }); seen = trimmed; }
@@ -2297,7 +2353,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         if (!n.provider && providerEl && providerEl.value) n.provider = providerEl.value;
         var s = buildSavingsExplain(n);
         // Cumulative accrual (increment-only, id-keyed) — survives chat deletion.
-        accrueTurnToCum(id, s, !!n.is_agent_turn);
+        accrueTurnToCum(id, s, !!n.is_agent_turn, n);
         var model = String(s.model || 'unknown').trim() || 'unknown';
         var prov = String(s.provider || '').trim();
         var key = (prov ? prov + ' · ' : '') + model;
@@ -2368,6 +2424,19 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         ' <span class="ok" style="font-size:.72rem;font-weight:700">−' + compactTok(t.saved) + '</span></div></div>';
       html += '<div class="stat-cell wide"><div class="lbl">Est. value saved</div><div class="val ok" id="sideStatUsdVal">' +
         formatUsdEstimate(t.usd) + '</div></div>';
+      // Real OUTPUT spend — where the money actually goes (5-8x input).
+      if ((t.outTok || 0) > 0) {
+        html += '<div class="stat-cell wide" title="Actual output tokens generated by the model(s) this session, priced at each model\'s published output rate. Output is the costly side. Not a bill.">' +
+          '<div class="lbl">Output spend</div><div class="val">' + compactTok(t.outTok) + ' tok · ' + formatUsdEstimate(t.outUsd || 0) + '</div></div>';
+      }
+      // Model-spread saving — session cost on your BASE model minus actual spread cost.
+      if ((t.spreadUsd || 0) > 0) {
+        var base = getBaseModel();
+        html += '<div class="stat-cell wide" title="If every turn this session had run on your base model (' +
+          (String(base.model || 'base').replace(/</g, '')) + '), it would have cost ' + formatUsdEstimate(t.baseUsd || 0) +
+          '. Spreading turns across models cost ' + formatUsdEstimate(t.actualUsd || 0) + '. Real tokens, output-weighted. Not a bill.">' +
+          '<div class="lbl">Model-spread saved</div><div class="val ok">' + formatUsdEstimate(t.spreadUsd) + '</div></div>';
+      }
       html += '</div>';
       body.innerHTML = html;
       // Savings alert: fire only on a positive increase vs the previously rendered value
@@ -5034,12 +5103,22 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
 
     /** Client-side "Savings alerts" toggles (sound + visual), persisted in localStorage. */
     function renderSavingsAlertsSection() {
+      var base = getBaseModel();
+      var baseLabel = base.model ? ((base.provider ? base.provider + ' · ' : '') + base.model) : '(current selection)';
       return '<div class="usage-local-h">Savings alerts (this PC)</div>' +
         '<div class="savings-alerts">' +
         '<label><input type="checkbox" id="ppSavingsSoundChk"' + (isSavingsSoundOn() ? ' checked' : '') +
         '> Play Sound</label>' +
         '<label><input type="checkbox" id="ppSavingsVisualChk"' + (isSavingsVisualOn() ? ' checked' : '') +
         '> Animate Stats</label>' +
+        '</div>' +
+        '<div class="usage-local-h">Base model (for model-spread savings)</div>' +
+        '<div class="base-model-row" style="font-size:.8rem;color:var(--muted);line-height:1.5">' +
+        'Model-spread savings compares your session cost against running <b>everything on one base model</b>. ' +
+        'Set it to the top model you\'d otherwise use for all work.<br>' +
+        'Current base: <b id="ppBaseModelLabel">' + String(baseLabel).replace(/</g, '') + '</b> ' +
+        '<button type="button" id="ppSetBaseModel" class="dl-link" style="margin-left:.4rem">Set to current model</button> ' +
+        '<button type="button" id="ppClearBaseModel" class="dl-link">Clear</button>' +
         '</div>';
     }
 
@@ -5054,6 +5133,23 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       });
       var v = document.getElementById('ppSavingsVisualChk');
       if (v) v.addEventListener('change', function () { lsSet('pp_savings_visual', v.checked); try { updateSparkToggleIcon(); } catch (e) { /* ignore */ } });
+      var setBtn = document.getElementById('ppSetBaseModel');
+      if (setBtn) setBtn.addEventListener('click', function () {
+        var prov = (providerEl && providerEl.value) || '';
+        var model = ''; try { model = getSelectedModelForChat() || ''; } catch (e) { model = ''; }
+        if (!model && modelEl && modelEl.value) model = modelEl.value;
+        if (!model) { addMsg('sys', 'Pick a provider/model in the composer first, then set it as base.', null, true); return; }
+        setBaseModel(prov, model);
+        var lab = document.getElementById('ppBaseModelLabel'); if (lab) lab.textContent = (prov ? prov + ' · ' : '') + model;
+        try { scheduleSideStatsRefresh(); } catch (e) { /* ignore */ }
+        logOps('Model-spread base set to ' + (prov ? prov + ' · ' : '') + model, { level: 'ok' });
+      });
+      var clrBtn = document.getElementById('ppClearBaseModel');
+      if (clrBtn) clrBtn.addEventListener('click', function () {
+        try { localStorage.removeItem(PP_BASE_MODEL_KEY); } catch (e) { /* ignore */ }
+        var lab = document.getElementById('ppBaseModelLabel'); if (lab) lab.textContent = '(current selection)';
+        try { scheduleSideStatsRefresh(); } catch (e) { /* ignore */ }
+      });
     }
 
     function renderApiKeys(data) {

@@ -9,6 +9,27 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.26] - 2026-07-12
+
+### Added
+- **Model-spread savings engine.** You declare a base model (the top model you'd
+  otherwise run everything on, e.g. Opus 4.8). Each turn already records real
+  input/output tokens + the model that answered, so we compute: base cost (same
+  tokens on the base model) − actual cost = the model-spread saving, output-weighted,
+  from real tokens. Shown in Running Stats as **"Model-spread saved"** with a tooltip
+  breaking down base-vs-spread cost. Honest by construction: a turn that ran on the
+  base model saves $0, and an all-on-base session shows $0 (no fabricated number).
+  Set/clear the base model in Settings → "Base model".
+- **Output spend** cell in Running Stats: real output tokens this session · $ at each
+  model's published output rate — the costly side (5–8× input), now visible.
+
+### Notes
+- Input-side savings (prep compression, doc dedup, carried-context, doc-summary
+  source→summary) are unchanged and still shown — the output/spread figures are
+  additive. Input savings are small in $ (input is cheap); output/spread is where the
+  real dollars are. The spread engine currently MEASURES the saving; per-turn model
+  routing (intent parser + personas + dials) is the next step.
+
 ## [0.32.25] - 2026-07-12
 
 ### Fixed
