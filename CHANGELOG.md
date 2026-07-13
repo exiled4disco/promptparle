@@ -9,6 +9,26 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.39] - 2026-07-13
+
+### Added
+- **Output contracts per service class (BTUP egress policing).** Output tokens bill 5–8×
+  input, so the shape of the answer is the dominant cost lever. PromptParle now attaches a
+  provider-independent output contract to every answer-producing turn, chosen from the
+  resolved profile + the ask — the same clause works identically across all four providers:
+  - **Code edit / fix / refactor** (developer profile) → *output only a unified diff, never
+    reprint the whole file*. A six-line change stops costing a 400-line file of output
+    tokens — the single biggest saving.
+  - **List / table / CSV / JSON asks** → return the structured form directly, no prose
+    padding, no restating the request.
+  - **Short interactive answers** → terse: no preamble, no question-restatement, no closing
+    summary.
+  - **Docs / research / security** → left unshaped (those classes should write prose).
+  Contracts *shape* output; they are never a truncation cap (truncation is handled as a
+  reroute failure-class, not a goal). Each turn logs which contract fired (`out-contract:…`)
+  for telemetry. Driven green: 9/9 contract-selection cases + 3/3 end-to-end prep injection
+  (diff for code edits, structured for data, no shape for prose classes).
+
 ## [0.32.38] - 2026-07-13
 
 ### Fixed

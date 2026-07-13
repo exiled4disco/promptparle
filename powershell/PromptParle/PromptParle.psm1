@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.38'
+    $ver = '0.32.39'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -2343,6 +2343,75 @@ function Get-PromptParleProjectCard {
         'rule: answer from [PROJECT]/evidence; implement under source_root; deploy to live_* only when that host is real'
     )
     return ($lines -join "`n")
+}
+
+function Get-PromptParleOutputContract {
+    <#
+    .SYNOPSIS
+      BTUP output contract (egress policing) — a provider-independent system clause that
+      forces the OUTPUT shape per service class. Output tokens bill 5-8x input, so shaping
+      output is the single biggest cost lever. Returns @{ clause=<system text>;
+      max_out=<suggested cap or 0>; contract=<name> }.
+    .DESCRIPTION
+      Keyed on the resolved profile + the prompt. Deliberately conservative: only bind a
+      hard shape where it is safe and high-value.
+        developer/code + an EDIT ask  → unified-diff only, NEVER rewrite the whole file
+        data/list/table ask           → the requested structured form (CSV/JSON/table), no prose padding
+        concise chat / short factual   → terse: no preamble, no restating the question, no closing summary
+      The clause is applied on top of the mode directive so it rides every answer-producing
+      turn. It shapes; it does not truncate — max_out is a generous safety ceiling, never a
+      guillotine (truncation is a reroute failure-class, not a goal).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Profile = 'general',
+        [string]$Prompt = '',
+        [string]$Category = ''
+    )
+    $p = ([string]$Prompt)
+    $prof = ([string]$Profile).ToLowerInvariant()
+    $cat = ([string]$Category).ToLowerInvariant()
+
+    # CODE-CHANGE contract: an edit/fix/refactor ask on code → diff, not a full-file rewrite.
+    $isCodeProfile = ($prof -match 'develop|code') -or ($cat -match 'code')
+    $isEditAsk = ($p -match '(?i)\b(edit|change|modify|fix|patch|refactor|update|rename|add (a |the )?(function|method|param|import|line|case)|remove|replace|insert|adjust|tweak|correct)\b' -and
+                  $p -match '(?i)\b(file|function|method|class|line|code|\.(?:ts|tsx|js|jsx|py|ps1|psm1|psd1|go|rs|java|c|cpp|cs|rb|php|sql|css|html|json|yml|yaml))\b')
+    if ($isCodeProfile -and $isEditAsk) {
+        $clause = @(
+            '[OUTPUT CONTRACT — code edit]',
+            'Output ONLY a unified diff (or the minimal changed hunks) — do NOT reprint the whole file,',
+            'and do NOT echo unchanged code. Show just the lines that change, with enough context to apply.',
+            'No preamble and no closing summary; a one-line note above the diff is fine if truly needed.'
+        ) -join ' '
+        return [pscustomobject]@{ clause = $clause; max_out = 0; contract = 'unified-diff' }
+    }
+
+    # STRUCTURED-DATA contract: an explicit list/table/CSV/JSON ask → emit that form directly.
+    $isDataAsk = ($p -match '(?i)\b(as (a )?(csv|json|table|list|markdown table)|in (csv|json|table) (form|format)|output (csv|json)|comma.separated|spreadsheet|\.csv\b|\.json\b)\b') -or
+                 ($p -match '(?i)\b(list|sort|rank|enumerate|tabulate)\b.*\b(all|every|each|by)\b')
+    if ($isDataAsk) {
+        $clause = @(
+            '[OUTPUT CONTRACT — structured data]',
+            'Return the data directly in the requested structured form (table/CSV/JSON) with NO prose',
+            'preamble, NO restating the request, and NO trailing commentary. If no form was named, use a',
+            'compact markdown table. Header row + rows only. One short refinement line at the end is allowed.'
+        ) -join ' '
+        return [pscustomobject]@{ clause = $clause; max_out = 0; contract = 'structured' }
+    }
+
+    # TERSE contract for short interactive answers (not docs/research/security, which want prose).
+    $wantsProse = ($prof -match 'document|research|security') -or ($cat -match 'doc|research|analysis|security')
+    if (-not $wantsProse) {
+        $clause = @(
+            '[OUTPUT CONTRACT — terse]',
+            'Answer directly. No preamble, no restating the question, no closing summary or "let me know if".',
+            'Lead with the answer; add only detail that earns its tokens. Lists over paragraphs when it fits.'
+        ) -join ' '
+        return [pscustomobject]@{ clause = $clause; max_out = 0; contract = 'terse' }
+    }
+
+    # Prose-heavy classes: no shape contract (a doc analyst SHOULD write structured prose).
+    return [pscustomobject]@{ clause = ''; max_out = 0; contract = 'none' }
 }
 
 function Get-PromptParleChatFraming {
@@ -9196,6 +9265,18 @@ function Invoke-PromptParleAgentLocalPrep {
     $prof = if ($Profile) { $Profile } else { 'general' }
     $budget = Get-PromptParleLocalContextBudget -Dial $Dial
     [void]$tools.Add('secret_scan')
+
+    # BTUP output contract (egress policing) — shape the OUTPUT per service class. Applied
+    # once here so it rides every answer-producing mode (general/session/live) that follows.
+    # Output tokens are the dominant cost; a code edit as a diff instead of a full-file
+    # rewrite is the single biggest saving. Shape only — never a truncation cap.
+    try {
+        $oc = Get-PromptParleOutputContract -Profile $prof -Prompt $pr -Category ([string]$turnKind)
+        if ($oc -and [string]$oc.clause -and ($pr -notmatch '\[OUTPUT CONTRACT')) {
+            $pr = $pr + "`n`n" + [string]$oc.clause
+            [void]$notes.Add("out-contract:$($oc.contract)")
+        }
+    } catch { }
     [void]$tools.Add('code_brief')
 
     # 1) Mask secrets (always when tools on)
