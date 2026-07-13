@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.32'
+    $ver = '0.32.33'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -6647,6 +6647,23 @@ function Resolve-PromptParleEvidenceMode {
         return [pscustomobject]@{ mode = 'live'; hands_allowed = $true; reason = 'no-session-evidence' }
     }
 
+    # General-knowledge guard (0.32.33): a self-contained factual/definitional question
+    # ("what's the capital of Ohio", "what is a closure", "who wrote X") is answerable from
+    # the MODEL'S OWN knowledge — it needs neither session MEM nor live evidence. Having
+    # chat history ($hasSession) must NOT muzzle it into session-mode, whose directive says
+    # "answer from MEM/KNOW only, say refresh" — that produced "I don't have the capital of
+    # Ohio stored in this session. Say refresh." (Same failure family as the doc-summary
+    # 0.32.21 bug: session-mode gating a turn the model can just answer.)
+    # Session-mode is only right when the ask is ABOUT this session/project/prior turns.
+    $aboutSession = ($p -match '(?i)\b(we|you|earlier|before|last (time|turn|message)|so far|this (chat|session|project|conversation|thread)|our |my (project|code|repo|file|setup)|what did (you|we)|recap|caught up|continue|as (i|we) (said|mentioned|discussed))\b')
+    # Question-word prefix. Allow an optional "s"/"''s" so contraction-less "whats"/"hows"
+    # and "what''s" both match, then require a boundary — avoids matching "whatever".
+    $looksGeneralQuestion = ($p -match "(?i)^\s*(what|who|when|where|which|how|why|is|are|does|do|can|define|name|list)('?s)?\b" -or $p -match '\?\s*$')
+    if ($looksGeneralQuestion -and -not $aboutSession -and $knowN -eq 0) {
+        # Answer from the model's own knowledge; not a session-memory recall, no "refresh".
+        return [pscustomobject]@{ mode = 'general'; hands_allowed = $false; reason = 'general-knowledge' }
+    }
+
     # Session can answer — hands off
     $why = 'session-evidence'
     if ($knowN -gt 0) { $why = 'know' }
@@ -9112,6 +9129,46 @@ function Invoke-PromptParleAgentLocalPrep {
     $pr = $r1.text
     $ctx = $r2.text
     if (($r1.masked + $r2.masked) -gt 0) { [void]$notes.Add("mask $($r1.masked + $r2.masked)") }
+
+    # --- evidence_mode=general: a self-contained general-knowledge question. Answer from
+    # the model's own knowledge, plainly — NOT gated behind session-refresh, NOT a live
+    # fetch. Fixes "I don't have the capital of Ohio stored… say refresh" (0.32.33). ---
+    if ($evidenceMode -eq 'general') {
+        $genDir = @(
+            '[CLIENT DIRECTIVE — evidence_mode=general]',
+            'This is a general-knowledge question. Answer it directly from your own knowledge.',
+            'Do NOT say you lack it "in this session" and do NOT tell the user to say refresh —',
+            'that framing is only for session/project recall, not world knowledge. No hands/tools.'
+        ) -join ' '
+        if ($pr -notmatch '\[CLIENT DIRECTIVE — evidence_mode=general') {
+            $pr = $pr + "`n`n" + $genDir
+        }
+        $charsOutG = $ctx.Length + $pr.Length
+        $charsInG = $charsWire + [Math]::Max(0, [int]$memRollingCredit) + [Math]::Max(0, [int]$framingInjected)
+        $tokBeforeG = if ($charsInG -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsInG / 4.0)) }
+        $tokAfterG = if ($charsOutG -le 0) { 0 } else { [Math]::Max(1, [int][Math]::Ceiling($charsOutG / 4.0)) }
+        [void]$notes.Add(("prep-tokens:{0}->{1}" -f $tokBeforeG, $tokAfterG))
+        return ,([pscustomobject]@{
+            prompt           = $pr
+            context          = $ctx
+            notes            = @($notes.ToArray())
+            tools            = @($tools | Select-Object -Unique)
+            tool_breakdown   = @($toolBreakdown.ToArray())
+            agent            = 'none'
+            tools_enabled    = $false
+            dial             = $Dial
+            budget           = $budget
+            chars_in         = $charsInG
+            chars_out        = $charsOutG
+            tokens_before    = $tokBeforeG
+            tokens_after     = $tokAfterG
+            evidence_mode    = 'general'
+            hands_allowed    = $false
+            evidence_reason  = $evidenceReason
+            obligation       = $oblEarly
+            turn_kind        = $turnKind
+        })
+    }
 
     # --- evidence_mode=session: bind + MEM/KNOW only; no live fleet; return early ---
     if ($evidenceMode -eq 'session') {

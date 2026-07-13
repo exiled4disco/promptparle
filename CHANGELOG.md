@@ -9,6 +9,26 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.33] - 2026-07-13
+
+### Fixed
+- **"I don't have the capital of Ohio stored in this session. Say refresh."** A plain
+  general-knowledge question ("what's the capital of Ohio", "who wrote Hamlet") was being
+  forced into session-mode — whose directive says "answer from memory only; if missing,
+  say refresh" — simply because the chat had prior history. The model *knows* the answer;
+  it was muzzled. Now the evidence resolver detects a self-contained general-knowledge
+  question (question-word prefix, not about *this* session/project/prior turns) and routes
+  it to a new **evidence_mode=general** that tells the model to answer directly from its
+  own knowledge — no "refresh", no tools. Session-recall questions ("what did you say
+  earlier", "recap our conversation", "continue") still correctly use session-mode.
+  (Same failure family as the 0.32.21 doc-summary bug: session-mode gating a turn the
+  model can just answer. Verified 10/10 across general vs session-recall phrasings.)
+
+### Confirmed working
+- **Model routing is live and correct**: "what's the capital of Ohio" on a gpt-5 session
+  now runs on **gpt-5-mini** (routed down for a trivial ask), with the 👍/👎/↑stronger
+  feedback controls — the 0.32.32 Live-route fix landed.
+
 ## [0.32.32] - 2026-07-13
 
 ### Fixed
