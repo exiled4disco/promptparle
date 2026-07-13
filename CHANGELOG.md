@@ -9,6 +9,31 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.41] - 2026-07-13
+
+### Fixed
+- **Updates that failed to restart ("did not come back on this port").** Root cause: on the
+  update handoff the new server tried to bind the port while the old server was still
+  releasing it (async teardown), the bind threw, and `-StrictPort` refused to drift — so the
+  browser was stranded. Now the handoff **waits for the port to actually free** and **retries
+  the bind with backoff** before giving up. Verified against real socket contention (old
+  listener holding the port → new listener retries → binds once freed). This is the fix that
+  lets every OTHER fix actually reach the client.
+- **The "say refresh / I don't have it stored / let me fetch it" muzzle — fixed at the root.**
+  The evidence resolver defaulted to *gather-before-answer* and treated answering from the
+  model's own knowledge as a special case. **Flipped:** the default is now **answer from your
+  own knowledge** (like a normal assistant); session-recall, web, files, tools, and refresh
+  fire only when the ask genuinely needs them. Kills the whole muzzle family — "list all the
+  time zones," "capital of Ohio," "find me a recipe," "all Texas cities" now just get answered.
+- **FAIL-CLOSED implement report stapled onto normal answers.** A recipe/review answer could
+  come back buried under "## What changed / FAIL-CLOSED / apply-channel: Downloads" when a
+  stale obligation mislabeled the turn as implement. The report now appears **only when the
+  pipeline actually did work** (wrote files / ran commands / the model emitted real apply-run
+  blocks) — never on a plain answer. Driven green.
+- **Running stats didn't update until the next send.** The sidebar/dashboard walked stored
+  messages, but this turn's answer was persisted on a debounced timer that hadn't fired.
+  Now the turn persists and refreshes stats the moment the answer lands.
+
 ## [0.32.40] - 2026-07-13
 
 ### Fixed

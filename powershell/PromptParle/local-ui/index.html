@@ -7538,7 +7538,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         window.__ppTurnActive = false; window.__ppTurnStage = null;   // in-flight panel back to idle
         try { writeInflight(null); } catch (e) { /* ignore */ }        // clear shared signal → pop-out returns to idle
         if (timer) clearTimeout(timer); for (var ci = 0; ci < thinkTimers.length; ci++) clearTimeout(thinkTimers[ci]); const w = document.getElementById('waiting'); if (w) w.remove(); // Belt-and-suspenders: never leave chips after a send attempt
-        if (attachments.length > 0) clearComposerAttachments('post-send'); sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); scrollChatToBottom(); }
+        if (attachments.length > 0) clearComposerAttachments('post-send'); sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); scrollChatToBottom();
+        // Running stats used to update only on the NEXT send: computeRunningStats walks
+        // STORED messages, but this turn's answer is persisted on a debounced timer that
+        // hadn't fired yet. Persist now, then refresh, so the sidebar + dashboard reflect
+        // THIS answer the moment it lands.
+        try { if (currentChatId) persistCurrentChat(); } catch (e) { /* ignore */ }
+        try { scheduleSideStatsRefresh(); } catch (e) { /* ignore */ }
+      }
     });
     // ---- Bug / Suggest (portal /api/v1/feedback via local proxy) ----
     // Re-query DOM on each open (HTML may load after bind; never cache null once)

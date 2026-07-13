@@ -2077,7 +2077,7 @@ function Get-PromptParleSelfCard {
       Compact self-knowledge — product identity, hands, session storage truth, portal.
       Always-on so the model does not invent wrong hosts, paths, or session folders.
     #>
-    $ver = '0.32.40'
+    $ver = '0.32.41'
     try {
         $v = Get-PromptParleClientVersion
         if ($v) { $ver = [string]$v }
@@ -6802,18 +6802,30 @@ function Resolve-PromptParleEvidenceMode {
         $p -match "(?i)^\s*(what|who|when|where|which|how|why|is|are|does|do|can|could|would|define|name|list|find|show|give|tell|explain|summarize|compare|rank|sort)('?s)?\b" -or
         $p -match '\?\s*$'
     )
-    if ($looksGeneralQuestion -and -not $aboutSession -and -not $aboutKnowledge) {
-        # Answer from the model's own knowledge; not a session-memory recall, no "refresh".
-        # Fires even with Knowledge attached, as long as the ask isn't about that content.
-        return [pscustomobject]@{ mode = 'general'; hands_allowed = $false; reason = 'general-knowledge' }
+    # ── DEFAULT FLIP (0.32.41) ──────────────────────────────────────────────────
+    # The app used to DEFAULT to session-mode ("answer from MEM/KNOW only, say refresh")
+    # and treat answering-from-own-knowledge as a special case it had to be talked into.
+    # That backwards default is the source of the entire muzzle family: "say refresh",
+    # "I don't have that stored", "let me fetch the dataset", the clarifying-question stall.
+    # A normal assistant (Claude/ChatGPT/Grok) answers from its own knowledge BY DEFAULT and
+    # only gathers evidence when the ask genuinely needs it. Everything above this line has
+    # already claimed the turns that truly need evidence (attachments, refresh, catch-up,
+    # implement/mutate/deliver, explicit paths/files/tools, web-search intent). So by the
+    # time we reach here, the honest default is: ANSWER FROM KNOWLEDGE.
+    #
+    # session-mode now fires ONLY when the ask is genuinely ABOUT this session/prior turns
+    # or ABOUT the attached knowledge/docs — the only cases where "recall from the ledger"
+    # is actually what the user wants.
+    if ($aboutSession -or $aboutKnowledge) {
+        $why = 'session-recall'
+        if ($aboutKnowledge -and $knowN -gt 0) { $why = 'know' }
+        elseif ($aboutSession) { $why = 'session-about' }
+        return [pscustomobject]@{ mode = 'session'; hands_allowed = $false; reason = $why }
     }
 
-    # Session can answer — hands off
-    $why = 'session-evidence'
-    if ($knowN -gt 0) { $why = 'know' }
-    elseif ($memLen -ge 400) { $why = 'mem' }
-    elseif ($recentAsstLen -ge 280) { $why = 'recent-assistant' }
-    return [pscustomobject]@{ mode = 'session'; hands_allowed = $false; reason = $why }
+    # Everything else → answer from the model's own knowledge. No refresh, no fetch, no
+    # "I don't have it stored." This is the default a general assistant should have.
+    return [pscustomobject]@{ mode = 'general'; hands_allowed = $false; reason = 'general-default' }
 }
 
 function Get-PromptParleProtectedSessionContext {
@@ -12695,8 +12707,22 @@ function Invoke-PromptParleApplyResponseBlocks {
     $headerLines.Add('')
     $header = ($headerLines -join "`n")
 
-    # Only prefix report when we acted, fail-closed, theater, or had steps
-    $needHeader = $acted -or $failClosed -or $theater -or ($steps.Count -gt 0) -or ($errors.Count -gt 0)
+    # Only prefix the "What changed" report when the pipeline ACTUALLY DID something:
+    # landed/skipped files, ran commands, intercepted homework, or refused REAL apply/run
+    # blocks the model emitted (steps.Count > 0). A bare fail-closed with ZERO apply/run
+    # blocks means the model just answered normally (e.g. a recipe, a review) on a turn
+    # that was mislabeled 'implement' by a stale obligation — there is nothing to report,
+    # so we must NOT staple the FAIL-CLOSED boilerplate on top of a perfectly good answer.
+    # (Containment: the report is diagnostic for real implement work, never a muzzle on chat.)
+    $didRealWork = ($acted -or ($steps.Count -gt 0) -or ($errors.Count -gt 0) -or ($homeworkRan.Count -gt 0))
+    $needHeader = $didRealWork
+    if ($failClosed -and -not $didRealWork) {
+        # Mislabeled implement turn that produced a normal answer → suppress the report,
+        # and drop the fail-closed flag so downstream doesn't surface it either.
+        $failClosed = $false
+        [void]$notes.Add('fail-closed-suppressed: no apply/run blocks; turn answered normally (not an implement turn)')
+        Write-Host '  chat: implement report suppressed — no apply/run blocks in answer (turn was not really an implement)' -ForegroundColor DarkGray
+    }
     $outText = if ($needHeader) { $header + $text } else { $text }
 
     return [pscustomobject]@{
@@ -17267,21 +17293,41 @@ window.__PP_LOCAL_TOKEN__ = '$localUiToken';
         $busy = Get-PromptParleListenersOnPort -Port $tryPort
         if ($null -ne $busy -and $busy.Count -gt 0) {
             Clear-PromptParleLocalPort -Port $tryPort -Quiet
+            # RACE FIX (restart-port-drift): killing the old server is async — the OS may
+            # still hold the socket (process teardown / TIME_WAIT) for a moment. On the update
+            # handoff we were binding immediately, .Start() threw, and StrictPort refused to
+            # drift → "did not come back on this port". Wait (bounded) for the port to actually
+            # free before we try to bind it.
+            for ($w = 0; $w -lt 20; $w++) {
+                Start-Sleep -Milliseconds 150
+                $still = Get-PromptParleListenersOnPort -Port $tryPort
+                if ($null -eq $still -or $still.Count -eq 0) { break }
+                if ($w -eq 10) { Clear-PromptParleLocalPort -Port $tryPort -Quiet }   # one more nudge if stubborn
+            }
         }
 
         $prefix = "http://127.0.0.1:$tryPort/"
-        $candidate = New-Object System.Net.HttpListener
-        try {
-            $candidate.Prefixes.Add($prefix)
-            $candidate.Start()
-            $listener = $candidate
-            $boundPort = $tryPort
-            $Port = $tryPort
-            break
-        } catch {
-            try { $candidate.Abort() } catch { }
-            try { $candidate.Close() } catch { }
+        # Retry the bind a few times with a short backoff — the socket can linger briefly
+        # even after the old process is gone. StrictPort keeps us on THIS port; the retry is
+        # what turns a transient "address in use" into a successful handoff instead of a hang.
+        $bound = $false
+        for ($attempt = 0; $attempt -lt 8 -and -not $bound; $attempt++) {
+            $candidate = New-Object System.Net.HttpListener
+            try {
+                $candidate.Prefixes.Add($prefix)
+                $candidate.Start()
+                $listener = $candidate
+                $boundPort = $tryPort
+                $Port = $tryPort
+                $bound = $true
+                break
+            } catch {
+                try { $candidate.Abort() } catch { }
+                try { $candidate.Close() } catch { }
+                Start-Sleep -Milliseconds (200 + 100 * $attempt)   # backoff: 200,300,…,900ms
+            }
         }
+        if ($bound) { break }
     }
 
     if (-not $listener) {
