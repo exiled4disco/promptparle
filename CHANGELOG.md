@@ -9,6 +9,20 @@ Entries are newest first. "Version" here refers to the desktop client / release
 version stamped in the six version spots described in
 [CONTRIBUTING.md](CONTRIBUTING.md#release-process).
 
+## [0.32.36] - 2026-07-13
+
+### Changed
+- **Live dashboard now opens in a SEPARATE window** so you can watch it in real time
+  beside the main window while you work. The 📊 Dashboard button opens `/?dash=1` as a
+  docked pop-out; it's a pure viewer that reads the **same localStorage stores** the main
+  window writes, so tokens, cost, routing health, and the in-flight "what's running now"
+  panel update live across windows. The in-flight stage (prep → model → round → gate) is
+  published to a shared `pp_inflight_v1` signal on turn start / stage change / stop, and the
+  pop-out reacts to it instantly via the cross-window `storage` event plus a 1s tick. If the
+  browser blocks the pop-up, it falls back to the in-page modal so the feature still works.
+  Driven green: main-window writes → pop-out reads live stage, renders into its own body
+  (modal untouched), and returns to idle on turn end / stale signal.
+
 ## [0.32.35] - 2026-07-13
 
 ### Fixed

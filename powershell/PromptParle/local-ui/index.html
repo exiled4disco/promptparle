@@ -1026,6 +1026,33 @@
     body.term-popout .term-in-row input {
       font-size: .88rem; }
     /* Activity log pop-out (ops stream; not chat) */
+    /* Dashboard pop-out (/?dash=1) — full-page live dashboard in its own window,
+       reads the same localStorage stores the main window writes, so it updates in
+       real time across windows. */
+    body.dash-popout { overflow: auto; background: #070b12; }
+    body.dash-popout .sidebar,
+    body.dash-popout .main-top,
+    body.dash-popout .savings-strip,
+    body.dash-popout #chat,
+    body.dash-popout .composer,
+    body.dash-popout .client-limit-banner,
+    body.dash-popout .modal-backdrop,
+    body.dash-popout .side-toggle,
+    body.dash-popout .term-panel,
+    body.dash-popout .ops-log-shell { display: none !important; }
+    body.dash-popout .shell {
+      display: block !important; grid-template-columns: none !important; max-width: none !important; width: 100% !important; margin: 0 !important; }
+    body.dash-popout .main {
+      display: block !important; padding: 0 !important; gap: 0 !important; width: 100% !important; }
+    body.dash-popout #dashPopoutShell {
+      display: block !important; }
+    #dashPopoutShell { display: none; }
+    #dashPopoutShell .dash-pop-head {
+      position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: .6rem;
+      padding: .6rem .9rem; background: #0a0e16; border-bottom: 1px solid var(--border); }
+    #dashPopoutShell .dash-pop-head h2 { margin: 0; font-size: 1rem; }
+    #dashPopoutShell .dash-pop-body { padding: .9rem 1.1rem 2rem; }
+
     body.log-popout {
       overflow: hidden; background: #070b12; }
     body.log-popout .sidebar,
@@ -1394,6 +1421,15 @@
       <div class="savings-strip" id="savingsStrip" aria-live="polite"></div>
 
       <div id="chat" class="chat" role="log" aria-relevant="additions"></div>
+
+      <!-- Live dashboard streamer (shown full-page when ?dash=1 pop-out) -->
+      <div id="dashPopoutShell">
+        <div class="dash-pop-head">
+          <h2>📊 Live dashboard</h2>
+          <div class="dash-live" id="dashPopLive" style="margin:0"><span class="dot"></span><span id="dashPopLiveText">Real tokens, cost &amp; routing on this PC — updates live.</span></div>
+        </div>
+        <div class="dash-pop-body" id="dashPopBody">Loading…</div>
+      </div>
 
       <!-- Activity log streamer (shown full-page when ?log=1 pop-out) -->
       <div class="ops-log-shell" id="opsLogShell" hidden>
@@ -2736,6 +2772,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         var maxRound = j && (j.max_round || j.maxRound);
         var label = base + (round ? ' ' + round + (maxRound ? '/' + maxRound : '') : '') + (detail ? ' — ' + String(detail).slice(0, 80) : '');
         stageEl.textContent = label + '…';
+        // Publish the real stage to the shared store so a dashboard pop-out shows it live.
+        try { writeInflight({ started: job.started || Date.now(), stage: label, kind: 'background', prompt: job.prompt || '', updated: Date.now() }); } catch (e) { /* ignore */ }
       }
     }
 
@@ -2760,6 +2798,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
 
     function finishBackgroundJob(job, j) {
+      try { if (!Object.keys(bgJobs || {}).length) writeInflight(null); } catch (e) { /* ignore */ }  // last bg job done → clear pop-out signal
       var text, meta = null, isErr = false;
       if (String(j.status) === 'error') { text = 'Background turn failed: ' + (j.error || 'unknown error'); isErr = true; }
       else {
@@ -3004,7 +3043,30 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // A real-time surface over the SAME numbers the sidebar reads: real provider
     // in/out tokens, the model that ran, model-spread saving, per-turn time, and
     // routing outcomes. No new measurement — one honest source, live cadence.
-    function isDashOpen() { var m = document.getElementById('dashModal'); return !!(m && m.classList.contains('open')); }
+    function isDashOpen() {
+      if (window.__ppDashPopoutMode) return true;   // the pop-out window is always "open"
+      var m = document.getElementById('dashModal'); return !!(m && m.classList.contains('open'));
+    }
+
+    // Cross-window in-flight signal: the MAIN window writes pp_inflight_v1 to
+    // localStorage on turn start/stage/stop so the pop-out (a separate window, no
+    // access to bgJobs/window state) can show the live "what's running now" panel.
+    var PP_INFLIGHT_KEY = 'pp_inflight_v1';
+    function writeInflight(obj) {
+      try {
+        if (obj) { lsSet(PP_INFLIGHT_KEY, obj); }
+        else { localStorage.removeItem(PP_INFLIGHT_KEY); }
+      } catch (e) { /* ignore */ }
+    }
+    function readInflight() {
+      try {
+        var o = lsGet(PP_INFLIGHT_KEY, null);
+        if (!o || typeof o !== 'object' || !o.started) return null;
+        // Stale guard: if nothing refreshed it for >90s, treat as ended (window closed mid-turn).
+        if ((Date.now() - (o.updated || o.started)) > 90000) { writeInflight(null); return null; }
+        return o;
+      } catch (e) { return null; }
+    }
 
     function fmtDur(ms) {
       var s = (Number(ms) || 0) / 1000;
@@ -3016,18 +3078,27 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     // Is a turn in flight right now? Inline turn sets window.__ppTurnActive; background
     // jobs live in bgJobs. Return the freshest with its start time + stage label.
     function currentInflight() {
+      // Pop-out window: no bgJobs / window state here — read the shared store the
+      // main window writes. This is what makes the separate window live.
+      if (window.__ppDashPopoutMode) { return readInflight(); }
       try {
         var jobs = Object.keys(bgJobs || {}).map(function (k) { return bgJobs[k]; }).filter(Boolean);
         if (jobs.length) {
           var j = jobs[jobs.length - 1];
           var stageTxt = '';
           try { var el = j.el && j.el.querySelector('.bg-stage'); if (el) stageTxt = el.textContent || ''; } catch (e) {}
-          return { started: j.started || Date.now(), stage: stageTxt || 'Working…', kind: 'background', prompt: j.prompt || '' };
+          var infoB = { started: j.started || Date.now(), stage: stageTxt || 'Working…', kind: 'background', prompt: j.prompt || '' };
+          writeInflight({ started: infoB.started, stage: infoB.stage, kind: 'background', prompt: infoB.prompt, updated: Date.now() });
+          return infoB;
         }
       } catch (e) { /* ignore */ }
       if (window.__ppTurnActive && window.__ppTurnStartTs) {
-        return { started: window.__ppTurnStartTs, stage: window.__ppTurnStage || 'Working…', kind: 'inline', prompt: window.__ppLastPrompt || '' };
+        var infoI = { started: window.__ppTurnStartTs, stage: window.__ppTurnStage || 'Working…', kind: 'inline', prompt: window.__ppLastPrompt || '' };
+        writeInflight({ started: infoI.started, stage: infoI.stage, kind: 'inline', prompt: infoI.prompt, updated: Date.now() });
+        return infoI;
       }
+      // Nothing running — clear the shared signal so the pop-out returns to idle.
+      writeInflight(null);
       return null;
     }
 
@@ -3042,10 +3113,12 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
     }
 
     function renderDashboard() {
-      var body = document.getElementById('dashBody');
+      // Target the pop-out body when this page is the dashboard window, else the modal.
+      var inPop = !!window.__ppDashPopoutMode;
+      var body = document.getElementById(inPop ? 'dashPopBody' : 'dashBody');
       if (!body) return;
-      var liveWrap = document.getElementById('dashLive');
-      var liveText = document.getElementById('dashLiveText');
+      var liveWrap = document.getElementById(inPop ? 'dashPopLive' : 'dashLive');
+      var liveText = document.getElementById(inPop ? 'dashPopLiveText' : 'dashLiveText');
       var st = computeRunningStats();
       var t = st.totals;
       var inflight = currentInflight();
@@ -3150,20 +3223,66 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       body.innerHTML = html;
     }
 
+    var dashPopoutWin = null;
+    // Open the dashboard in a SEPARATE window so it can be watched in real time
+    // while you work in the main window. Falls back to the in-page modal only if
+    // the browser blocks the pop-up.
     function openDashboard() {
+      try { closeMenu(); closeHelp(); } catch (e) { /* ignore */ }
+      // Already have a live pop-out? Focus it.
+      try { if (dashPopoutWin && !dashPopoutWin.closed) { dashPopoutWin.focus(); return; } } catch (e) { /* ignore */ }
+      var w = 720, h = 780, left = 60, top = 40;
+      try {
+        w = Math.min(820, Math.max(560, Math.floor((screen.availWidth || 1200) * 0.4)));
+        h = Math.min(940, Math.max(520, Math.floor((screen.availHeight || 900) * 0.82)));
+        left = Math.max(20, (screen.availWidth || 1200) - w - 40);   // dock to the right so it sits beside the main window
+        top = Math.max(20, Math.floor(((screen.availHeight || 900) - h) / 6));
+      } catch (e) { /* ignore */ }
+      var features = ['popup=yes', 'width=' + w, 'height=' + h, 'left=' + left, 'top=' + top,
+        'menubar=no', 'toolbar=no', 'location=no', 'status=no', 'resizable=yes', 'scrollbars=yes'].join(',');
+      var win = null;
+      try { win = window.open(location.origin + '/?dash=1', 'pp-dashboard', features); } catch (e) { win = null; }
+      if (!win) {
+        // Pop-up blocked → in-page modal fallback so the feature still works.
+        openDashboardModal();
+        try { logOps('Dashboard pop-out blocked by the browser. Showing it in-page; allow pop-ups for a separate window.', { level: 'warn' }); } catch (e) { /* ignore */ }
+        return;
+      }
+      dashPopoutWin = win;
+      try { win.focus(); } catch (e) { /* ignore */ }
+    }
+    // In-page modal (fallback + still reachable). Same render, dashModal target.
+    function openDashboardModal() {
       var m = document.getElementById('dashModal');
       if (!m) return;
-      try { closeMenu(); } catch (e) { /* ignore */ }
       m.classList.add('open');
       renderDashboard();
-      // 1s tick so elapsed time + the in-flight panel stay live even between turns.
       try { if (window.__ppDashTimer) clearInterval(window.__ppDashTimer); } catch (e) { /* ignore */ }
-      window.__ppDashTimer = setInterval(function () { try { if (isDashOpen()) renderDashboard(); else { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ } }, 1000);
+      window.__ppDashTimer = setInterval(function () { try { if (document.getElementById('dashModal').classList.contains('open')) renderDashboard(); else { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ } }, 1000);
     }
     function closeDashboard() {
       var m = document.getElementById('dashModal');
       if (m) m.classList.remove('open');
       try { if (window.__ppDashTimer) { clearInterval(window.__ppDashTimer); window.__ppDashTimer = null; } } catch (e) { /* ignore */ }
+    }
+    // The pop-out window enters this mode on load (?dash=1): full-page dashboard,
+    // own 1s render loop reading the shared localStorage stores.
+    function enterDashPopoutMode() {
+      window.__ppDashPopoutMode = true;
+      document.body.classList.add('dash-popout');
+      document.title = 'PromptParle · Live dashboard';
+      var shell = document.getElementById('dashPopoutShell');
+      if (shell) shell.style.display = 'block';
+      renderDashboard();
+      try { if (window.__ppDashTimer) clearInterval(window.__ppDashTimer); } catch (e) { /* ignore */ }
+      window.__ppDashTimer = setInterval(function () { try { renderDashboard(); } catch (e) { /* ignore */ } }, 1000);
+      // React immediately to cross-window signals (turn start/stop) instead of waiting for the tick.
+      window.addEventListener('storage', function (e) {
+        if (!e) return;
+        if (e.key === PP_INFLIGHT_KEY || e.key === 'pp_run_stats_cum_v1' || e.key === 'pp_route_cells_v1') {
+          try { renderDashboard(); } catch (err) { /* ignore */ }
+        }
+      });
     }
 
     /** Local running totals + per-model rows for the Usage modal. */
@@ -4416,8 +4535,13 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       const _lp = new URLSearchParams(location.search || ''); const _lv = (_lp.get('log') || '').toLowerCase(); if (_lv === '1' || _lv === 'true' || _lv === 'yes' || _lv === 'ops') {
         opsLogPopoutMode = true; }
     } catch (e) { /* ignore */ }
+    // Detect ?dash=1 early — the dashboard window is a pure viewer; skip chat bootstrap.
+    try {
+      const _dp = new URLSearchParams(location.search || ''); const _dv = (_dp.get('dash') || '').toLowerCase(); if (_dv === '1' || _dv === 'true' || _dv === 'yes') {
+        window.__ppDashPopoutMode = true; }
+    } catch (e) { /* ignore */ }
 
-    if (!opsLogPopoutMode) {
+    if (!opsLogPopoutMode && !window.__ppDashPopoutMode) {
       initChatHistory(); }
 
     if (newChatBtn) {
@@ -6451,6 +6575,14 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
         const params = new URLSearchParams(location.search || ''); const log = (params.get('log') || '').toLowerCase(); if (log === '1' || log === 'true' || log === 'yes' || log === 'ops') {
           enterOpsLogPopoutMode(); return true; }
       } catch (e) { /* ignore */ }
+      return false; })();
+    // Live dashboard window: /?dash=1
+    (function initDashPopoutFromUrl() {
+      if (opsLogPopoutMode) return false;
+      try {
+        const params = new URLSearchParams(location.search || ''); const d = (params.get('dash') || '').toLowerCase();
+        if (d === '1' || d === 'true' || d === 'yes') { enterDashPopoutMode(); return true; }
+      } catch (e) { /* ignore */ }
       return false; })(); // Pop-out terminal window: /?term=local or /?term=ssh
     (function initTermPopoutFromUrl() {
       if (opsLogPopoutMode) return false; try {
@@ -6790,6 +6922,8 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
       var __turnStart = Date.now();   // total work time for this turn (shown + logged)
       // Feed the live dashboard's in-flight panel (a turn is a black box otherwise).
       window.__ppTurnActive = true; window.__ppTurnStartTs = __turnStart; window.__ppTurnStage = 'Working…';
+      // Publish to the shared store so a dashboard pop-out window shows it live.
+      try { writeInflight({ started: __turnStart, stage: 'Working…', kind: 'inline', prompt: (window.__ppLastPrompt || ''), updated: Date.now() }); } catch (e) { /* ignore */ }
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null; const timer = controller ? setTimeout(function () { controller.abort(); }, abortMs) : null; try {
         // Carried-context: credit the doc re-ingestion PP avoids this turn vs a stateless
         // API (which would re-send every prior doc body). Computed here because only the
@@ -7011,6 +7145,7 @@ Dial 1 fat … 5 lean. Gateway still compresses. Tools off = raw context only.</
           addMsg('bot', 'Local server error: ' + (err.message || err), null, true); }
       } finally {
         window.__ppTurnActive = false; window.__ppTurnStage = null;   // in-flight panel back to idle
+        try { writeInflight(null); } catch (e) { /* ignore */ }        // clear shared signal → pop-out returns to idle
         if (timer) clearTimeout(timer); for (var ci = 0; ci < thinkTimers.length; ci++) clearTimeout(thinkTimers[ci]); const w = document.getElementById('waiting'); if (w) w.remove(); // Belt-and-suspenders: never leave chips after a send attempt
         if (attachments.length > 0) clearComposerAttachments('post-send'); sendBtn.disabled = false; sendBtn.textContent = '↑'; inputEl.focus(); scrollChatToBottom(); }
     });
